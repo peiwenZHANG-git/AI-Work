@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+
+# Runtime screenshots and safe GUI smoke-test artifacts
+screen.png
+tests/smoke_artifacts/
