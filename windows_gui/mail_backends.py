@@ -1,4 +1,4 @@
-"""Backend-neutral mailbox abstractions for summary operations."""
+"""Backend-neutral mailbox abstractions for summary and search operations."""
 
 from __future__ import annotations
 
@@ -55,9 +55,48 @@ class MailBackendResult:
     legacy_result: dict[str, Any] | None = None
 
 
+@dataclass(frozen=True)
+class MailSearchQuery:
+    keyword: str | None = None
+    sender: str | None = None
+    start_time: datetime | None = None
+    end_time: datetime | None = None
+    max_results: int = 10
+
+
+@dataclass(frozen=True)
+class MailSearchEmail:
+    sender: str
+    subject: str
+    received_time: datetime
+    message_reference: str
+    reference_kind: str = 'GRAPH_MESSAGE_ID'
+
+    def as_result(self, mailbox_id: str) -> dict[str, Any]:
+        return {
+            'mailbox_id': mailbox_id,
+            'sender': self.sender,
+            'subject': self.subject,
+            'received_time': self.received_time.isoformat(),
+            'message_reference': self.message_reference,
+            'reference_kind': self.reference_kind,
+        }
+
+
+@dataclass(frozen=True)
+class MailSearchResult:
+    status: BackendStatus
+    message: str
+    emails: tuple[MailSearchEmail, ...] = ()
+    legacy_result: dict[str, Any] | None = None
+
+
 class MailBackend(Protocol):
     def summarize_today(self, max_emails: int) -> MailBackendResult:
         """Return a read-only summary without changing mailbox state."""
+
+    def search(self, query: MailSearchQuery) -> MailSearchResult:
+        """Return read-only search results without changing mailbox state."""
 
 
 @dataclass(frozen=True)
@@ -175,6 +214,127 @@ class GraphReadonlyBackend:
             emails,
         )
 
+    def search(self, query: MailSearchQuery) -> MailSearchResult:
+        if not self.config.is_configured:
+            return MailSearchResult(
+                BackendStatus.NOT_AUTHENTICATED,
+                'Graph 后端未完成 Azure 应用与 OAuth 配置',
+            )
+
+        token = self.token_store.get_access_token()
+        if not token:
+            return MailSearchResult(
+                BackendStatus.NOT_AUTHENTICATED,
+                'Graph 访问令牌不可用，需要完成委托登录',
+            )
+
+        filters: list[str] = []
+        if query.start_time is not None:
+            filters.append(
+                f'receivedDateTime ge {query.start_time.isoformat()}'
+            )
+        if query.end_time is not None:
+            filters.append(
+                f'receivedDateTime le {query.end_time.isoformat()}'
+            )
+        if query.sender:
+            escaped_sender = query.sender.replace("'", "''")
+            filters.append(
+                '('
+                f"contains(sender/emailAddress/name, '{escaped_sender}') or "
+                f"contains(sender/emailAddress/address, '{escaped_sender}')"
+                ')'
+            )
+        if query.keyword:
+            escaped_keyword = query.keyword.replace("'", "''")
+            filters.append(
+                '('
+                f"contains(subject, '{escaped_keyword}') or "
+                f"contains(sender/emailAddress/name, '{escaped_keyword}') or "
+                f"contains(sender/emailAddress/address, '{escaped_keyword}')"
+                ')'
+            )
+
+        params = {
+            '$count': 'true',
+            '$orderby': 'receivedDateTime desc',
+            '$select': 'id,sender,subject,receivedDateTime',
+            '$top': query.max_results,
+        }
+        if filters:
+            params['$filter'] = ' and '.join(filters)
+        params = urlencode(params)
+        request_url = f'{self.config.endpoint}?{params}'
+        try:
+            response = self.transport(
+                request_url,
+                {
+                    'Authorization': f'Bearer {token}',
+                    'ConsistencyLevel': 'eventual',
+                },
+                10.0,
+            )
+        except requests.RequestException as error:
+            return MailSearchResult(
+                BackendStatus.REQUEST_FAILED,
+                f'Graph search failed: {type(error).__name__}',
+            )
+        finally:
+            del token
+
+        status_code = getattr(response, 'status_code', None)
+        if status_code == 401:
+            return MailSearchResult(
+                BackendStatus.TOKEN_EXPIRED,
+                'Graph 访问令牌已失效，需要重新完成委托登录',
+            )
+        if status_code is None or status_code < 200 or status_code >= 300:
+            return MailSearchResult(
+                BackendStatus.REQUEST_FAILED,
+                f"Graph 搜索请求失败：HTTP {status_code or 'unknown'}",
+            )
+
+        try:
+            payload = response.json()
+            messages = payload.get('value', [])
+            emails = tuple(
+                self._parse_search_message(message)
+                for message in messages
+            )[:query.max_results]
+        except Exception:
+            return MailSearchResult(
+                BackendStatus.REQUEST_FAILED,
+                'Graph 搜索响应不是有效的 JSON 对象或邮件元数据',
+            )
+        return MailSearchResult(
+            BackendStatus.READY,
+            'Graph READ-only 搜索完成；仅返回列表元数据，未读取正文',
+            emails,
+        )
+
+    @staticmethod
+    def _parse_search_message(message: dict[str, Any]) -> MailSearchEmail:
+        address = message.get('sender', {}).get('emailAddress', {})
+        sender = (
+            address.get('name')
+            or address.get('address')
+            or 'Unknown sender'
+        )
+        subject = message.get('subject') or '(No subject)'
+        received = GraphReadonlyBackend._parse_received_datetime(
+            message.get('receivedDateTime', '')
+        )
+        message_id = str(message.get('id') or '')
+        if not message_id:
+            raise ValueError('Graph message metadata is missing id')
+        return MailSearchEmail(
+            sender=sender,
+            subject=subject,
+            received_time=received,
+            message_reference=message_id,
+            reference_kind='GRAPH_MESSAGE_ID',
+        )
+
     @staticmethod
     def _parse_message(message: dict[str, Any]) -> BackendEmail:
         address = message.get('sender', {}).get('emailAddress', {})
@@ -217,6 +377,7 @@ class GraphReadonlyBackend:
 @dataclass(frozen=True)
 class EdgeFallbackBackend:
     summarize: Callable[[], dict[str, Any]]
+    search_messages: Callable[[MailSearchQuery], MailSearchResult] | None = None
 
     def summarize_today(self, max_emails: int) -> MailBackendResult:
         result = self.summarize()
@@ -228,8 +389,18 @@ class EdgeFallbackBackend:
         )
 
 
+    def search(self, query: MailSearchQuery) -> MailSearchResult:
+        if self.search_messages is None:
+            return MailSearchResult(
+                BackendStatus.FALLBACK_REQUIRED,
+                'Edge READ-only 搜索实现不可用',
+            )
+        return self.search_messages(query)
+
+
 __all__ = [
-    'BackendEmail', 'BackendStatus', 'EdgeFallbackBackend',
+    'BackendEmail', 'BackendStatus', 'EdgeFallbackBackend', 'MailSearchEmail',
+    'MailSearchQuery', 'MailSearchResult',
     'GraphBackendConfig', 'GraphReadonlyBackend', 'MailBackend',
     'MailBackendResult', 'WindowsCredentialManagerTokenStore',
 ]

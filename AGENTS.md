@@ -9,7 +9,7 @@ These instructions apply to the whole repository. This project is a Windows-only
 - Keep `windows_gui_mcp.py` as the backward-compatible stdio entry point.
 - Preserve the shared server name `windows-gui` and the exported `mcp` object.
 - Do not rename, remove, or change the signature or return shape of an existing `@mcp.tool()` without explicit user approval.
-- Import every tool module from the entry point so all 25 tools register exactly once.
+- Import every tool module from the entry point so all 26 tools register exactly once.
 - Keep PyAutoGUI `FAILSAFE` enabled.
 - Preserve the native `SendInput` Unicode path for non-ASCII text and the existing PyAutoGUI path for ASCII text.
 - Avoid unrelated formatting or refactors while fixing a targeted issue.
@@ -22,6 +22,7 @@ These instructions apply to the whole repository. This project is a Windows-only
 - Put UI Automation, menus, and save-dialog behavior in `windows_gui/uia.py`.
 - Put fixed mailbox identities and Edge Profile launch behavior in `windows_gui/mailboxes.py`.
 - Put read-only mailbox page verification, list parsing, summaries, and classification in `windows_gui/mail_summary.py`.
+- Put backend-neutral mailbox search dispatch and safe result references in `windows_gui/mail_search.py`.
 - Keep the FastMCP instance and process-wide settings in `windows_gui/server.py`.
 - Re-export public tools from `windows_gui_mcp.py` for import compatibility.
 
@@ -73,7 +74,7 @@ Run the complete side-effect-free test suite:
 python -m unittest discover -s tests -t . -v
 ```
 
-Confirm that FastMCP registers exactly the documented 25 tools. The unit tests must fail if a tool is missing or unexpectedly added.
+Confirm that FastMCP registers exactly the documented 26 tools. The unit tests must fail if a tool is missing or unexpectedly added.
 
 When the task authorizes real desktop testing, run:
 

@@ -11,6 +11,7 @@
 - `uia.py`：UI Automation 控件、菜单和保存对话框操作。
 - `mail_backends.py`：统一邮箱后端抽象、Graph READ-only adapter 和 Edge fallback adapter。
 - `mailboxes.py`：固定邮箱身份、权限边界和 Edge Profile 启动逻辑。
+- `mail_search.py`：统一 READ-only 邮件搜索、后端分发和安全结果引用。
 - `mail_summary.py`：邮箱身份和页面验证、只读列表解析、今日摘要及重要事项分类。
 
 ## 环境要求
@@ -61,7 +62,7 @@ Smoke test 只使用唯一命名的专用记事本文件，测试结果写入 `t
 
 ## MCP 工具
 
-当前服务器注册 25 个工具。
+当前服务器注册 26 个工具；原有 25 个工具的名称、参数和返回结构保持不变。
 
 | 工具 | 用途 |
 |---|---|
@@ -90,6 +91,7 @@ Smoke test 只使用唯一命名的专用记事本文件，测试结果写入 `t
 | `click_save_button` | 激活 Windows 保存对话框中的保存按钮。 |
 | `open_all_mailboxes` | 使用三个固定 Edge Profile 分别打开独立邮箱窗口，并返回每个邮箱的打开状态；不读取或修改邮件。 |
 | `summarize_all_mailboxes_today` | 硕士邮箱优先使用 Graph READ-only 元数据，Graph 不可用时回退现有 Edge 只读摘要；本科网易和 QQ 邮箱继续使用 Edge；外部返回结构保持兼容。 |
+| `search_mailboxes` | 按邮箱、关键词、发件人、ISO 8601 起止时间和最大数量执行 READ-only 搜索；不打开正文，不改变邮件状态。 |
 
 ## 固定邮箱身份
 
@@ -102,6 +104,15 @@ Smoke test 只使用唯一命名的专用记事本文件，测试结果写入 `t
 | `qq_mail` | QQ邮箱 | `Profile 3` | QQ Mail | `https://mail.qq.com/` | READ |
 
 所有发送动作都必须先生成草稿并等待用户确认。QQ 邮箱默认只读。删除、移动、标记或归档邮件前必须获得用户确认。任何邮箱操作都必须先核对邮箱身份与指定 Profile；无法确认时立即停止，禁止猜测。自动输入密码以及记录登录凭证、Cookie、token 或会话链接均被禁止。
+
+
+### READ-only 邮件搜索
+
+- `search_mailboxes(mailbox_id=None, keyword=None, sender=None, start_time=None, end_time=None, max_results=10)` 是新增的第 26 个工具；原 25 个 MCP 工具保持不变。
+- 结果只包含 `mailbox_id`、发件人、主题、接收时间、`message_reference`、`reference_kind` 和搜索范围；不返回正文。
+- 硕士 Outlook 在 Graph READY 时使用 Graph `$filter` 服务端搜索，只选择 `id`、发件人、主题和接收时间；Graph 不可用时回退 Edge。
+- QQ 与本科网易通过 Edge 只读解析当前已验证页面的可见邮件列表；该 fallback 不输入搜索框、不点击邮件、不滚动页面，因此只能覆盖当前可见列表，不代表全邮箱完整索引。
+- Edge 的 `message_reference` 是由邮箱 ID 和列表元数据生成的安全 hash，不包含 HWND、URL、sid 或会话材料；Graph 返回 Graph message id。
 
 ### Outlook Graph READ-only 后端
 
