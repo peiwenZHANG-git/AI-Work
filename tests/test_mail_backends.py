@@ -1,6 +1,7 @@
 """Side-effect-free tests for mailbox backend adapters."""
 
 import unittest
+import requests
 import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -106,6 +107,14 @@ class GraphReadonlyBackendTests(unittest.TestCase):
         result = backend.summarize_today(10)
         self.assertIs(BackendStatus.REQUEST_FAILED, result.status)
 
+    def test_graph_transport_exception_is_request_failed(self):
+        backend = _configured_graph_backend(
+            SimpleNamespace(get_access_token=lambda: uuid.uuid4().hex),
+            MagicMock(side_effect=requests.ConnectionError),
+        )
+        result = backend.summarize_today(10)
+        self.assertIs(BackendStatus.REQUEST_FAILED, result.status)
+
     def test_graph_reads_only_minimum_scope(self):
         self.assertEqual(('Mail.Read',), GRAPH_SCOPES)
 
@@ -143,28 +152,31 @@ class BackendDispatchTests(unittest.TestCase):
             list(result['emails'][0]),
         )
 
-    def test_graph_unauthenticated_maps_to_existing_not_ready_status(self):
-        backend = _StaticBackend(MailBackendResult(
-            BackendStatus.NOT_AUTHENTICATED, 'Graph login required',
-        ))
-        with patch(
-            'windows_gui.mail_summary._backend_for_identity', return_value=backend
-        ):
-            result = _summarize_mailbox(MAILBOX_IDENTITIES['master_mail'])
-        self.assertEqual('NOT_READY', result['status'])
-        self.assertEqual(0, result['today_count'])
-        self.assertEqual([], result['emails'])
 
-    def test_graph_request_failure_maps_to_existing_error_status(self):
-        backend = _StaticBackend(MailBackendResult(
-            BackendStatus.REQUEST_FAILED, 'Graph request failed',
-        ))
-        with patch(
-            'windows_gui.mail_summary._backend_for_identity', return_value=backend
+    def _assert_graph_falls_back(self, status):
+        backend = _StaticBackend(MailBackendResult(status, 'Graph unavailable'))
+        expected = {'status': 'READY', 'source': 'edge'}
+        with (
+            patch(
+                'windows_gui.mail_summary._backend_for_identity', return_value=backend
+            ),
+            patch(
+                'windows_gui.mail_summary._summarize_with_edge',
+                return_value=expected,
+            ) as edge,
         ):
             result = _summarize_mailbox(MAILBOX_IDENTITIES['master_mail'])
-        self.assertEqual('ERROR', result['status'])
-        self.assertEqual([], result['emails'])
+        self.assertIs(expected, result)
+        edge.assert_called_once()
+
+    def test_graph_unconfigured_or_unauthenticated_falls_back_to_edge(self):
+        self._assert_graph_falls_back(BackendStatus.NOT_AUTHENTICATED)
+
+    def test_graph_expired_token_falls_back_to_edge(self):
+        self._assert_graph_falls_back(BackendStatus.TOKEN_EXPIRED)
+
+    def test_graph_request_failure_falls_back_to_edge(self):
+        self._assert_graph_falls_back(BackendStatus.REQUEST_FAILED)
 
     def test_qq_and_bachelor_use_existing_edge_fallback(self):
         expected = {'status': 'READY'}

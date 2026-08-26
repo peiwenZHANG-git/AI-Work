@@ -89,7 +89,7 @@ Smoke test 只使用唯一命名的专用记事本文件，测试结果写入 `t
 | `set_save_dialog_filename` | 在 Windows 保存对话框中设置文件名。 |
 | `click_save_button` | 激活 Windows 保存对话框中的保存按钮。 |
 | `open_all_mailboxes` | 使用三个固定 Edge Profile 分别打开独立邮箱窗口，并返回每个邮箱的打开状态；不读取或修改邮件。 |
-| `summarize_all_mailboxes_today` | 硕士邮箱优先使用 Graph READ-only 元数据；本科网易和 QQ 邮箱暂时使用 Edge 只读摘要；外部返回结构保持兼容。 |
+| `summarize_all_mailboxes_today` | 硕士邮箱优先使用 Graph READ-only 元数据，Graph 不可用时回退现有 Edge 只读摘要；本科网易和 QQ 邮箱继续使用 Edge；外部返回结构保持兼容。 |
 
 ## 固定邮箱身份
 
@@ -109,13 +109,13 @@ Smoke test 只使用唯一命名的专用记事本文件，测试结果写入 `t
 - Graph 请求只读取 `sender`、`subject`、`receivedDateTime` 和最多 10 条列表元数据，不读取正文，不改变已读状态。
 - 非秘密配置来自环境变量：`AI_WORK_OUTLOOK_TENANT_ID`、`AI_WORK_OUTLOOK_CLIENT_ID`、`AI_WORK_OUTLOOK_MAILBOX`。
 - 访问令牌只允许放在 Windows Credential Manager / 系统密钥库：service 为 `AI-Work/windows-gui/mailboxes`，username 为 `master_mail_graph_access_token`。源码、日志、测试 fixture 和 Git 中不得出现 token。
-- 当前未内置交互式 OAuth 登录或 refresh 流程。缺少 Azure/OAuth 配置或有效令牌时返回兼容的 `NOT_READY`；token 失效或 Graph 请求失败时不会默认打开 Edge。
+- 当前未内置交互式 OAuth 登录或 refresh 流程。Graph 未配置、未认证、token 失效或请求失败时，明确回退到现有 Edge READ-only 摘要路径。
 
-`open_all_mailboxes()` 和 Edge fallback 摘要路径共享内部 `get_or_open_mailbox_window()` 管理层；Outlook Graph 摘要路径不会调用该 Edge 窗口管理层。每个邮箱在 Agent 中最多绑定一个 Edge HWND：有效运行时绑定返回 `REUSED_EXISTING_WINDOW`；Server 重启后优先通过窗口 PID 和进程命令行中的 `--profile-directory` 找回窗口。Edge 复用同一浏览器进程、主命令行不含 Profile 参数时，使用 Edge 浏览器标题中精确的 Profile 显示名称后缀恢复绑定，不从页面 UIA 内容猜测。恢复返回 `RESTORED_WINDOW_BINDING`；只有未找到对应 Profile 窗口时才返回 `CREATED_NEW_WINDOW`。该逻辑不会关闭用户原本打开的重复窗口。
+`open_all_mailboxes()` 和 Edge 摘要路径共享内部 `get_or_open_mailbox_window()` 管理层；Outlook Graph 可用时不会调用该 Edge 窗口管理层，Graph 不可用时按上述规则回退。每个邮箱在 Agent 中最多绑定一个 Edge HWND：有效运行时绑定返回 `REUSED_EXISTING_WINDOW`；Server 重启后优先通过窗口 PID 和进程命令行中的 `--profile-directory` 找回窗口。Edge 复用同一浏览器进程、主命令行不含 Profile 参数时，使用 Edge 浏览器标题中精确的 Profile 显示名称后缀恢复绑定，不从页面 UIA 内容猜测。恢复返回 `RESTORED_WINDOW_BINDING`；只有未找到对应 Profile 窗口时才返回 `CREATED_NEW_WINDOW`。该逻辑不会关闭用户原本打开的重复窗口。
 
 本科邮箱没有稳定 URL。窗口管理层会优先在 Profile 1 的现有窗口中选择主机名为 `mailh.qiye.163.com` 的已登录页面；否则只复用或恢复 Profile 1 状态并返回 `PAGE_NOT_READY`，提示用户“请在本科邮箱 Profile 中人工打开一次本科邮箱页面”。完整网易 URL、sid 和其他会话材料不会被保存、记录或复用。
 
-`summarize_all_mailboxes_today()` 严格按本科、硕士、QQ 邮箱顺序执行。硕士 Outlook 走 Graph READ-only；本科网易和 QQ 走 Edge fallback。Edge 路径的 Profile 身份来自本进程使用 `--profile-directory` 启动窗口时建立的内存绑定，不再由 UIA 页面内容反推。UIA 只读取地址栏并立即提取主机名，用于精确验证 `mailh.qiye.163.com`、`outlook.office.com`（以及重定向域名 `outlook.cloud.microsoft`）或 `mail.qq.com`；完整 URL 不会被保存、记录或返回。
+`summarize_all_mailboxes_today()` 严格按本科、硕士、QQ 邮箱顺序执行。硕士 Outlook 优先走 Graph READ-only，Graph 不可用时回退 Edge；本科网易和 QQ 走 Edge。Edge 路径的 Profile 身份来自本进程使用 `--profile-directory` 启动窗口时建立的内存绑定，不再由 UIA 页面内容反推。UIA 只读取地址栏并立即提取主机名，用于精确验证 `mailh.qiye.163.com`、`outlook.office.com`（以及重定向域名 `outlook.cloud.microsoft`）或 `mail.qq.com`；完整 URL 不会被保存、记录或返回。
 
 Edge fallback 摘要使用有 5 秒边界的只读 UI Automation 查询，不聚焦或点击邮件。当前实现只从可见邮件列表中识别发件人、主题和时间，最多 10 封，并据此生成简短摘要；不会为取得正文而打开邮件，因此返回的 `read_state_change` 为 `NONE`。页面已就绪但当前 UIA 列表没有可识别的今日邮件时，数量为 0。重要事项只做分类和摘要，不执行写操作。
 

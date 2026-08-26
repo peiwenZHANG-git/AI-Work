@@ -285,6 +285,12 @@ _BACKEND_STATUS_MAP = {
     BackendStatus.FALLBACK_REQUIRED: 'NOT_READY',
 }
 
+_GRAPH_FALLBACK_STATUSES = {
+    BackendStatus.NOT_AUTHENTICATED,
+    BackendStatus.TOKEN_EXPIRED,
+    BackendStatus.REQUEST_FAILED,
+}
+
 
 def _backend_for_identity(identity: MailboxIdentity) -> Any:
     if identity.mailbox_id == 'master_mail':
@@ -305,6 +311,21 @@ def _summarize_mailbox(identity: MailboxIdentity) -> dict[str, Any]:
         result = _backend_for_identity(identity).summarize_today(_MAX_EMAILS)
         if result.legacy_result is not None:
             return result.legacy_result
+        if (
+            identity.mailbox_id == 'master_mail'
+            and result.status in _GRAPH_FALLBACK_STATUSES
+        ):
+            LOGGER.warning(
+                '%s: Graph unavailable (%s); using read-only Edge fallback',
+                identity.mailbox_id,
+                result.status.value,
+            )
+            fallback = EdgeFallbackBackend(
+                summarize=lambda: _summarize_with_edge(identity)
+            ).summarize_today(_MAX_EMAILS)
+            if fallback.legacy_result is None:
+                raise RuntimeError('Edge fallback returned no compatible result')
+            return fallback.legacy_result
 
         group = _empty_group(
             identity,

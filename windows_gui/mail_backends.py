@@ -130,11 +130,18 @@ class GraphReadonlyBackend:
             '$orderby': 'receivedDateTime desc',
         })
         request_url = f"{self.config.endpoint}?{params}"
-        response = self.transport(
-            request_url,
-            {'Authorization': f'Bearer {token}'},
-            10.0,
-        )
+        try:
+            response = self.transport(
+                request_url,
+                {'Authorization': f'Bearer {token}'},
+                10.0,
+            )
+        except requests.RequestException as error:
+            del token
+            return MailBackendResult(
+                BackendStatus.REQUEST_FAILED,
+                f'Graph request failed: {type(error).__name__}',
+            )
         del token
         status_code = getattr(response, 'status_code', None)
         if status_code == 401:
