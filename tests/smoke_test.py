@@ -182,7 +182,9 @@ def launch_safe_blank_notepad() -> int:
     ]
     existing_titles = [title for title in previous_windows.values() if title]
     if smoke_titles or existing_titles:
-        focus_window_and_hotkey((smoke_titles or existing_titles)[0], "ctrl+n")
+        focus_window_and_hotkey(
+            (smoke_titles or existing_titles)[0], "ctrl+shift+n"
+        )
     else:
         subprocess.Popen(["notepad.exe"])
     return wait_for_blank_notepad_transition(previous_windows)

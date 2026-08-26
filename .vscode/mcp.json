@@ -1,0 +1,12 @@
+{
+	"servers": {
+		"windows-gui": {
+			"type": "stdio",
+			"command": "python",
+			"args": [
+				"D:\\21781\\Documents\\Codex\\AI-Work\\windows_gui_mcp.py"
+			]
+		}
+	},
+	"inputs": []
+}
