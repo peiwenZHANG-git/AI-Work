@@ -47,6 +47,10 @@ These instructions apply to the whole repository. This project is a Windows-only
 - Reading may include sender, subject, time, and body only when the user requests it.
 - Require explicit user confirmation before deleting, moving, marking, or archiving mail.
 - `open_all_mailboxes` is launch-only: it must use `--new-window` and the configured `--profile-directory`, and must not inspect or modify mailbox content.
+- Route all mailbox window acquisition through `get_or_open_mailbox_window`; do not duplicate Edge launch logic in tools.
+- Reuse a valid runtime HWND first. After process restart, prefer an exact `--profile-directory` found through the Edge window PID and process command line. Because Edge may share one browser PID whose command line omits Profile, an exact configured Profile display-name suffix in the normalized Edge window title is the allowed fallback. Never use page UIA text to infer Profile or log the complete command line.
+- Use one per-mailbox lock and launch cooldown so concurrent or repeated calls cannot create duplicate Agent-managed windows.
+- Existing duplicate user windows may be inspected for Profile and hostname selection but must not be closed. Prefer the matching service-domain window and bind only one HWND per mailbox.
 - Do not invent a mailbox URL. When no stable URL is configured, open only the confirmed Profile and return a clear incomplete-navigation status.
 - `summarize_all_mailboxes_today` must process identities in configured order and return `IDENTITY_MISMATCH` before reading mail when the bound Profile and expected service domain disagree.
 - Mail summary UIA traversal must remain bounded and read-only. Do not focus, invoke, select, or click a mail row merely to obtain a summary.

@@ -391,6 +391,20 @@ def main() -> int:
         )
         if mailbox_launches is not None:
             for identity in MAILBOX_IDENTITIES.values():
+                launch = next(
+                    item for item in mailbox_launches
+                    if item["mailbox_id"] == identity.mailbox_id
+                )
+                if launch["status"] == "failed":
+                    fail_result(
+                        f"mailbox window management {identity.mailbox_id}",
+                        launch.get("error", "unknown launch failure"),
+                    )
+                else:
+                    pass_result(
+                        f"mailbox window management {identity.mailbox_id}",
+                        launch["status"],
+                    )
                 context = get_runtime_mailbox_context(identity.mailbox_id)
                 label = f"{identity.mailbox_id} {identity.profile_directory}"
                 if (
@@ -423,11 +437,18 @@ def main() -> int:
                 elif state in {"ERROR", "IDENTITY_MISMATCH", "UNKNOWN_WINDOW"}:
                     fail_result(
                         f"mailbox recognition {label}",
-                        mailbox.get("error", state),
+                        mailbox.get("error") or (
+                            f"{state}; expected_domain="
+                            f"{mailbox.get('expected_domain')}; observed_domain="
+                            f"{mailbox.get('observed_domain') or 'none'}"
+                        ),
                     )
                 else:
                     manual_check(
-                        f"{label}: state={state}. Open the correct mailbox page "
+                        f"{label}: state={state}; expected_domain="
+                        f"{mailbox.get('expected_domain')}; observed_domain="
+                        f"{mailbox.get('observed_domain') or 'none'}. "
+                        "Open the correct mailbox page "
                         "manually and confirm the Edge Profile identity."
                     )
             manual_check(

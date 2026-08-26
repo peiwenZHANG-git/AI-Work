@@ -64,6 +64,14 @@ def _focused_window(
     window_title: str, delay: float = 0.3
 ) -> Iterator[tuple[int, str]]:
     hwnd, actual_title = _find_window(window_title)
+    _focus_window_handle(hwnd, delay)
+    yield hwnd, actual_title
+
+
+def _focus_window_handle(hwnd: int, delay: float = 0.3) -> str:
+    """Focus one already-identified HWND without title re-matching."""
+    if not win32gui.IsWindow(hwnd) or not win32gui.IsWindowVisible(hwnd):
+        raise ValueError(f"Window handle is not visible: {hwnd}")
     user32 = ctypes.windll.user32
     with _attached_input_threads(hwnd):
         if win32gui.IsIconic(hwnd):
@@ -72,7 +80,7 @@ def _focused_window(
         user32.BringWindowToTop(hwnd)
         user32.SetForegroundWindow(hwnd)
         time.sleep(delay)
-        yield hwnd, actual_title
+    return win32gui.GetWindowText(hwnd)
 
 
 @mcp.tool()

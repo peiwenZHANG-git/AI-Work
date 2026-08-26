@@ -15,6 +15,7 @@ def _install_dependency_stubs() -> None:
         import win32api  # noqa: F401
         import win32con  # noqa: F401
         import win32gui  # noqa: F401
+        import win32process  # noqa: F401
         import pywinauto  # noqa: F401
         return
     except ImportError:
@@ -75,10 +76,14 @@ def _install_dependency_stubs() -> None:
     win32gui = types.ModuleType("win32gui")
     for name in (
         "BringWindowToTop", "EnumWindows", "GetWindowRect", "GetWindowText",
-        "IsIconic", "IsWindowVisible", "SetForegroundWindow", "ShowWindow",
+        "IsIconic", "IsWindow", "IsWindowVisible", "SetForegroundWindow",
+        "ShowWindow",
     ):
         setattr(win32gui, name, MagicMock())
     sys.modules["win32gui"] = win32gui
+    win32process = types.ModuleType("win32process")
+    win32process.GetWindowThreadProcessId = MagicMock(return_value=(1, 1))
+    sys.modules["win32process"] = win32process
     pywinauto = types.ModuleType("pywinauto")
     pywinauto.Desktop = MagicMock()
     sys.modules["pywinauto"] = pywinauto

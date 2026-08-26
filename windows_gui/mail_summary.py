@@ -7,16 +7,15 @@ import re
 import time
 from datetime import date
 from typing import Any
-from urllib.parse import urlsplit
 
 from pywinauto import Desktop
 
 from .mailboxes import (
     MAILBOX_IDENTITIES,
     MailboxIdentity,
-    _find_edge_executable,
-    _open_mailbox_window,
+    _read_edge_service_domain,
     confirm_mailbox_identity,
+    get_or_open_mailbox_window,
     get_runtime_mailbox_context,
 )
 from .server import mcp
@@ -62,38 +61,17 @@ def _empty_group(
 
 def _snapshot_edge_window(hwnd: int) -> dict[str, Any]:
     """Collect bounded UIA metadata and retain only the address hostname."""
+    service_domain = _read_edge_service_domain(hwnd)
+
     def collect() -> dict[str, Any]:
         window = Desktop(backend="uia").window(handle=hwnd).wrapper_object()
         controls = []
-        service_domain = None
         for control in [window, *window.descendants()]:
             try:
                 info = control.element_info
                 name = (info.name or "").strip()
                 control_type = info.control_type or ""
                 automation_id = info.automation_id or ""
-                if (
-                    service_domain is None
-                    and control_type.casefold() == "edit"
-                    and (
-                        automation_id.casefold() in {"view_1021", "view_1022"}
-                        or any(
-                            token in name.casefold()
-                            for token in (
-                                "address and search", "地址和搜索栏",
-                                "adresse et recherche", "address bar",
-                            )
-                        )
-                    )
-                ):
-                    # The complete value can contain sid or another session
-                    # credential. Extract only the hostname and discard it.
-                    address = control.get_value().strip()
-                    parsed = urlsplit(
-                        address if "://" in address else f"https://{address}"
-                    )
-                    service_domain = (parsed.hostname or "").casefold() or None
-                    del address
                 if _is_sensitive_browser_control(
                     name, control_type, automation_id
                 ):
@@ -139,7 +117,13 @@ def _find_verified_snapshot(
     actual_domain = snapshot.get("service_domain")
     if actual_domain is None:
         return snapshot, "PAGE_NOT_READY"
-    if not _service_domain_matches(identity.service_domain, actual_domain):
+    accepted_domains = (
+        identity.service_domain, *identity.service_domain_aliases
+    )
+    if not any(
+        _service_domain_matches(expected, actual_domain)
+        for expected in accepted_domains
+    ):
         return snapshot, "IDENTITY_MISMATCH"
     return snapshot, "READY"
 
@@ -158,7 +142,7 @@ def _ensure_mailbox_page(
         identity.mailbox_id,
         identity.profile_directory,
     )
-    _open_mailbox_window(identity, _find_edge_executable())
+    get_or_open_mailbox_window(identity.mailbox_id)
     deadline = time.monotonic() + timeout
     last_state = state
     while time.monotonic() < deadline:
@@ -324,11 +308,17 @@ def inspect_all_mailbox_pages() -> list[dict[str, str]]:
     results = []
     for identity in MAILBOX_IDENTITIES.values():
         try:
-            _, state = _find_verified_snapshot(identity)
+            snapshot, state = _find_verified_snapshot(identity)
             results.append({
                 "mailbox_id": identity.mailbox_id,
                 "profile_directory": identity.profile_directory,
                 "state": state,
+                "expected_domain": " | ".join((
+                    identity.service_domain, *identity.service_domain_aliases
+                )),
+                "observed_domain": (
+                    snapshot.get("service_domain") if snapshot else None
+                ),
             })
         except Exception as error:
             results.append({

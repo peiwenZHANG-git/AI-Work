@@ -94,6 +94,36 @@ class MailSummaryTests(unittest.TestCase):
 
     @patch("windows_gui.mail_summary._snapshot_edge_window")
     @patch("windows_gui.mail_summary.get_runtime_mailbox_context")
+    def test_bachelor_existing_netease_page_is_ready(
+        self, get_context, snapshot
+    ):
+        get_context.return_value = SimpleNamespace(
+            profile_directory="Profile 1", hwnd=81
+        )
+        snapshot.return_value = {
+            "service_domain": "mailh.qiye.163.com", "controls": []
+        }
+        _, state = _find_verified_snapshot(
+            MAILBOX_IDENTITIES["bachelor_mail"]
+        )
+        self.assertEqual("READY", state)
+
+    @patch("windows_gui.mail_summary._snapshot_edge_window")
+    @patch("windows_gui.mail_summary.get_runtime_mailbox_context")
+    def test_bachelor_new_tab_is_page_not_ready(
+        self, get_context, snapshot
+    ):
+        get_context.return_value = SimpleNamespace(
+            profile_directory="Profile 1", hwnd=82
+        )
+        snapshot.return_value = {"service_domain": None, "controls": []}
+        _, state = _find_verified_snapshot(
+            MAILBOX_IDENTITIES["bachelor_mail"]
+        )
+        self.assertEqual("PAGE_NOT_READY", state)
+
+    @patch("windows_gui.mail_summary._snapshot_edge_window")
+    @patch("windows_gui.mail_summary.get_runtime_mailbox_context")
     def test_identity_mismatch_stops_before_mail_parsing(
         self, get_context, snapshot
     ):
@@ -116,6 +146,20 @@ class MailSummaryTests(unittest.TestCase):
             result = _summarize_mailbox(MAILBOX_IDENTITIES["master_mail"])
         self.assertEqual("IDENTITY_MISMATCH", result["status"])
         extract.assert_not_called()
+
+    @patch("windows_gui.mail_summary._snapshot_edge_window")
+    @patch("windows_gui.mail_summary.get_runtime_mailbox_context")
+    def test_outlook_current_redirect_domain_is_ready(
+        self, get_context, snapshot
+    ):
+        get_context.return_value = SimpleNamespace(
+            profile_directory="Profile 2", hwnd=90
+        )
+        snapshot.return_value = {
+            "service_domain": "outlook.cloud.microsoft", "controls": []
+        }
+        _, state = _find_verified_snapshot(MAILBOX_IDENTITIES["master_mail"])
+        self.assertEqual("READY", state)
 
     @patch("windows_gui.mail_summary.get_runtime_mailbox_context", return_value=None)
     def test_unknown_window_stops(self, get_context):
