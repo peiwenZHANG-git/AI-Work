@@ -33,7 +33,14 @@ try:
     import win32gui
     from pywinauto import Desktop
 
+    from windows_gui.keyboard import type_text
     from windows_gui.mouse import SCREENSHOT_PATH, screenshot
+    from windows_gui.mailboxes import (
+        MAILBOX_IDENTITIES,
+        get_runtime_mailbox_context,
+        open_all_mailboxes,
+    )
+    from windows_gui.mail_summary import inspect_all_mailbox_pages
     from windows_gui.uia import (
         click_control,
         click_menu_item,
@@ -62,6 +69,7 @@ EXPECTED_TOOLS = {
     "get_mouse_position", "hotkey", "list_controls", "list_windows",
     "move_mouse", "press_key", "right_click", "screenshot", "scroll",
     "set_save_dialog_filename", "type_text",
+    "open_all_mailboxes", "summarize_all_mailboxes_today",
 }
 
 T = TypeVar("T")
@@ -153,13 +161,15 @@ def _is_safe_blank_notepad_title(title: str) -> bool:
 
 
 def wait_for_blank_notepad_transition(
-    previous_windows: dict[int, str], timeout: float = 15.0
+    previous_windows: dict[int, str], timeout: float = 15.0,
+    expected_hwnd: int | None = None,
 ) -> int:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         for hwnd, title in visible_notepad_windows().items():
             changed = hwnd not in previous_windows or previous_windows[hwnd] != title
-            if changed and _is_safe_blank_notepad_title(title):
+            expected_new_tab = expected_hwnd is not None and hwnd == expected_hwnd
+            if (changed or expected_new_tab) and _is_safe_blank_notepad_title(title):
                 return hwnd
         time.sleep(0.25)
     raise TimeoutError(
@@ -182,8 +192,14 @@ def launch_safe_blank_notepad() -> int:
     ]
     existing_titles = [title for title in previous_windows.values() if title]
     if smoke_titles or existing_titles:
-        focus_window_and_hotkey(
-            (smoke_titles or existing_titles)[0], "ctrl+shift+n"
+        target_title = (smoke_titles or existing_titles)[0]
+        target_hwnd = next(
+            hwnd for hwnd, title in previous_windows.items()
+            if title == target_title
+        )
+        focus_window_and_hotkey(target_title, "ctrl+shift+n")
+        return wait_for_blank_notepad_transition(
+            previous_windows, expected_hwnd=target_hwnd
         )
     else:
         subprocess.Popen(["notepad.exe"])
@@ -367,6 +383,58 @@ def main() -> int:
 
     step("FastMCP tool registration", check_registration)
 
+    mailbox_pages = None
+    if "--mailbox-readonly" in sys.argv:
+        mailbox_launches = step(
+            "mailbox explicit Edge Profile launches",
+            open_all_mailboxes,
+        )
+        if mailbox_launches is not None:
+            for identity in MAILBOX_IDENTITIES.values():
+                context = get_runtime_mailbox_context(identity.mailbox_id)
+                label = f"{identity.mailbox_id} {identity.profile_directory}"
+                if (
+                    context is not None
+                    and context.profile_directory == identity.profile_directory
+                    and context.hwnd is not None
+                ):
+                    pass_result(
+                        f"runtime Profile identity {label}",
+                        f"bound to Edge HWND {context.hwnd}",
+                    )
+                else:
+                    fail_result(
+                        f"runtime Profile identity {label}",
+                        "launch did not produce a uniquely bound Edge window",
+                    )
+
+        mailbox_pages = step(
+            "mailbox Profile and page recognition (read-only)",
+            inspect_all_mailbox_pages,
+        )
+        if mailbox_pages is not None:
+            for mailbox in mailbox_pages:
+                label = (
+                    f"{mailbox['mailbox_id']} {mailbox['profile_directory']}"
+                )
+                state = mailbox["state"]
+                if state == "READY":
+                    pass_result(f"mailbox recognition {label}", state)
+                elif state in {"ERROR", "IDENTITY_MISMATCH", "UNKNOWN_WINDOW"}:
+                    fail_result(
+                        f"mailbox recognition {label}",
+                        mailbox.get("error", state),
+                    )
+                else:
+                    manual_check(
+                        f"{label}: state={state}. Open the correct mailbox page "
+                        "manually and confirm the Edge Profile identity."
+                    )
+            manual_check(
+                "Mailbox smoke coverage checks only Profile/page recognition; "
+                "it does not open messages or validate message summaries."
+            )
+
     artifact_dir = PROJECT_ROOT / "tests" / "smoke_artifacts"
     artifact_dir.mkdir(parents=True, exist_ok=True)
     fixture = artifact_dir / f"notepad_smoke_{int(time.time())}.txt"
@@ -415,8 +483,18 @@ def main() -> int:
     else:
         fail_result("click_control on Notepad editor", "prerequisite list_controls failed")
 
-    marker = f" [MCP_SMOKE_{int(time.time())}] "
-    smoke_text = marker + ("scrollable smoke text " * 200)
+    marker = f"[MCP_SMOKE_{int(time.time())}]"
+    unicode_lines = (
+        "English GUI smoke test\n"
+        "你好，Codex GUI 测试\n"
+        "Bonjour, ça va ?\n"
+        "🙂\n"
+    )
+    step(
+        "type_text English, Chinese, French, and emoji",
+        lambda: type_text(unicode_lines, interval=0.01),
+    )
+    smoke_text = marker + " " + ("scrollable smoke text " * 200)
     typed = step(
         "focus_window_and_type",
         lambda: focus_window_and_type(window_title, smoke_text, interval=0.001),
@@ -428,7 +506,14 @@ def main() -> int:
         else:
             window_title = current_title
             pass_result("refresh Notepad title after typing", window_title)
-    manual_check(f"Confirm Notepad visibly contains the unsaved marker {marker!r}.")
+    unicode_evidence = step(
+        "screenshot Unicode text",
+        lambda: capture_screenshot_evidence(artifact_dir),
+    )
+    if unicode_evidence:
+        manual_check(
+            f"Open {unicode_evidence} and confirm English, Chinese, French, and emoji text."
+        )
 
     step(
         "focus_window_and_press",
@@ -474,6 +559,39 @@ def main() -> int:
             saved = step("verify dedicated saved file", lambda: wait_for_file(save_target))
             if saved:
                 window_title = save_target.name
+                def verify_saved_unicode() -> str:
+                    content = save_target.read_text(encoding="utf-8-sig")
+                    expected = (
+                        "English GUI smoke test",
+                        "你好，Codex GUI 测试",
+                        "Bonjour, ça va ?",
+                        "🙂",
+                    )
+                    missing = [value for value in expected if value not in content]
+                    if missing:
+                        raise AssertionError(f"saved Unicode text missing: {missing!r}")
+                    return "saved file contains all Unicode fixtures"
+
+                step("verify saved Unicode content", verify_saved_unicode)
+                step(
+                    "reopen dedicated saved fixture",
+                    lambda: subprocess.Popen(["notepad.exe", str(save_target)]).pid,
+                )
+                reopened_title = step(
+                    "find reopened dedicated fixture",
+                    lambda: wait_for_notepad_title(save_target.name),
+                )
+                if reopened_title:
+                    window_title = reopened_title
+                    step("focus reopened dedicated fixture", lambda: focus_window(window_title))
+                    reopened_evidence = step(
+                        "screenshot reopened Unicode fixture",
+                        lambda: capture_screenshot_evidence(artifact_dir),
+                    )
+                    if reopened_evidence:
+                        manual_check(
+                            f"Open {reopened_evidence} and confirm the saved Unicode fixture."
+                        )
                 manual_check(
                     f"Confirm Notepad now shows the dedicated saved file {save_target.name!r}."
                 )

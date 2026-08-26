@@ -4,3 +4,6 @@ __pycache__/
 # Runtime screenshots and safe GUI smoke-test artifacts
 screen.png
 tests/smoke_artifacts/
+
+# Local MCP configuration backups
+.vscode/*.disabled-backup

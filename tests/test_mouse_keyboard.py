@@ -1,5 +1,6 @@
 """Side-effect-free tests for mouse, screenshot, and keyboard tools."""
 
+import ctypes
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -66,6 +67,10 @@ class MouseToolTests(unittest.TestCase):
 
 
 class KeyboardToolTests(unittest.TestCase):
+    def test_native_input_structure_has_windows_union_size(self):
+        expected = 40 if ctypes.sizeof(ctypes.c_void_p) == 8 else 28
+        self.assertEqual(expected, ctypes.sizeof(keyboard._INPUT))
+
     def test_type_text_and_hotkey(self):
         with (
             patch.object(keyboard.pyautogui, "write") as write,
@@ -79,6 +84,45 @@ class KeyboardToolTests(unittest.TestCase):
             keyboard.type_text("x", 1.1)
         with self.assertRaises(ValueError):
             keyboard.hotkey([])
+
+    def test_type_text_supports_unicode_without_clipboard(self):
+        samples = (
+            "你好，Codex",
+            "English 与中文 mixed",
+            "é à ç",
+            "日本語 한국어",
+            "🙂",
+            "第一行\nDeuxième ligne 🙂",
+        )
+        for sample in samples:
+            with self.subTest(sample=sample):
+                with (
+                    patch.object(keyboard.pyautogui, "write") as write,
+                    patch.object(keyboard, "_send_unicode_code_unit") as send_unicode,
+                    patch.object(keyboard, "_send_virtual_key") as send_virtual,
+                    patch.object(keyboard.time, "sleep"),
+                ):
+                    self.assertEqual(
+                        f"Typed {len(sample)} characters",
+                        keyboard.type_text(sample, 0.01),
+                    )
+                    write.assert_not_called()
+                    self.assertTrue(send_unicode.called)
+                    if "\n" in sample:
+                        send_virtual.assert_called_with(keyboard.KEY_MAP["enter"])
+
+    def test_emoji_is_sent_as_utf16_surrogate_pair(self):
+        with patch.object(keyboard, "_send_unicode_code_unit") as send_unicode:
+            keyboard._send_unicode_text("🙂", 0)
+        self.assertEqual(
+            [
+                unittest.mock.call(0xD83D),
+                unittest.mock.call(0xD83D, key_up=True),
+                unittest.mock.call(0xDE42),
+                unittest.mock.call(0xDE42, key_up=True),
+            ],
+            send_unicode.call_args_list,
+        )
 
     def test_press_key_down_and_up(self):
         user32 = MagicMock()

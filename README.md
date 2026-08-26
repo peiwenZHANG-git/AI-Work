@@ -9,6 +9,8 @@
 - `keyboard.py`：文本输入、按键和快捷键。
 - `windows.py`：窗口枚举、聚焦及聚焦后的输入操作。
 - `uia.py`：UI Automation 控件、菜单和保存对话框操作。
+- `mailboxes.py`：固定邮箱身份、权限边界和 Edge Profile 启动逻辑。
+- `mail_summary.py`：邮箱身份和页面验证、只读列表解析、今日摘要及重要事项分类。
 
 ## 环境要求
 
@@ -58,7 +60,7 @@ Smoke test 只使用唯一命名的专用记事本文件，测试结果写入 `t
 
 ## MCP 工具
 
-当前服务器注册 23 个工具。
+当前服务器注册 25 个工具。
 
 | 工具 | 用途 |
 |---|---|
@@ -71,7 +73,7 @@ Smoke test 只使用唯一命名的专用记事本文件，测试结果写入 `t
 | `scroll` | 发送 Windows 鼠标滚轮事件。 |
 | `drag_mouse` | 从当前位置拖动到指定坐标。 |
 | `focus_and_press` | 点击指定坐标取得焦点，然后按一个键。 |
-| `type_text` | 向当前聚焦输入区域输入文本。 |
+| `type_text` | 向当前聚焦输入区域输入文本；ASCII 保持原输入路径，中文、日文、韩文、重音字符、emoji 和其他 Unicode 使用 Windows `SendInput`。 |
 | `press_key` | 使用 Windows 键盘事件按下一个受支持的按键。 |
 | `hotkey` | 执行由按键列表描述的快捷键。 |
 | `list_windows` | 列出可见顶层窗口标题。 |
@@ -85,10 +87,31 @@ Smoke test 只使用唯一命名的专用记事本文件，测试结果写入 `t
 | `click_menu_item` | 打开指定菜单并激活其中的菜单项。 |
 | `set_save_dialog_filename` | 在 Windows 保存对话框中设置文件名。 |
 | `click_save_button` | 激活 Windows 保存对话框中的保存按钮。 |
+| `open_all_mailboxes` | 使用三个固定 Edge Profile 分别打开独立邮箱窗口，并返回每个邮箱的打开状态；不读取或修改邮件。 |
+| `summarize_all_mailboxes_today` | 依次验证三个邮箱的 Edge Profile 与页面，并只读汇总今天最近最多 10 封可识别邮件及重要事项。 |
+
+## 固定邮箱身份
+
+邮箱身份配置只包含非敏感元数据，不保存密码、Cookie、sid、token、会话链接或其他登录凭证。
+
+| 身份 | 显示名称 | Edge Profile | 服务 | 稳定 URL | 权限 |
+|---|---|---|---|---|---|
+| `bachelor_mail` | 本科邮箱 | `Profile 1` | 网易企业邮箱 | 未配置；工具只打开指定 Profile，不猜测地址 | READ、DRAFT、SEND |
+| `master_mail` | 硕士邮箱 | `Profile 2` | Outlook Web | `https://outlook.office.com/mail/` | READ、DRAFT、SEND |
+| `qq_mail` | QQ邮箱 | `Profile 3` | QQ Mail | `https://mail.qq.com/` | READ |
+
+所有发送动作都必须先生成草稿并等待用户确认。QQ 邮箱默认只读。删除、移动、标记或归档邮件前必须获得用户确认。任何邮箱操作都必须先核对邮箱身份与指定 Profile；无法确认时立即停止，禁止猜测。自动输入密码以及记录登录凭证、Cookie、token 或会话链接均被禁止。
+
+调用 `open_all_mailboxes()` 时会为三个 Profile 分别请求一个独立 Edge 窗口。它只负责启动，不读取、修改或发送邮件。由于本科邮箱尚未配置稳定 URL，其状态会明确报告为 `profile_opened_mailbox_url_not_configured`。
+
+`summarize_all_mailboxes_today()` 严格按本科、硕士、QQ 邮箱顺序执行。Profile 身份来自本进程使用 `--profile-directory` 启动窗口时建立的内存绑定，不再由 UIA 页面内容反推。UIA 只读取地址栏并立即提取主机名，用于精确验证 `mailh.qiye.163.com`、`outlook.office.com` 或 `mail.qq.com`；完整 URL 不会被保存、记录或返回。运行时 Profile 与服务域名不一致时返回 `IDENTITY_MISMATCH` 并在读取邮件前停止；窗口无法绑定时返回 `NOT_READY`。运行时绑定不会写入磁盘，Agent 重启后必须重新启动对应 Profile。
+
+摘要读取使用有 5 秒边界的只读 UI Automation 查询，不聚焦或点击邮件。当前实现只从可见邮件列表中识别发件人、主题和时间，最多 10 封，并据此生成简短摘要；不会为取得正文而打开邮件，因此返回的 `read_state_change` 为 `NONE`。页面已就绪但当前 UIA 列表没有可识别的今日邮件时，数量为 0。重要事项只做分类和摘要，不执行写操作。
 
 ## 安全说明
 
 - GUI 操作会影响当前交互式桌面。调用前应确认目标窗口标题足够具体。
 - 自动化测试必须 mock 所有真实鼠标、键盘和 UIA 副作用。
 - 真实 GUI 验证应只使用 `tests/smoke_test.py` 创建的专用文件和窗口。
+- 默认 Smoke test 只操作专用 Notepad fixture。显式追加 `--mailbox-readonly` 时会通过三个固定 `--profile-directory` 参数启动独立 Edge 窗口、验证运行时窗口绑定及服务域名；它不会打开邮件，无法稳定自动验证的状态会输出 `MANUAL CHECK`。
 - 截图、Python 缓存和 smoke artifacts 已由 `.gitignore` 排除。

@@ -10,6 +10,7 @@ import win32api
 import win32con
 import win32gui
 
+from .keyboard import _type_text
 from .mouse import _validate_scroll_amount
 from .server import mcp
 
@@ -124,7 +125,7 @@ def focus_window_and_type(
     if not 0 <= interval <= 1:
         raise ValueError("interval must be between 0 and 1")
     with _focused_window(window_title, delay=0.4) as (_, actual_title):
-        pyautogui.write(text, interval=interval)
+        _type_text(text, interval)
     return f"Focused '{actual_title}' and typed {len(text)} characters"
 
 

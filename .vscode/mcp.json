@@ -2,10 +2,16 @@
 	"servers": {
 		"windows-gui": {
 			"type": "stdio",
-			"command": "python",
+			"command": "C:\\Users\\21781\\AppData\\Local\\Programs\\Python\\Python310\\python.exe",
 			"args": [
 				"D:\\21781\\Documents\\Codex\\AI-Work\\windows_gui_mcp.py"
-			]
+			],
+			"env": {
+				"PYTHONUTF8": "1",
+				"PYTHONIOENCODING": "utf-8",
+				"FASTMCP_SHOW_SERVER_BANNER": "false",
+				"FASTMCP_CHECK_FOR_UPDATES": "off"
+			}
 		}
 	},
 	"inputs": []

@@ -1,6 +1,8 @@
 ﻿"""Backward-compatible entry point for the Windows GUI MCP server."""
 
 from windows_gui.keyboard import hotkey, press_key, type_text
+from windows_gui.mailboxes import open_all_mailboxes
+from windows_gui.mail_summary import summarize_all_mailboxes_today
 from windows_gui.mouse import (
     click_mouse, double_click, drag_mouse, focus_and_press,
     get_mouse_position, move_mouse, right_click, screenshot, scroll,
@@ -22,7 +24,8 @@ __all__ = [
     "focus_window_and_scroll", "focus_window_and_type",
     "get_mouse_position", "hotkey", "list_controls", "list_windows", "mcp",
     "move_mouse", "press_key", "right_click", "screenshot", "scroll",
-    "set_save_dialog_filename", "type_text",
+    "set_save_dialog_filename", "type_text", "open_all_mailboxes",
+    "summarize_all_mailboxes_today",
 ]
 
 

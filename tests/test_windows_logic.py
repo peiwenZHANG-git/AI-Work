@@ -48,7 +48,7 @@ class WindowLogicTests(unittest.TestCase):
             patch.object(windows, "_focused_window", _fake_focus),
             patch.object(windows.pyautogui, "press") as press,
             patch.object(windows.pyautogui, "hotkey") as hotkey,
-            patch.object(windows.pyautogui, "write") as write,
+            patch.object(windows, "_type_text") as type_text,
         ):
             self.assertIn("Focused window", windows.focus_window("target"))
             self.assertIn("pressed home", windows.focus_window_and_press("target", "home"))
@@ -56,7 +56,7 @@ class WindowLogicTests(unittest.TestCase):
             self.assertIn("ctrl + a", windows.focus_window_and_hotkey("target", " ctrl + a "))
             hotkey.assert_called_once_with("ctrl", "a")
             self.assertIn("typed 4", windows.focus_window_and_type("target", "test", 0.1))
-            write.assert_called_once_with("test", interval=0.1)
+            type_text.assert_called_once_with("test", 0.1)
         with self.assertRaisesRegex(ValueError, "shortcut cannot be empty"):
             windows.focus_window_and_hotkey("target", " + ")
         with self.assertRaisesRegex(ValueError, "interval"):
