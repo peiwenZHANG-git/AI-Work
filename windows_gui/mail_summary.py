@@ -10,6 +10,14 @@ from typing import Any
 
 from pywinauto import Desktop
 
+from .mail_backends import (
+    BackendStatus,
+    EdgeFallbackBackend,
+    GraphBackendConfig,
+    GraphReadonlyBackend,
+    MailBackendResult,
+    WindowsCredentialManagerTokenStore,
+)
 from .mailboxes import (
     MAILBOX_IDENTITIES,
     MailboxIdentity,
@@ -227,7 +235,7 @@ def _extract_today_emails(
     return results
 
 
-def _summarize_mailbox(identity: MailboxIdentity) -> dict[str, Any]:
+def _summarize_with_edge(identity: MailboxIdentity) -> dict[str, Any]:
     LOGGER.info(
         "%s: confirming identity %s with %s",
         identity.mailbox_id,
@@ -268,6 +276,48 @@ def _summarize_mailbox(identity: MailboxIdentity) -> dict[str, Any]:
         LOGGER.exception("%s: ERROR", identity.mailbox_id)
         return _empty_group(identity, "ERROR", f"{type(error).__name__}: {error}")
 
+
+_BACKEND_STATUS_MAP = {
+    BackendStatus.READY: 'READY',
+    BackendStatus.NOT_AUTHENTICATED: 'NOT_READY',
+    BackendStatus.TOKEN_EXPIRED: 'NOT_READY',
+    BackendStatus.REQUEST_FAILED: 'ERROR',
+    BackendStatus.FALLBACK_REQUIRED: 'NOT_READY',
+}
+
+
+def _backend_for_identity(identity: MailboxIdentity) -> Any:
+    if identity.mailbox_id == 'master_mail':
+        config = GraphBackendConfig.from_environment()
+        return GraphReadonlyBackend(
+            config=config,
+            token_store=WindowsCredentialManagerTokenStore(
+                config.token_service, config.token_username
+            ),
+        )
+    return EdgeFallbackBackend(
+        summarize=lambda: _summarize_with_edge(identity)
+    )
+
+
+def _summarize_mailbox(identity: MailboxIdentity) -> dict[str, Any]:
+    try:
+        result = _backend_for_identity(identity).summarize_today(_MAX_EMAILS)
+        if result.legacy_result is not None:
+            return result.legacy_result
+
+        group = _empty_group(
+            identity,
+            _BACKEND_STATUS_MAP[result.status],
+            result.message,
+        )
+        if result.status is BackendStatus.READY:
+            group['today_count'] = len(result.emails)
+            group['emails'] = [email.as_result() for email in result.emails]
+        return group
+    except Exception as error:
+        LOGGER.exception('%s: ERROR', identity.mailbox_id)
+        return _empty_group(identity, 'ERROR', f'{type(error).__name__}: {error}')
 
 def _classify_important(mailboxes: list[dict[str, Any]]) -> dict[str, list[dict[str, str]]]:
     categories = {

@@ -11,6 +11,7 @@ from windows_gui.mail_summary import (
     _is_sensitive_browser_control,
     _service_domain_matches,
     _summarize_mailbox,
+    _summarize_with_edge,
     summarize_all_mailboxes_today,
 )
 from windows_gui.mailboxes import MAILBOX_IDENTITIES
@@ -58,7 +59,7 @@ class MailSummaryTests(unittest.TestCase):
     @patch("windows_gui.mail_summary._ensure_mailbox_page")
     def test_unconfirmed_identity_stops_without_reading(self, ensure):
         ensure.return_value = (None, "UNKNOWN_WINDOW")
-        result = _summarize_mailbox(MAILBOX_IDENTITIES["master_mail"])
+        result = _summarize_with_edge(MAILBOX_IDENTITIES["master_mail"])
         self.assertEqual("NOT_READY", result["status"])
         self.assertRegex(result["message"], r"无法.*(?:确认|验证)")
 
@@ -143,7 +144,7 @@ class MailSummaryTests(unittest.TestCase):
             ),
             patch("windows_gui.mail_summary._extract_today_emails") as extract,
         ):
-            result = _summarize_mailbox(MAILBOX_IDENTITIES["master_mail"])
+            result = _summarize_with_edge(MAILBOX_IDENTITIES["master_mail"])
         self.assertEqual("IDENTITY_MISMATCH", result["status"])
         extract.assert_not_called()
 
