@@ -103,7 +103,7 @@ Smoke test 只使用唯一命名的专用记事本文件，测试结果写入 `t
 
 | 身份 | 显示名称 | Edge Profile | 服务 | 稳定 URL | 权限 |
 |---|---|---|---|---|---|
-| `bachelor_mail` | 本科邮箱 | `Profile 1` | 网易企业邮箱 | 未配置；工具只打开指定 Profile，不猜测地址 | READ、DRAFT、SEND |
+| `bachelor_mail` | 本科邮箱 | `Profile 1` | 网易企业邮箱 | `https://mailh.qiye.163.com/` | READ、DRAFT、SEND |
 | `master_mail` | 硕士邮箱 | `Profile 2` | Outlook Web | `https://outlook.office.com/mail/` | READ、DRAFT、SEND |
 | `qq_mail` | QQ邮箱 | `Profile 3` | QQ Mail | `https://mail.qq.com/` | READ、DRAFT |
 
@@ -147,9 +147,9 @@ Smoke test 只使用唯一命名的专用记事本文件，测试结果写入 `t
 
 `open_all_mailboxes()` 和 Edge 摘要路径共享内部 `get_or_open_mailbox_window()` 管理层；Outlook Graph 可用时不会调用该 Edge 窗口管理层，Graph 不可用时按上述规则回退。每个邮箱在 Agent 中最多绑定一个 Edge HWND：有效运行时绑定返回 `REUSED_EXISTING_WINDOW`；Server 重启后优先通过窗口 PID 和进程命令行中的 `--profile-directory` 找回窗口。Edge 复用同一浏览器进程、主命令行不含 Profile 参数时，使用 Edge 浏览器标题中精确的 Profile 显示名称后缀恢复绑定，不从页面 UIA 内容猜测。恢复返回 `RESTORED_WINDOW_BINDING`；只有未找到对应 Profile 窗口时才返回 `CREATED_NEW_WINDOW`。该逻辑不会关闭用户原本打开的重复窗口。
 
-本科邮箱没有稳定 URL。窗口管理层会优先在 Profile 1 的现有窗口中选择主机名为 `mailh.qiye.163.com` 的已登录页面；否则只复用或恢复 Profile 1 状态并返回 `PAGE_NOT_READY`，提示用户“请在本科邮箱 Profile 中人工打开一次本科邮箱页面”。完整网易 URL、sid 和其他会话材料不会被保存、记录或复用。
+本科邮箱使用固定的非会话安全入口 `https://mailh.qiye.163.com/`。窗口管理层会优先在 Profile 1 的现有窗口中选择主机名为 `mailh.qiye.163.com` 的已登录页面；复用或恢复的窗口停留在新标签页、空白页或其他非邮箱页面时，会在同一窗口导航到该固定入口并等待精确主机名通过校验。完整网易 URL、sid 和其他会话材料不会被保存、记录或复用。
 
-`summarize_all_mailboxes_today()` 严格按本科、硕士、QQ 邮箱顺序执行。硕士 Outlook 优先走 Graph READ-only，Graph 不可用时回退 Edge；本科网易和 QQ 走 Edge。Edge 路径的 Profile 身份来自本进程使用 `--profile-directory` 启动窗口时建立的内存绑定，不再由 UIA 页面内容反推。UIA 只读取地址栏并立即提取主机名，用于精确验证 `mailh.qiye.163.com`、`outlook.office.com`（以及重定向域名 `outlook.cloud.microsoft`）或 `mail.qq.com`；完整 URL 不会被保存、记录或返回。
+`summarize_all_mailboxes_today()` 严格按本科、硕士、QQ 邮箱顺序执行。硕士 Outlook 优先走 Graph READ-only，Graph 不可用时回退 Edge；本科网易和 QQ 走 Edge。Edge 路径的 Profile 身份来自本进程使用 `--profile-directory` 启动窗口时建立的内存绑定，不再由 UIA 页面内容反推。UIA 只读取地址栏并立即提取主机名，用于精确验证 `mailh.qiye.163.com`、`outlook.office.com`（以及重定向域名 `outlook.cloud.microsoft`）、`mail.qq.com` 或官方 QQ Mail 域名 `wx.mail.qq.com`；完整 URL 不会被保存、记录或返回。
 
 Edge fallback 摘要使用有 5 秒边界的只读 UI Automation 查询，不聚焦或点击邮件。当前实现只从可见邮件列表中识别发件人、主题和时间，最多 10 封，并据此生成简短摘要；不会为取得正文而打开邮件，因此返回的 `read_state_change` 为 `NONE`。页面已就绪但当前 UIA 列表没有可识别的今日邮件时，数量为 0。重要事项只做分类和摘要，不执行写操作。
 

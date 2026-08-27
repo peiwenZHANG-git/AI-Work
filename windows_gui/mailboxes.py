@@ -17,6 +17,7 @@ import win32gui
 import win32process
 from pywinauto import Desktop
 
+from .keyboard import hotkey, press_key, type_text
 from .server import mcp
 from .uia import _run_bounded
 from .windows import _focus_window_handle
@@ -48,6 +49,7 @@ _MAILBOXES = {
         permissions=("READ", "DRAFT", "SEND"),
         send_requires_confirmation=True,
         service_domain="mailh.qiye.163.com",
+        stable_url="https://mailh.qiye.163.com/",
     ),
     "master_mail": MailboxIdentity(
         mailbox_id="master_mail",
@@ -71,6 +73,7 @@ _MAILBOXES = {
         permissions=("READ", "DRAFT"),
         send_requires_confirmation=True,
         service_domain="mail.qq.com",
+        service_domain_aliases=("wx.mail.qq.com",),
     ),
 }
 
@@ -93,6 +96,7 @@ _MAILBOX_WINDOW_LOCKS = {
     mailbox_id: Lock() for mailbox_id in MAILBOX_IDENTITIES
 }
 _LAUNCH_RETRY_SECONDS = 30.0
+_BACHELOR_NAVIGATION_TIMEOUT_SECONDS = 15.0
 
 
 def _record_runtime_context(
@@ -290,6 +294,62 @@ def _find_existing_profile_window(
     return None if require_service_domain else candidates[0]
 
 
+def _navigate_bachelor_window_if_needed(
+    identity: MailboxIdentity,
+    hwnd: int,
+    current_domain: str | None = None,
+) -> None:
+    """Navigate an already-bound bachelor window to its fixed entry URL."""
+    if identity.mailbox_id != "bachelor_mail" or identity.stable_url is None:
+        return
+
+    domain = current_domain
+    if domain is None:
+        try:
+            domain = _read_edge_service_domain(hwnd)
+        except Exception:
+            domain = None
+    if _domain_matches_identity(identity, domain):
+        return
+
+    confirm_mailbox_identity(identity.mailbox_id, identity.profile_directory)
+    _focus_window_handle(hwnd)
+    hotkey(["ctrl", "l"])
+    type_text(identity.stable_url, interval=0.02)
+    press_key("enter")
+
+    deadline = time.monotonic() + _BACHELOR_NAVIGATION_TIMEOUT_SECONDS
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            domain = _read_edge_service_domain(hwnd)
+            if _domain_matches_identity(identity, domain):
+                return
+        except Exception as error:
+            last_error = error
+        time.sleep(0.5)
+
+    if last_error is not None:
+        raise TimeoutError(
+            f"Bachelor mailbox window did not reach "
+            f"{identity.service_domain}"
+        ) from last_error
+    raise TimeoutError(
+        f"Bachelor mailbox window did not reach {identity.service_domain}"
+    )
+
+
+def _prepare_existing_mailbox_window(
+    identity: MailboxIdentity,
+    hwnd: int,
+    current_domain: str | None = None,
+) -> None:
+    if identity.mailbox_id == "bachelor_mail":
+        _navigate_bachelor_window_if_needed(
+            identity, hwnd, current_domain=current_domain
+        )
+
+
 def _wait_for_launched_edge_window(
     previous_handles: set[int], timeout: float = 8.0
 ) -> int | None:
@@ -400,6 +460,9 @@ def get_or_open_mailbox_window(
                         "status": "RESTORED_WINDOW_BINDING",
                         "stable_url": identity.stable_url,
                     }
+            _prepare_existing_mailbox_window(
+                identity, context.hwnd, current_domain=current_domain
+            )
             _focus_window_handle(context.hwnd)
             return {
                 "mailbox_id": identity.mailbox_id,
@@ -412,6 +475,7 @@ def get_or_open_mailbox_window(
         recovered_hwnd = _find_existing_profile_window(identity)
         if recovered_hwnd is not None:
             _record_runtime_context(identity, recovered_hwnd)
+            _prepare_existing_mailbox_window(identity, recovered_hwnd)
             _focus_window_handle(recovered_hwnd)
             return {
                 "mailbox_id": identity.mailbox_id,

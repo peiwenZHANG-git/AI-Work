@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from windows_gui.mail_summary import (
+    _ensure_mailbox_page,
     _extract_today_emails,
     _find_verified_snapshot,
     _is_sensitive_browser_control,
@@ -34,7 +35,7 @@ class MailSummaryTests(unittest.TestCase):
         master = MAILBOX_IDENTITIES["master_mail"]
         qq = MAILBOX_IDENTITIES["qq_mail"]
         self.assertEqual("Profile 1", bachelor.profile_directory)
-        self.assertIsNone(bachelor.stable_url)
+        self.assertEqual("https://mailh.qiye.163.com/", bachelor.stable_url)
         self.assertEqual("Profile 2", master.profile_directory)
         self.assertEqual("https://outlook.office.com/mail/", master.stable_url)
         self.assertEqual("Profile 3", qq.profile_directory)
@@ -69,7 +70,10 @@ class MailSummaryTests(unittest.TestCase):
         self.assertFalse(
             _service_domain_matches("outlook.office.com", "evil-outlook.office.com")
         )
-        self.assertTrue(_service_domain_matches("mail.qq.com", "mail.qq.com"))
+        qq = MAILBOX_IDENTITIES["qq_mail"]
+        for domain in (qq.service_domain, *qq.service_domain_aliases):
+            self.assertTrue(_service_domain_matches(domain, domain))
+        self.assertFalse(_service_domain_matches("mail.qq.com", "evil.mail.qq.com"))
         self.assertTrue(
             _service_domain_matches("mailh.qiye.163.com", "mailh.qiye.163.com")
         )
@@ -121,6 +125,69 @@ class MailSummaryTests(unittest.TestCase):
             MAILBOX_IDENTITIES["bachelor_mail"]
         )
         self.assertEqual("PAGE_NOT_READY", state)
+
+    @patch("windows_gui.mail_summary.get_or_open_mailbox_window")
+    @patch("windows_gui.mail_summary._find_verified_snapshot")
+    def test_bachelor_navigation_to_legal_domain_becomes_ready(
+        self, find_verified, open_window
+    ):
+        initial = {"service_domain": None, "controls": []}
+        final = {"service_domain": "mailh.qiye.163.com", "controls": []}
+        find_verified.side_effect = [
+            (initial, "PAGE_NOT_READY"),
+            (final, "READY"),
+        ]
+
+        snapshot, state = _ensure_mailbox_page(
+            MAILBOX_IDENTITIES["bachelor_mail"]
+        )
+
+        self.assertEqual("READY", state)
+        self.assertEqual(final, snapshot)
+        open_window.assert_called_once_with("bachelor_mail")
+
+    @patch("windows_gui.mail_summary.get_or_open_mailbox_window")
+    @patch("windows_gui.mail_summary._find_verified_snapshot")
+    def test_bachelor_illegal_domain_is_never_ready(
+        self, find_verified, open_window
+    ):
+        snapshot = {"service_domain": "evil.qiye.163.com", "controls": []}
+        find_verified.return_value = (snapshot, "IDENTITY_MISMATCH")
+
+        result, state = _ensure_mailbox_page(
+            MAILBOX_IDENTITIES["bachelor_mail"]
+        )
+
+        self.assertEqual("IDENTITY_MISMATCH", state)
+        self.assertEqual(snapshot, result)
+        open_window.assert_not_called()
+
+    @patch("windows_gui.mail_summary._snapshot_edge_window")
+    @patch("windows_gui.mail_summary.get_runtime_mailbox_context")
+    def test_qq_official_redirect_domain_is_ready(        self, get_context, snapshot
+    ):
+        get_context.return_value = SimpleNamespace(
+            profile_directory="Profile 3", hwnd=91
+        )
+        snapshot.return_value = {
+            "service_domain": "wx.mail.qq.com", "controls": []
+        }
+        _, state = _find_verified_snapshot(MAILBOX_IDENTITIES["qq_mail"])
+        self.assertEqual("READY", state)
+
+    @patch("windows_gui.mail_summary._snapshot_edge_window")
+    @patch("windows_gui.mail_summary.get_runtime_mailbox_context")
+    def test_qq_subdomain_lookalike_is_identity_mismatch(
+        self, get_context, snapshot
+    ):
+        get_context.return_value = SimpleNamespace(
+            profile_directory="Profile 3", hwnd=92
+        )
+        snapshot.return_value = {
+            "service_domain": "evil.mail.qq.com", "controls": []
+        }
+        _, state = _find_verified_snapshot(MAILBOX_IDENTITIES["qq_mail"])
+        self.assertEqual("IDENTITY_MISMATCH", state)
 
     @patch("windows_gui.mail_summary._snapshot_edge_window")
     @patch("windows_gui.mail_summary.get_runtime_mailbox_context")

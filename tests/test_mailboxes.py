@@ -7,6 +7,7 @@ from windows_gui.mailboxes import (
     MAILBOX_IDENTITIES,
     _clear_runtime_mailbox_contexts,
     _profile_directory_from_command_line,
+    _record_runtime_context,
     confirm_mailbox_identity,
     get_or_open_mailbox_window,
     get_runtime_mailbox_context,
@@ -48,7 +49,7 @@ class MailboxConfigurationTests(unittest.TestCase):
         self.assertEqual("Profile 1", bachelor.profile_directory)
         self.assertEqual(("READ", "DRAFT", "SEND"), bachelor.permissions)
         self.assertEqual("mailh.qiye.163.com", bachelor.service_domain)
-        self.assertIsNone(bachelor.stable_url)
+        self.assertEqual("https://mailh.qiye.163.com/", bachelor.stable_url)
         self.assertEqual("Profile 2", master.profile_directory)
         self.assertEqual("https://outlook.office.com/mail/", master.stable_url)
         self.assertEqual("outlook.office.com", master.service_domain)
@@ -59,6 +60,7 @@ class MailboxConfigurationTests(unittest.TestCase):
         self.assertEqual(("READ", "DRAFT"), qq.permissions)
         self.assertEqual("https://mail.qq.com/", qq.stable_url)
         self.assertEqual("mail.qq.com", qq.service_domain)
+        self.assertEqual(("wx.mail.qq.com",), qq.service_domain_aliases)
         self.assertTrue(bachelor.send_requires_confirmation)
         self.assertTrue(master.send_requires_confirmation)
         self.assertTrue(qq.send_requires_confirmation)
@@ -91,6 +93,7 @@ class OpenAllMailboxesTests(unittest.TestCase):
         self.assertEqual([
             call([
                 "msedge.exe", "--profile-directory=Profile 1", "--new-window",
+                "https://mailh.qiye.163.com/",
             ], close_fds=True),
             call([
                 "msedge.exe", "--profile-directory=Profile 2", "--new-window",
@@ -178,6 +181,111 @@ class OpenAllMailboxesTests(unittest.TestCase):
         self.assertEqual(401, get_runtime_mailbox_context("master_mail").hwnd)
         popen.assert_not_called()
         focus.assert_called_once_with(401)
+
+    @patch("windows_gui.mailboxes.type_text")
+    @patch("windows_gui.mailboxes.hotkey")
+    @patch("windows_gui.mailboxes.press_key")
+    @patch("windows_gui.mailboxes._focus_window_handle")
+    @patch(
+        "windows_gui.mailboxes._read_edge_service_domain",
+        return_value="mailh.qiye.163.com",
+    )
+    @patch("windows_gui.mailboxes._context_window_is_valid", return_value=True)
+    def test_bachelor_allowed_domain_is_reused_without_navigation(
+        self, context_valid, read_domain, focus, press_key, hotkey, type_text
+    ):
+        _record_runtime_context(MAILBOX_IDENTITIES["bachelor_mail"], 701)
+        result = get_or_open_mailbox_window("bachelor_mail")
+
+        self.assertEqual("REUSED_EXISTING_WINDOW", result["status"])
+        focus.assert_called_once()
+        hotkey.assert_not_called()
+        type_text.assert_not_called()
+        press_key.assert_not_called()
+
+    @patch("windows_gui.mailboxes.type_text")
+    @patch("windows_gui.mailboxes.hotkey")
+    @patch("windows_gui.mailboxes.press_key")
+    @patch("windows_gui.mailboxes._focus_window_handle")
+    @patch(
+        "windows_gui.mailboxes._read_edge_service_domain",
+        side_effect=[None, "mailh.qiye.163.com"],
+    )
+    @patch("windows_gui.mailboxes._context_window_is_valid", return_value=False)
+    @patch("windows_gui.mailboxes._find_existing_profile_window")
+    @patch("windows_gui.mailboxes.subprocess.Popen")
+    def test_bachelor_new_tab_restored_window_navigates_fixed_entry(
+        self, popen, find_existing, context_valid, read_domain, focus,
+        press_key, hotkey, type_text
+    ):
+        find_existing.return_value = 601
+
+        result = get_or_open_mailbox_window("bachelor_mail")
+
+        self.assertEqual("RESTORED_WINDOW_BINDING", result["status"])
+        self.assertEqual(601, get_runtime_mailbox_context("bachelor_mail").hwnd)
+        popen.assert_not_called()
+        hotkey.assert_called_once_with(["ctrl", "l"])
+        type_text.assert_called_once_with(
+            "https://mailh.qiye.163.com/", interval=0.02
+        )
+        press_key.assert_called_once_with("enter")
+        self.assertEqual([call(601), call(601)], focus.call_args_list)
+
+    @patch("windows_gui.mailboxes.type_text")
+    @patch("windows_gui.mailboxes.hotkey")
+    @patch("windows_gui.mailboxes.press_key")
+    @patch("windows_gui.mailboxes._focus_window_handle")
+    @patch(
+        "windows_gui.mailboxes._read_edge_service_domain",
+        side_effect=["", "mailh.qiye.163.com"],
+    )
+    @patch("windows_gui.mailboxes._find_existing_profile_window")
+    @patch("windows_gui.mailboxes._context_window_is_valid", return_value=True)
+    @patch("windows_gui.mailboxes.subprocess.Popen")
+    def test_bachelor_blank_page_navigates_fixed_entry(
+        self, popen, context_valid, find_existing, read_domain, focus,
+        press_key, hotkey, type_text
+    ):
+        find_existing.return_value = None
+        _record_runtime_context(MAILBOX_IDENTITIES["bachelor_mail"], 702)
+
+        result = get_or_open_mailbox_window("bachelor_mail")
+
+        self.assertEqual("REUSED_EXISTING_WINDOW", result["status"])
+        popen.assert_not_called()
+        hotkey.assert_called_once_with(["ctrl", "l"])
+        type_text.assert_called_once_with(
+            "https://mailh.qiye.163.com/", interval=0.02
+        )
+        press_key.assert_called_once_with("enter")
+
+    @patch("windows_gui.mailboxes.type_text")
+    @patch("windows_gui.mailboxes.hotkey")
+    @patch("windows_gui.mailboxes.press_key")
+    @patch("windows_gui.mailboxes._focus_window_handle")
+    @patch("windows_gui.mailboxes._read_edge_service_domain", return_value=None)
+    @patch("windows_gui.mailboxes._find_existing_profile_window")
+    @patch("windows_gui.mailboxes._context_window_is_valid", return_value=True)
+    @patch("windows_gui.mailboxes.subprocess.Popen")
+    def test_outlook_and_qq_do_not_use_bachelor_navigation(
+        self, popen, context_valid, find_existing, read_domain, focus,
+        press_key, hotkey, type_text
+    ):
+        find_existing.return_value = None
+
+        for mailbox_id in ("master_mail", "qq_mail"):
+            with self.subTest(mailbox_id=mailbox_id):
+                _record_runtime_context(
+                    MAILBOX_IDENTITIES[mailbox_id], 703
+                )
+                result = get_or_open_mailbox_window(mailbox_id)
+
+                self.assertEqual("REUSED_EXISTING_WINDOW", result["status"])
+                hotkey.assert_not_called()
+                type_text.assert_not_called()
+                press_key.assert_not_called()
+        popen.assert_not_called()
 
     def test_profile_parser_does_not_retain_url_or_sid(self):
         command = (
