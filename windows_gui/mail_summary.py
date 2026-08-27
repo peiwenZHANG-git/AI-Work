@@ -18,6 +18,7 @@ from .mail_backends import (
     MailBackendResult,
     WindowsCredentialManagerTokenStore,
 )
+from .browser_mail import BrowserDomReadonlyBackend, BrowserMailboxConfig
 from .mailboxes import (
     MAILBOX_IDENTITIES,
     MailboxIdentity,
@@ -410,6 +411,12 @@ _BACKEND_STATUS_MAP = {
     BackendStatus.TOKEN_EXPIRED: 'NOT_READY',
     BackendStatus.REQUEST_FAILED: 'ERROR',
     BackendStatus.FALLBACK_REQUIRED: 'NOT_READY',
+    BackendStatus.AUTH_REQUIRED: 'AUTH_REQUIRED',
+    BackendStatus.MAIL_LIST_NOT_FOUND: 'MAIL_LIST_NOT_FOUND',
+    BackendStatus.MAIL_ITEMS_NOT_PARSED: 'MAIL_ITEMS_NOT_PARSED',
+    BackendStatus.EMPTY_TODAY: 'EMPTY_TODAY',
+    BackendStatus.BROWSER_BACKEND_NOT_READY: 'BROWSER_BACKEND_NOT_READY',
+    BackendStatus.BROWSER_ATTACH_FAILED: 'BROWSER_ATTACH_FAILED',
 }
 
 _GRAPH_FALLBACK_STATUSES = {
@@ -428,8 +435,23 @@ def _backend_for_identity(identity: MailboxIdentity) -> Any:
                 config.token_service, config.token_username
             ),
         )
-    return EdgeFallbackBackend(
-        summarize=lambda: _summarize_with_edge(identity)
+    endpoint_environment = {
+        'bachelor_mail': 'AI_WORK_BACHELOR_CDP_ENDPOINT',
+        'qq_mail': 'AI_WORK_QQ_CDP_ENDPOINT',
+    }[identity.mailbox_id]
+    domains = tuple(
+        domain.casefold() for domain in (
+            identity.service_domain, *identity.service_domain_aliases
+        )
+    )
+    return BrowserDomReadonlyBackend(
+        config=BrowserMailboxConfig(
+            mailbox_id=identity.mailbox_id,
+            profile_directory=identity.profile_directory,
+            service_domains=domains,
+            endpoint_environment=endpoint_environment,
+        ),
+        verify_page=lambda: _ensure_mailbox_page(identity)[1],
     )
 
 

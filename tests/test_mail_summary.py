@@ -50,10 +50,7 @@ class MailSummaryTests(unittest.TestCase):
     def test_bachelor_not_ready_path(self, ensure):
         ensure.return_value = (None, "PAGE_NOT_READY")
         result = _summarize_mailbox(MAILBOX_IDENTITIES["bachelor_mail"])
-        self.assertEqual("NOT_READY", result["status"])
-        self.assertEqual(
-            "本科邮箱页面未就绪，需要人工打开邮箱页面", result["message"]
-        )
+        self.assertEqual("BROWSER_BACKEND_NOT_READY", result["status"])
         self.assertEqual([], result["emails"])
 
     @patch("windows_gui.mail_summary._ensure_mailbox_page")
@@ -209,18 +206,13 @@ class MailSummaryTests(unittest.TestCase):
         )
         self.assertEqual("PAGE_NOT_READY", state)
 
+    @patch.dict("os.environ", {}, clear=True)
     @patch("windows_gui.mail_summary._ensure_mailbox_page")
-    def test_ready_page_without_list_is_not_reported_as_zero(self, ensure):
-        ensure.return_value = ({
-            "controls": [
-                {"control_type": "Text", "name": "今日 10:30"},
-                {"control_type": "Document", "name": "Mailbox"},
-            ]
-        }, "READY")
+    def test_qq_ready_page_without_cdp_is_not_reported_as_zero(self, ensure):
+        ensure.return_value = ({"controls": []}, "READY")
         result = _summarize_mailbox(MAILBOX_IDENTITIES["qq_mail"])
-        self.assertEqual("MAIL_LIST_NOT_FOUND", result["status"])
+        self.assertEqual("BROWSER_BACKEND_NOT_READY", result["status"])
         self.assertEqual(0, result["today_count"])
-        self.assertFalse(result["diagnostics"]["list_container_found"])
 
     @patch("windows_gui.mail_summary._ensure_mailbox_page")
     def test_list_with_unparsed_items_is_not_reported_as_zero(self, ensure):

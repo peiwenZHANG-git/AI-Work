@@ -10,6 +10,7 @@
 - `windows.py`：窗口枚举、聚焦及聚焦后的输入操作。
 - `uia.py`：UI Automation 控件、菜单和保存对话框操作。
 - `mail_backends.py`：统一邮箱后端抽象、Graph 与 Edge adapter；摘要和搜索保持 READ-only，草稿仅保存不发送。
+- `browser_mail.py`：QQ 与本科网易邮箱的 Browser DOM/CDP READ-only 摘要 adapter；只提取列表元数据。
 - `mailboxes.py`：固定邮箱身份、权限边界和 Edge Profile 启动逻辑。
 - `mail_search.py`：统一 READ-only 邮件搜索、后端分发和安全结果引用。
 - `mail_draft.py`：统一草稿创建、Graph/Edge 后端分发和不发送安全检查。
@@ -26,6 +27,13 @@
 
 ```powershell
 python -m pip install fastmcp pyautogui pywin32 pywinauto pillow requests keyring
+```
+
+QQ / 网易 Browser DOM 摘要还需要可选依赖 `playwright`。该 adapter 只使用
+`connect_over_cdp` 连接已经由用户明确开启远程调试的 Edge，不会下载或启动新的浏览器：
+
+```powershell
+python -m pip install playwright
 ```
 
 `pyautogui` 的故障保护已开启。把鼠标快速移动到屏幕左上角可中止 PyAutoGUI 操作。
@@ -92,7 +100,7 @@ Smoke test 只使用唯一命名的专用记事本文件，测试结果写入 `t
 | `set_save_dialog_filename` | 在 Windows 保存对话框中设置文件名。 |
 | `click_save_button` | 激活 Windows 保存对话框中的保存按钮。 |
 | `open_all_mailboxes` | 使用三个固定 Edge Profile 分别打开独立邮箱窗口，并返回每个邮箱的打开状态；不读取或修改邮件。 |
-| `summarize_all_mailboxes_today` | 硕士邮箱优先使用 Graph READ-only 元数据，Graph 不可用时回退现有 Edge 只读摘要；本科网易和 QQ 邮箱继续使用 Edge；外部返回结构保持兼容。 |
+| `summarize_all_mailboxes_today` | 硕士邮箱保持 Graph 优先 / Edge fallback；本科网易和 QQ 邮箱使用 Browser DOM/CDP 只读列表元数据；外部返回结构保持兼容。 |
 | `search_mailboxes` | 按邮箱、关键词、发件人、ISO 8601 起止时间和最大数量执行 READ-only 搜索；不打开正文，不改变邮件状态。 |
 | `create_mail_draft` | 在指定已验证邮箱中创建并保存草稿；只保存不发送，不支持附件。 |
 | `send_mail_draft` | 仅在 `confirm_send=true` 时发送已有草稿；发送前校验邮箱身份、draft 归属、收件人和主题。 |
@@ -151,7 +159,11 @@ Smoke test 只使用唯一命名的专用记事本文件，测试结果写入 `t
 
 `summarize_all_mailboxes_today()` 严格按本科、硕士、QQ 邮箱顺序执行。硕士 Outlook 优先走 Graph READ-only，Graph 不可用时回退 Edge；本科网易和 QQ 走 Edge。Edge 路径的 Profile 身份来自本进程使用 `--profile-directory` 启动窗口时建立的内存绑定，不再由 UIA 页面内容反推。UIA 只读取地址栏并立即提取主机名，用于精确验证 `mailh.qiye.163.com`、`outlook.office.com`（以及重定向域名 `outlook.cloud.microsoft`）、`mail.qq.com` 或官方 QQ Mail 域名 `wx.mail.qq.com`；完整 URL 不会被保存、记录或返回。
 
-Edge fallback 摘要使用有 5 秒边界的只读 UI Automation 查询，不聚焦或点击邮件。当前实现只从可见邮件列表中识别发件人、主题和时间，最多 10 封，并据此生成简短摘要；不会为取得正文而打开邮件，因此返回的 `read_state_change` 为 `NONE`。页面已验证但 UIA 没有可信列表容器时返回 `MAIL_LIST_NOT_FOUND`；存在列表但邮件行格式无法解析时返回 `MAIL_ITEMS_NOT_PARSED`。只有至少成功解析到邮件行、并确认其中没有今日邮件时才返回 `EMPTY_TODAY` 和数量 0，禁止把解析失败报告为空邮箱。诊断字段只包含结构计数，不包含邮件文本、正文、完整 URL 或会话信息。
+QQ 与本科网易摘要不再使用 Windows UIA 重建邮件行。UIA 仅确认运行时 Profile、目标窗口、精确服务域名和登录/页面状态；邮件列表由 Browser DOM/CDP adapter 读取，而且只提取发件人、主题、接收时间和经过 SHA-256 截断生成的本地 opaque reference。adapter 不点击邮件、不打开正文、不改变已读状态，也不提供发送、删除、移动、归档或标记动作。
+
+CDP endpoint 必须分别通过 `AI_WORK_BACHELOR_CDP_ENDPOINT` 和 `AI_WORK_QQ_CDP_ENDPOINT` 配置为带显式端口、无凭证、无查询参数的本机回环 HTTP origin（例如 `http://127.0.0.1:9222`）。不接受或保存包含浏览器 target 标识的 WebSocket 调试 URL。未配置返回 `BROWSER_BACKEND_NOT_READY`，连接或 5 秒 attach 失败返回 `BROWSER_ATTACH_FAILED`，登录失效返回 `AUTH_REQUIRED`；找不到列表、列表行不可解析和确认今日为空分别返回 `MAIL_LIST_NOT_FOUND`、`MAIL_ITEMS_NOT_PARSED`、`EMPTY_TODAY`。只有识别到可信列表且解析成功，或页面明确暴露空列表状态，才会判定 `EMPTY_TODAY`。
+
+普通运行中的 Edge 无法事后安全开启 CDP。项目不会自动关闭/重启 Edge，不会用同一个日常 User Data 目录再起自动化实例，也不会复制 Profile；这些做法可能造成 Profile 锁、重复进程或会话损坏。远程调试端口具备高权限且无应用级认证，应只绑定 loopback、仅在验收期间开启，并由用户自行决定是否接受该风险。若现有 Edge 没有预先开启 CDP，adapter 会明确停止而不会回退到 QQ/网易 UIA 邮件行解析。
 
 ## 安全说明
 

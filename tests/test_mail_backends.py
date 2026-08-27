@@ -18,7 +18,8 @@ from windows_gui.mail_backends import (
     GRAPH_SCOPES,
     MailBackendResult,
 )
-from windows_gui.mail_summary import _summarize_mailbox
+from windows_gui.browser_mail import BrowserDomReadonlyBackend
+from windows_gui.mail_summary import _backend_for_identity, _summarize_mailbox
 from windows_gui.mailboxes import MAILBOX_IDENTITIES
 
 
@@ -178,16 +179,14 @@ class BackendDispatchTests(unittest.TestCase):
     def test_graph_request_failure_falls_back_to_edge(self):
         self._assert_graph_falls_back(BackendStatus.REQUEST_FAILED)
 
-    def test_qq_and_bachelor_use_existing_edge_fallback(self):
-        expected = {'status': 'READY'}
+    def test_qq_and_bachelor_use_browser_dom_backend(self):
         for mailbox_id in ('bachelor_mail', 'qq_mail'):
-            with patch(
-                'windows_gui.mail_summary._summarize_with_edge',
-                return_value=expected,
-            ) as edge:
-                result = _summarize_mailbox(MAILBOX_IDENTITIES[mailbox_id])
-            self.assertIs(expected, result)
-            edge.assert_called_once()
+            backend = _backend_for_identity(MAILBOX_IDENTITIES[mailbox_id])
+            self.assertIsInstance(backend, BrowserDomReadonlyBackend)
+            self.assertEqual(
+                MAILBOX_IDENTITIES[mailbox_id].profile_directory,
+                backend.config.profile_directory,
+            )
 
     def test_edge_fallback_backend_preserves_existing_result(self):
         expected = {'status': 'NOT_READY'}

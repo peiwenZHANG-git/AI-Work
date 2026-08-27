@@ -37,6 +37,12 @@ class BackendStatus(str, Enum):
     DRAFT_NOT_FOUND = 'DRAFT_NOT_FOUND'
     INVALID_DRAFT = 'INVALID_DRAFT'
     DRAFT_MAILBOX_MISMATCH = 'DRAFT_MAILBOX_MISMATCH'
+    AUTH_REQUIRED = 'AUTH_REQUIRED'
+    MAIL_LIST_NOT_FOUND = 'MAIL_LIST_NOT_FOUND'
+    MAIL_ITEMS_NOT_PARSED = 'MAIL_ITEMS_NOT_PARSED'
+    EMPTY_TODAY = 'EMPTY_TODAY'
+    BROWSER_BACKEND_NOT_READY = 'BROWSER_BACKEND_NOT_READY'
+    BROWSER_ATTACH_FAILED = 'BROWSER_ATTACH_FAILED'
 
 
 @dataclass(frozen=True)
@@ -47,9 +53,11 @@ class BackendEmail:
     summary: str
     summary_source: str = 'GRAPH_METADATA'
     read_state_changed: bool = False
+    message_reference: str | None = None
+    reference_kind: str | None = None
 
     def as_result(self) -> dict[str, Any]:
-        return {
+        result = {
             'sender': self.sender,
             'subject': self.subject,
             'time': self.time,
@@ -57,6 +65,10 @@ class BackendEmail:
             'summary_source': self.summary_source,
             'read_state_changed': self.read_state_changed,
         }
+        if self.message_reference is not None:
+            result['message_reference'] = self.message_reference
+            result['reference_kind'] = self.reference_kind
+        return result
 
 
 @dataclass(frozen=True)
