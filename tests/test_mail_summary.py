@@ -105,12 +105,95 @@ class MailSummaryTests(unittest.TestCase):
             profile_directory="Profile 1", hwnd=81
         )
         snapshot.return_value = {
-            "service_domain": "mailh.qiye.163.com", "controls": []
+            "service_domain": "mailh.qiye.163.com",
+            "controls": [
+                {
+                    "control_type": "Text", "name": "邮箱选项卡",
+                    "automation_id": "",
+                },
+                {
+                    "control_type": "TreeItem", "name": "收件箱",
+                    "automation_id": "_mail_tree_57_318",
+                },
+                {
+                    "control_type": "Button", "name": "写 信",
+                    "automation_id": "_mail_component_41_41",
+                },
+            ],
         }
         _, state = _find_verified_snapshot(
             MAILBOX_IDENTITIES["bachelor_mail"]
         )
         self.assertEqual("READY", state)
+
+    @patch("windows_gui.mail_summary._snapshot_edge_window")
+    @patch("windows_gui.mail_summary.get_runtime_mailbox_context")
+    def test_bachelor_correct_domain_without_mail_ui_is_not_ready(
+        self, get_context, snapshot
+    ):
+        get_context.return_value = SimpleNamespace(
+            profile_directory="Profile 1", hwnd=83
+        )
+        snapshot.return_value = {
+            "service_domain": "mailh.qiye.163.com", "controls": []
+        }
+        _, state = _find_verified_snapshot(
+            MAILBOX_IDENTITIES["bachelor_mail"]
+        )
+        self.assertEqual("PAGE_NOT_READY", state)
+
+    @patch("windows_gui.mail_summary._snapshot_edge_window")
+    @patch("windows_gui.mail_summary.get_runtime_mailbox_context")
+    def test_bachelor_login_page_is_auth_required(
+        self, get_context, snapshot
+    ):
+        get_context.return_value = SimpleNamespace(
+            profile_directory="Profile 1", hwnd=84
+        )
+        snapshot.return_value = {
+            "service_domain": "mailh.qiye.163.com",
+            "controls": [
+                {
+                    "control_type": "Text", "name": "账号登录",
+                    "automation_id": "",
+                },
+                {
+                    "control_type": "TreeItem", "name": "收件箱",
+                    "automation_id": "_mail_tree_57_318",
+                },
+                {
+                    "control_type": "Button", "name": "写 信",
+                    "automation_id": "_mail_component_41_41",
+                },
+            ],
+        }
+        _, state = _find_verified_snapshot(
+            MAILBOX_IDENTITIES["bachelor_mail"]
+        )
+        self.assertEqual("AUTH_REQUIRED", state)
+
+    @patch("windows_gui.mail_summary._snapshot_edge_window")
+    @patch("windows_gui.mail_summary.get_runtime_mailbox_context")
+    def test_bachelor_expired_session_is_auth_required(
+        self, get_context, snapshot
+    ):
+        get_context.return_value = SimpleNamespace(
+            profile_directory="Profile 1", hwnd=85
+        )
+        snapshot.return_value = {
+            "service_domain": "mailh.qiye.163.com",
+            "controls": [
+                {
+                    "control_type": "Text",
+                    "name": "会话已过期, 请重新登录。",
+                    "automation_id": "",
+                },
+            ],
+        }
+        _, state = _find_verified_snapshot(
+            MAILBOX_IDENTITIES["bachelor_mail"]
+        )
+        self.assertEqual("AUTH_REQUIRED", state)
 
     @patch("windows_gui.mail_summary._snapshot_edge_window")
     @patch("windows_gui.mail_summary.get_runtime_mailbox_context")

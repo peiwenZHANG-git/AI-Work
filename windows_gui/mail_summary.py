@@ -109,6 +109,49 @@ def _service_domain_matches(expected: str, actual: str | None) -> bool:
     return actual.casefold().rstrip(".") == expected.casefold().rstrip(".")
 
 
+def _bachelor_page_state(snapshot: dict[str, Any]) -> str:
+    """Verify generic mailbox UI without reading messages or credentials."""
+    ready_signals = set()
+    page_texts = [str(snapshot.get("title", ""))]
+    for control in snapshot.get("controls", []):
+        name = " ".join(str(control.get("name", "")).split())
+        control_type = str(control.get("control_type", ""))
+        automation_id = str(control.get("automation_id", ""))
+        if control_type in {
+            "Document", "Hyperlink", "ListItem", "TabItem", "Text"
+        }:
+            page_texts.append(name)
+        if control_type == "Text" and name == "邮箱选项卡":
+            ready_signals.add("mail_tabs")
+        elif (
+            control_type == "TabItem"
+            and automation_id.startswith("_mail_tabitem_")
+        ):
+            ready_signals.add("mail_tabs")
+        elif (
+            control_type == "TreeItem"
+            and automation_id.startswith("_mail_tree_")
+        ):
+            ready_signals.add("mail_navigation")
+        elif (
+            control_type == "Button"
+            and automation_id.startswith("_mail_component_")
+            and name in {"收 信", "写 信"}
+        ):
+            ready_signals.add("mail_actions")
+    combined_text = "\n".join(page_texts).casefold()
+    auth_markers = (
+        "账号登录", "密码登录", "扫码登录", "登录邮箱", "请登录",
+        "输入密码", "验证身份", "sign in", "log in",
+        "会话已过期", "请重新登录",
+    )
+    if any(marker in combined_text for marker in auth_markers):
+        return "AUTH_REQUIRED"
+    if len(ready_signals) >= 2:
+        return "READY"
+    return "PAGE_NOT_READY"
+
+
 def _find_verified_snapshot(
     identity: MailboxIdentity,
 ) -> tuple[dict[str, Any] | None, str]:
@@ -133,6 +176,8 @@ def _find_verified_snapshot(
         for expected in accepted_domains
     ):
         return snapshot, "IDENTITY_MISMATCH"
+    if identity.mailbox_id == "bachelor_mail":
+        return snapshot, _bachelor_page_state(snapshot)
     return snapshot, "READY"
 
 
@@ -140,7 +185,7 @@ def _ensure_mailbox_page(
     identity: MailboxIdentity, timeout: float = 15.0
 ) -> tuple[dict[str, Any] | None, str]:
     snapshot, state = _find_verified_snapshot(identity)
-    if state in {"READY", "IDENTITY_MISMATCH"}:
+    if state in {"READY", "IDENTITY_MISMATCH", "AUTH_REQUIRED"}:
         return snapshot, state
     if identity.stable_url is None and state == "PAGE_NOT_READY":
         return snapshot, state
@@ -155,9 +200,11 @@ def _ensure_mailbox_page(
     last_state = state
     while time.monotonic() < deadline:
         snapshot, last_state = _find_verified_snapshot(identity)
-        if last_state in {"READY", "IDENTITY_MISMATCH"}:
+        if last_state in {"READY", "IDENTITY_MISMATCH", "AUTH_REQUIRED"}:
             return snapshot, last_state
         time.sleep(0.5)
+    if last_state == "PAGE_NOT_READY":
+        return snapshot, "LOAD_TIMEOUT"
     return snapshot, last_state
 
 
@@ -247,6 +294,10 @@ def _summarize_with_edge(identity: MailboxIdentity) -> dict[str, Any]:
         if state != "READY" or snapshot is None:
             if state == "IDENTITY_MISMATCH":
                 message = "Edge Profile 与当前页面邮箱服务不一致，已停止处理"
+            elif identity.mailbox_id == "bachelor_mail" and state == "AUTH_REQUIRED":
+                message = "本科邮箱会话已失效，需要人工登录"
+            elif identity.mailbox_id == "bachelor_mail" and state == "LOAD_TIMEOUT":
+                message = "本科邮箱页面加载超时，需要人工检查"
             elif identity.mailbox_id == "bachelor_mail":
                 message = "本科邮箱页面未就绪，需要人工打开邮箱页面"
             elif state == "UNKNOWN_WINDOW":
@@ -254,7 +305,7 @@ def _summarize_with_edge(identity: MailboxIdentity) -> dict[str, Any]:
             else:
                 message = "目标邮箱页面未就绪或无法验证"
             result_status = (
-                "IDENTITY_MISMATCH" if state == "IDENTITY_MISMATCH"
+                state if state in {"IDENTITY_MISMATCH", "AUTH_REQUIRED", "LOAD_TIMEOUT"}
                 else "NOT_READY"
             )
             LOGGER.warning(

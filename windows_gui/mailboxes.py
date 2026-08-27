@@ -17,7 +17,6 @@ import win32gui
 import win32process
 from pywinauto import Desktop
 
-from .keyboard import hotkey, press_key, type_text
 from .server import mcp
 from .uia import _run_bounded
 from .windows import _focus_window_handle
@@ -294,14 +293,52 @@ def _find_existing_profile_window(
     return None if require_service_domain else candidates[0]
 
 
+def _navigate_edge_address_bar(hwnd: int, url: str) -> None:
+    """Submit a fixed URL through the bound Edge window address bar."""
+
+    def submit() -> None:
+        window = Desktop(backend="uia").window(handle=hwnd).wrapper_object()
+        for control in window.descendants():
+            info = control.element_info
+            automation_id = (info.automation_id or "").casefold()
+            name = (info.name or "").casefold()
+            if (info.control_type or "").casefold() != "edit":
+                continue
+            if not (
+                automation_id in {"view_1021", "view_1022"}
+                or any(token in name for token in (
+                    "address and search", "地址和搜索栏",
+                    "adresse et recherche", "address bar",
+                ))
+            ):
+                continue
+            control.set_focus()
+            control.set_edit_text(url)
+            control.type_keys("{ENTER}")
+            return
+        raise RuntimeError("Edge address bar was not found")
+
+    _run_bounded(submit, 5.0, "navigating Edge mailbox window")
+
+
+def _bachelor_window_page_state(hwnd: int) -> str:
+    """Check the bound bachelor page with the shared mailbox-ready rules."""
+    from .mail_summary import _bachelor_page_state, _snapshot_edge_window
+
+    try:
+        return _bachelor_page_state(_snapshot_edge_window(hwnd))
+    except TimeoutError:
+        return "PAGE_NOT_READY"
+
+
 def _navigate_bachelor_window_if_needed(
     identity: MailboxIdentity,
     hwnd: int,
     current_domain: str | None = None,
-) -> None:
-    """Navigate an already-bound bachelor window to its fixed entry URL."""
+) -> str | None:
+    """Navigate an already-bound bachelor window and verify its page UI."""
     if identity.mailbox_id != "bachelor_mail" or identity.stable_url is None:
-        return
+        return None
 
     domain = current_domain
     if domain is None:
@@ -309,45 +346,42 @@ def _navigate_bachelor_window_if_needed(
             domain = _read_edge_service_domain(hwnd)
         except Exception:
             domain = None
+
     if _domain_matches_identity(identity, domain):
-        return
+        initial_state = _bachelor_window_page_state(hwnd)
+        if initial_state in {"READY", "AUTH_REQUIRED"}:
+            return initial_state
 
     confirm_mailbox_identity(identity.mailbox_id, identity.profile_directory)
     _focus_window_handle(hwnd)
-    hotkey(["ctrl", "l"])
-    type_text(identity.stable_url, interval=0.02)
-    press_key("enter")
+    _navigate_edge_address_bar(hwnd, identity.stable_url)
 
     deadline = time.monotonic() + _BACHELOR_NAVIGATION_TIMEOUT_SECONDS
-    last_error: Exception | None = None
     while time.monotonic() < deadline:
         try:
             domain = _read_edge_service_domain(hwnd)
-            if _domain_matches_identity(identity, domain):
-                return
-        except Exception as error:
-            last_error = error
+        except TimeoutError:
+            domain = None
+        if not _domain_matches_identity(identity, domain):
+            time.sleep(0.5)
+            continue
+        state = _bachelor_window_page_state(hwnd)
+        if state in {"READY", "AUTH_REQUIRED"}:
+            return state
         time.sleep(0.5)
-
-    if last_error is not None:
-        raise TimeoutError(
-            f"Bachelor mailbox window did not reach "
-            f"{identity.service_domain}"
-        ) from last_error
-    raise TimeoutError(
-        f"Bachelor mailbox window did not reach {identity.service_domain}"
-    )
+    return "LOAD_TIMEOUT"
 
 
 def _prepare_existing_mailbox_window(
     identity: MailboxIdentity,
     hwnd: int,
     current_domain: str | None = None,
-) -> None:
+) -> str | None:
     if identity.mailbox_id == "bachelor_mail":
-        _navigate_bachelor_window_if_needed(
+        return _navigate_bachelor_window_if_needed(
             identity, hwnd, current_domain=current_domain
         )
+    return None
 
 
 def _wait_for_launched_edge_window(
@@ -453,6 +487,7 @@ def get_or_open_mailbox_window(
                 if preferred_hwnd is not None:
                     _record_runtime_context(identity, preferred_hwnd)
                     _focus_window_handle(preferred_hwnd)
+                    _prepare_existing_mailbox_window(identity, preferred_hwnd)
                     return {
                         "mailbox_id": identity.mailbox_id,
                         "display_name": identity.display_name,

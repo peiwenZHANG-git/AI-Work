@@ -147,7 +147,7 @@ Smoke test 只使用唯一命名的专用记事本文件，测试结果写入 `t
 
 `open_all_mailboxes()` 和 Edge 摘要路径共享内部 `get_or_open_mailbox_window()` 管理层；Outlook Graph 可用时不会调用该 Edge 窗口管理层，Graph 不可用时按上述规则回退。每个邮箱在 Agent 中最多绑定一个 Edge HWND：有效运行时绑定返回 `REUSED_EXISTING_WINDOW`；Server 重启后优先通过窗口 PID 和进程命令行中的 `--profile-directory` 找回窗口。Edge 复用同一浏览器进程、主命令行不含 Profile 参数时，使用 Edge 浏览器标题中精确的 Profile 显示名称后缀恢复绑定，不从页面 UIA 内容猜测。恢复返回 `RESTORED_WINDOW_BINDING`；只有未找到对应 Profile 窗口时才返回 `CREATED_NEW_WINDOW`。该逻辑不会关闭用户原本打开的重复窗口。
 
-本科邮箱使用固定的非会话安全入口 `https://mailh.qiye.163.com/`。窗口管理层会优先在 Profile 1 的现有窗口中选择主机名为 `mailh.qiye.163.com` 的已登录页面；复用或恢复的窗口停留在新标签页、空白页或其他非邮箱页面时，会在同一窗口导航到该固定入口并等待精确主机名通过校验。完整网易 URL、sid 和其他会话材料不会被保存、记录或复用。
+本科邮箱使用固定的非会话安全入口 `https://mailh.qiye.163.com/`。窗口管理层会优先在 Profile 1 的现有窗口中选择主机名为 `mailh.qiye.163.com` 的页面；复用或恢复的窗口停留在新标签页、空白页或其他非邮箱页面时，会在同一 HWND 内通过 Edge 地址栏提交该固定入口，并等待精确域名和至少两类稳定、非敏感邮箱 UI 信号。会话过期或登录页返回 `AUTH_REQUIRED`，加载超时返回 `LOAD_TIMEOUT`，都不会假报 READY。完整网易 URL、sid 和其他会话材料不会被保存、记录或复用。
 
 `summarize_all_mailboxes_today()` 严格按本科、硕士、QQ 邮箱顺序执行。硕士 Outlook 优先走 Graph READ-only，Graph 不可用时回退 Edge；本科网易和 QQ 走 Edge。Edge 路径的 Profile 身份来自本进程使用 `--profile-directory` 启动窗口时建立的内存绑定，不再由 UIA 页面内容反推。UIA 只读取地址栏并立即提取主机名，用于精确验证 `mailh.qiye.163.com`、`outlook.office.com`（以及重定向域名 `outlook.cloud.microsoft`）、`mail.qq.com` 或官方 QQ Mail 域名 `wx.mail.qq.com`；完整 URL 不会被保存、记录或返回。
 
