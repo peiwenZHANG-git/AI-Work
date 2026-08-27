@@ -21,6 +21,10 @@ from .mail_backends import (
 )
 from .browser_mail import BrowserDomReadonlyBackend, BrowserMailboxConfig
 from .imap_mail import (
+    BACHELOR_IMAP_CREDENTIAL_SERVICE,
+    BACHELOR_IMAP_CREDENTIAL_USERNAME,
+    BachelorImapConfig,
+    BachelorImapReadonlyBackend,
     QQ_IMAP_CREDENTIAL_SERVICE,
     QQ_IMAP_CREDENTIAL_USERNAME,
     QqImapConfig,
@@ -436,7 +440,7 @@ _GRAPH_FALLBACK_STATUSES = {
     BackendStatus.REQUEST_FAILED,
 }
 
-_QQ_IMAP_FALLBACK_STATUSES = {
+_IMAP_FALLBACK_STATUSES = {
     BackendStatus.IMAP_NOT_CONFIGURED,
     BackendStatus.IMAP_AUTH_FAILED,
     BackendStatus.IMAP_NETWORK_FAILED,
@@ -484,7 +488,15 @@ def _backend_for_identity(identity: MailboxIdentity) -> Any:
                 QQ_IMAP_CREDENTIAL_USERNAME,
             ),
         )
-    return _browser_backend_for_identity(identity)
+    if identity.mailbox_id == 'bachelor_mail':
+        return BachelorImapReadonlyBackend(
+            config=BachelorImapConfig.from_environment(),
+            secret_store=WindowsCredentialManagerSecretStore(
+                BACHELOR_IMAP_CREDENTIAL_SERVICE,
+                BACHELOR_IMAP_CREDENTIAL_USERNAME,
+            ),
+        )
+    raise ValueError(f'Unsupported mailbox identity: {identity.mailbox_id}')
 
 
 def _summarize_mailbox(identity: MailboxIdentity) -> dict[str, Any]:
@@ -508,8 +520,8 @@ def _summarize_mailbox(identity: MailboxIdentity) -> dict[str, Any]:
                 raise RuntimeError('Edge fallback returned no compatible result')
             return fallback.legacy_result
         if (
-            identity.mailbox_id == 'qq_mail'
-            and result.status in _QQ_IMAP_FALLBACK_STATUSES
+            identity.mailbox_id in {'bachelor_mail', 'qq_mail'}
+            and result.status in _IMAP_FALLBACK_STATUSES
         ):
             browser = _browser_backend_for_identity(identity)
             if browser.config.endpoint:

@@ -50,8 +50,9 @@ class MailSummaryTests(unittest.TestCase):
     def test_bachelor_not_ready_path(self, ensure):
         ensure.return_value = (None, "PAGE_NOT_READY")
         result = _summarize_mailbox(MAILBOX_IDENTITIES["bachelor_mail"])
-        self.assertEqual("BROWSER_BACKEND_NOT_READY", result["status"])
+        self.assertEqual("IMAP_NOT_CONFIGURED", result["status"])
         self.assertEqual([], result["emails"])
+        ensure.assert_not_called()
 
     @patch("windows_gui.mail_summary._ensure_mailbox_page")
     def test_unconfirmed_identity_stops_without_reading(self, ensure):
