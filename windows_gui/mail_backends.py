@@ -43,6 +43,10 @@ class BackendStatus(str, Enum):
     EMPTY_TODAY = 'EMPTY_TODAY'
     BROWSER_BACKEND_NOT_READY = 'BROWSER_BACKEND_NOT_READY'
     BROWSER_ATTACH_FAILED = 'BROWSER_ATTACH_FAILED'
+    IMAP_NOT_CONFIGURED = 'IMAP_NOT_CONFIGURED'
+    IMAP_AUTH_FAILED = 'IMAP_AUTH_FAILED'
+    IMAP_NETWORK_FAILED = 'IMAP_NETWORK_FAILED'
+    IMAP_PROTOCOL_ERROR = 'IMAP_PROTOCOL_ERROR'
 
 
 @dataclass(frozen=True)
@@ -201,6 +205,16 @@ class WindowsCredentialManagerTokenStore:
     def get_access_token(self) -> str | None:
         token = keyring.get_password(self.service, self.username)
         return token if isinstance(token, str) and token else None
+
+
+@dataclass
+class WindowsCredentialManagerSecretStore:
+    service: str
+    username: str
+
+    def get_secret(self) -> str | None:
+        secret = keyring.get_password(self.service, self.username)
+        return secret if isinstance(secret, str) and secret else None
 
 
 GraphTransport = Callable[[str, dict[str, str], float], Any]
@@ -814,4 +828,5 @@ __all__ = [
     'GRAPH_DRAFT_SCOPES', 'GRAPH_SEND_SCOPES',
     'GraphBackendConfig', 'GraphReadonlyBackend', 'MailBackend',
     'MailBackendResult', 'WindowsCredentialManagerTokenStore',
+    'WindowsCredentialManagerSecretStore',
 ]

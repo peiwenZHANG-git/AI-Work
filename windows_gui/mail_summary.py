@@ -16,9 +16,16 @@ from .mail_backends import (
     GraphBackendConfig,
     GraphReadonlyBackend,
     MailBackendResult,
+    WindowsCredentialManagerSecretStore,
     WindowsCredentialManagerTokenStore,
 )
 from .browser_mail import BrowserDomReadonlyBackend, BrowserMailboxConfig
+from .imap_mail import (
+    QQ_IMAP_CREDENTIAL_SERVICE,
+    QQ_IMAP_CREDENTIAL_USERNAME,
+    QqImapConfig,
+    QqImapReadonlyBackend,
+)
 from .mailboxes import (
     MAILBOX_IDENTITIES,
     MailboxIdentity,
@@ -417,6 +424,10 @@ _BACKEND_STATUS_MAP = {
     BackendStatus.EMPTY_TODAY: 'EMPTY_TODAY',
     BackendStatus.BROWSER_BACKEND_NOT_READY: 'BROWSER_BACKEND_NOT_READY',
     BackendStatus.BROWSER_ATTACH_FAILED: 'BROWSER_ATTACH_FAILED',
+    BackendStatus.IMAP_NOT_CONFIGURED: 'IMAP_NOT_CONFIGURED',
+    BackendStatus.IMAP_AUTH_FAILED: 'IMAP_AUTH_FAILED',
+    BackendStatus.IMAP_NETWORK_FAILED: 'IMAP_NETWORK_FAILED',
+    BackendStatus.IMAP_PROTOCOL_ERROR: 'IMAP_PROTOCOL_ERROR',
 }
 
 _GRAPH_FALLBACK_STATUSES = {
@@ -425,16 +436,17 @@ _GRAPH_FALLBACK_STATUSES = {
     BackendStatus.REQUEST_FAILED,
 }
 
+_QQ_IMAP_FALLBACK_STATUSES = {
+    BackendStatus.IMAP_NOT_CONFIGURED,
+    BackendStatus.IMAP_AUTH_FAILED,
+    BackendStatus.IMAP_NETWORK_FAILED,
+    BackendStatus.IMAP_PROTOCOL_ERROR,
+}
 
-def _backend_for_identity(identity: MailboxIdentity) -> Any:
-    if identity.mailbox_id == 'master_mail':
-        config = GraphBackendConfig.from_environment()
-        return GraphReadonlyBackend(
-            config=config,
-            token_store=WindowsCredentialManagerTokenStore(
-                config.token_service, config.token_username
-            ),
-        )
+
+def _browser_backend_for_identity(
+    identity: MailboxIdentity,
+) -> BrowserDomReadonlyBackend:
     endpoint_environment = {
         'bachelor_mail': 'AI_WORK_BACHELOR_CDP_ENDPOINT',
         'qq_mail': 'AI_WORK_QQ_CDP_ENDPOINT',
@@ -453,6 +465,26 @@ def _backend_for_identity(identity: MailboxIdentity) -> Any:
         ),
         verify_page=lambda: _ensure_mailbox_page(identity)[1],
     )
+
+
+def _backend_for_identity(identity: MailboxIdentity) -> Any:
+    if identity.mailbox_id == 'master_mail':
+        config = GraphBackendConfig.from_environment()
+        return GraphReadonlyBackend(
+            config=config,
+            token_store=WindowsCredentialManagerTokenStore(
+                config.token_service, config.token_username
+            ),
+        )
+    if identity.mailbox_id == 'qq_mail':
+        return QqImapReadonlyBackend(
+            config=QqImapConfig.from_environment(),
+            secret_store=WindowsCredentialManagerSecretStore(
+                QQ_IMAP_CREDENTIAL_SERVICE,
+                QQ_IMAP_CREDENTIAL_USERNAME,
+            ),
+        )
+    return _browser_backend_for_identity(identity)
 
 
 def _summarize_mailbox(identity: MailboxIdentity) -> dict[str, Any]:
@@ -475,6 +507,23 @@ def _summarize_mailbox(identity: MailboxIdentity) -> dict[str, Any]:
             if fallback.legacy_result is None:
                 raise RuntimeError('Edge fallback returned no compatible result')
             return fallback.legacy_result
+        if (
+            identity.mailbox_id == 'qq_mail'
+            and result.status in _QQ_IMAP_FALLBACK_STATUSES
+        ):
+            browser = _browser_backend_for_identity(identity)
+            if browser.config.endpoint:
+                LOGGER.warning(
+                    '%s: IMAP unavailable (%s); trying opt-in Browser DOM fallback',
+                    identity.mailbox_id,
+                    result.status.value,
+                )
+                browser_result = browser.summarize_today(_MAX_EMAILS)
+                if browser_result.status not in {
+                    BackendStatus.BROWSER_BACKEND_NOT_READY,
+                    BackendStatus.BROWSER_ATTACH_FAILED,
+                }:
+                    result = browser_result
 
         group = _empty_group(
             identity,

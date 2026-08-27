@@ -19,6 +19,7 @@ from windows_gui.mail_backends import (
     MailBackendResult,
 )
 from windows_gui.browser_mail import BrowserDomReadonlyBackend
+from windows_gui.imap_mail import QqImapReadonlyBackend
 from windows_gui.mail_summary import _backend_for_identity, _summarize_mailbox
 from windows_gui.mailboxes import MAILBOX_IDENTITIES
 
@@ -179,14 +180,41 @@ class BackendDispatchTests(unittest.TestCase):
     def test_graph_request_failure_falls_back_to_edge(self):
         self._assert_graph_falls_back(BackendStatus.REQUEST_FAILED)
 
-    def test_qq_and_bachelor_use_browser_dom_backend(self):
-        for mailbox_id in ('bachelor_mail', 'qq_mail'):
-            backend = _backend_for_identity(MAILBOX_IDENTITIES[mailbox_id])
-            self.assertIsInstance(backend, BrowserDomReadonlyBackend)
-            self.assertEqual(
-                MAILBOX_IDENTITIES[mailbox_id].profile_directory,
-                backend.config.profile_directory,
-            )
+    def test_bachelor_continues_to_use_browser_dom_backend(self):
+        identity = MAILBOX_IDENTITIES['bachelor_mail']
+        backend = _backend_for_identity(identity)
+        self.assertIsInstance(backend, BrowserDomReadonlyBackend)
+        self.assertEqual(identity.profile_directory, backend.config.profile_directory)
+
+    def test_qq_prefers_readonly_imap_backend(self):
+        backend = _backend_for_identity(MAILBOX_IDENTITIES['qq_mail'])
+        self.assertIsInstance(backend, QqImapReadonlyBackend)
+
+    def test_qq_uses_opt_in_browser_fallback_when_imap_unavailable(self):
+        imap_backend = _StaticBackend(MailBackendResult(
+            BackendStatus.IMAP_NETWORK_FAILED, 'IMAP unavailable'
+        ))
+        browser_backend = _StaticBackend(MailBackendResult(
+            BackendStatus.READY,
+            'Browser ready',
+            (BackendEmail('Sender', 'Subject', '10:00', 'metadata only'),),
+        ))
+        browser_backend.config = SimpleNamespace(
+            endpoint='http://127.0.0.1:9222'
+        )
+        with (
+            patch(
+                'windows_gui.mail_summary._backend_for_identity',
+                return_value=imap_backend,
+            ),
+            patch(
+                'windows_gui.mail_summary._browser_backend_for_identity',
+                return_value=browser_backend,
+            ),
+        ):
+            result = _summarize_mailbox(MAILBOX_IDENTITIES['qq_mail'])
+        self.assertEqual('READY', result['status'])
+        self.assertEqual(1, result['today_count'])
 
     def test_edge_fallback_backend_preserves_existing_result(self):
         expected = {'status': 'NOT_READY'}

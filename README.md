@@ -11,6 +11,7 @@
 - `uia.py`：UI Automation 控件、菜单和保存对话框操作。
 - `mail_backends.py`：统一邮箱后端抽象、Graph 与 Edge adapter；摘要和搜索保持 READ-only，草稿仅保存不发送。
 - `browser_mail.py`：QQ 与本科网易邮箱的 Browser DOM/CDP READ-only 摘要 adapter；只提取列表元数据。
+- `imap_mail.py`：QQ 邮箱标准库 IMAP READ-only 摘要 adapter；使用 SSL、EXAMINE、UID 和 BODY.PEEK。
 - `mailboxes.py`：固定邮箱身份、权限边界和 Edge Profile 启动逻辑。
 - `mail_search.py`：统一 READ-only 邮件搜索、后端分发和安全结果引用。
 - `mail_draft.py`：统一草稿创建、Graph/Edge 后端分发和不发送安全检查。
@@ -100,7 +101,7 @@ Smoke test 只使用唯一命名的专用记事本文件，测试结果写入 `t
 | `set_save_dialog_filename` | 在 Windows 保存对话框中设置文件名。 |
 | `click_save_button` | 激活 Windows 保存对话框中的保存按钮。 |
 | `open_all_mailboxes` | 使用三个固定 Edge Profile 分别打开独立邮箱窗口，并返回每个邮箱的打开状态；不读取或修改邮件。 |
-| `summarize_all_mailboxes_today` | 硕士邮箱保持 Graph 优先 / Edge fallback；本科网易和 QQ 邮箱使用 Browser DOM/CDP 只读列表元数据；外部返回结构保持兼容。 |
+| `summarize_all_mailboxes_today` | 硕士邮箱保持 Graph 优先 / Edge fallback；QQ 邮箱优先使用 IMAP READ-only、显式配置时可回退 Browser DOM/CDP；本科网易继续使用 Browser DOM/CDP；外部返回结构保持兼容。 |
 | `search_mailboxes` | 按邮箱、关键词、发件人、ISO 8601 起止时间和最大数量执行 READ-only 搜索；不打开正文，不改变邮件状态。 |
 | `create_mail_draft` | 在指定已验证邮箱中创建并保存草稿；只保存不发送，不支持附件。 |
 | `send_mail_draft` | 仅在 `confirm_send=true` 时发送已有草稿；发送前校验邮箱身份、draft 归属、收件人和主题。 |
@@ -157,9 +158,13 @@ Smoke test 只使用唯一命名的专用记事本文件，测试结果写入 `t
 
 本科邮箱使用固定的非会话安全入口 `https://mailh.qiye.163.com/`。窗口管理层会优先在 Profile 1 的现有窗口中选择主机名为 `mailh.qiye.163.com` 的页面；复用或恢复的窗口停留在新标签页、空白页或其他非邮箱页面时，会在同一 HWND 内通过 Edge 地址栏提交该固定入口，并等待精确域名和至少两类稳定、非敏感邮箱 UI 信号。会话过期或登录页返回 `AUTH_REQUIRED`，加载超时返回 `LOAD_TIMEOUT`，都不会假报 READY。完整网易 URL、sid 和其他会话材料不会被保存、记录或复用。
 
-`summarize_all_mailboxes_today()` 严格按本科、硕士、QQ 邮箱顺序执行。硕士 Outlook 优先走 Graph READ-only，Graph 不可用时回退 Edge；本科网易和 QQ 走 Edge。Edge 路径的 Profile 身份来自本进程使用 `--profile-directory` 启动窗口时建立的内存绑定，不再由 UIA 页面内容反推。UIA 只读取地址栏并立即提取主机名，用于精确验证 `mailh.qiye.163.com`、`outlook.office.com`（以及重定向域名 `outlook.cloud.microsoft`）、`mail.qq.com` 或官方 QQ Mail 域名 `wx.mail.qq.com`；完整 URL 不会被保存、记录或返回。
+`summarize_all_mailboxes_today()` 严格按本科、硕士、QQ 邮箱顺序执行。硕士 Outlook 优先走 Graph READ-only，Graph 不可用时回退 Edge；本科网易继续使用 Browser DOM/CDP；QQ 优先使用 IMAP READ-only，仅当 IMAP 不可用且用户显式配置了 QQ CDP endpoint 时尝试现有 Browser DOM fallback。
 
-QQ 与本科网易摘要不再使用 Windows UIA 重建邮件行。UIA 仅确认运行时 Profile、目标窗口、精确服务域名和登录/页面状态；邮件列表由 Browser DOM/CDP adapter 读取，而且只提取发件人、主题、接收时间和经过 SHA-256 截断生成的本地 opaque reference。adapter 不点击邮件、不打开正文、不改变已读状态，也不提供发送、删除、移动、归档或标记动作。
+QQ IMAP 固定连接 `imap.qq.com:993` 并使用系统 CA 验证的 SSL/TLS。非秘密用户名由 `AI_WORK_QQ_IMAP_USERNAME` 提供；独立授权码只从 Windows Credential Manager 读取，service 为 `AI-Work/windows-gui/mailboxes`，username 为 `qq_mail_imap_authorization_code`，不得复用 Graph token 条目。adapter 使用 `EXAMINE`（`select(..., readonly=True)`）、UID SEARCH 和 `BODY.PEEK[HEADER.FIELDS ...]`，不会调用 STORE、MOVE、COPY 或 EXPUNGE，也不会把该 credential 用于草稿或发送。未配置、认证失败、网络/TLS 失败和协议解析失败分别返回明确 IMAP 状态，候选邮件无法解析时不会假报 `EMPTY_TODAY`。
+
+Edge 路径的 Profile 身份来自本进程使用 `--profile-directory` 启动窗口时建立的内存绑定，不再由 UIA 页面内容反推。UIA 只读取地址栏并立即提取主机名，用于精确验证 `mailh.qiye.163.com`、`outlook.office.com`（以及重定向域名 `outlook.cloud.microsoft`）、`mail.qq.com` 或官方 QQ Mail 域名 `wx.mail.qq.com`；完整 URL 不会被保存、记录或返回。
+
+QQ Browser fallback 与本科网易摘要不使用 Windows UIA 重建邮件行。UIA 仅确认运行时 Profile、目标窗口、精确服务域名和登录/页面状态；Browser adapter 只提取发件人、主题、接收时间和经过 SHA-256 截断生成的本地 opaque reference。adapter 不点击邮件、不打开正文、不改变已读状态，也不提供发送、删除、移动、归档或标记动作。
 
 CDP endpoint 必须分别通过 `AI_WORK_BACHELOR_CDP_ENDPOINT` 和 `AI_WORK_QQ_CDP_ENDPOINT` 配置为带显式端口、无凭证、无查询参数的本机回环 HTTP origin（例如 `http://127.0.0.1:9222`）。不接受或保存包含浏览器 target 标识的 WebSocket 调试 URL。未配置返回 `BROWSER_BACKEND_NOT_READY`，连接或 5 秒 attach 失败返回 `BROWSER_ATTACH_FAILED`，登录失效返回 `AUTH_REQUIRED`；找不到列表、列表行不可解析和确认今日为空分别返回 `MAIL_LIST_NOT_FOUND`、`MAIL_ITEMS_NOT_PARSED`、`EMPTY_TODAY`。只有识别到可信列表且解析成功，或页面明确暴露空列表状态，才会判定 `EMPTY_TODAY`。
 

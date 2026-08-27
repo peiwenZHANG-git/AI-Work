@@ -23,6 +23,7 @@ These instructions apply to the whole repository. This project is a Windows-only
 - Put fixed mailbox identities and Edge Profile launch behavior in `windows_gui/mailboxes.py`.
 - Put read-only mailbox page verification, list parsing, summaries, and classification in `windows_gui/mail_summary.py`.
 - Put QQ/NetEase Browser DOM/CDP transport and sanitized list parsing in `windows_gui/browser_mail.py`.
+- Put QQ IMAP READ-only transport and header parsing in `windows_gui/imap_mail.py`.
 - Put backend-neutral mailbox search dispatch and safe result references in `windows_gui/mail_search.py`.
 - Put backend-neutral mailbox draft creation and no-send safety checks in `windows_gui/mail_draft.py`.
 - Put confirmed sending of existing mailbox drafts in `windows_gui/mail_send.py`.
@@ -59,6 +60,8 @@ These instructions apply to the whole repository. This project is a Windows-only
 - `summarize_all_mailboxes_today` must process identities in configured order and return `IDENTITY_MISMATCH` before reading mail when the bound Profile and expected service domain disagree.
 - Mail summary UIA traversal must remain bounded and read-only. Do not focus, invoke, select, or click a mail row merely to obtain a summary.
 - For `qq_mail` and `bachelor_mail`, UIA may verify only window/Profile/domain/login readiness. Never restore UIA mail-row reconstruction; route list metadata through `BrowserDomReadonlyBackend`.
+- Prefer `QqImapReadonlyBackend` for QQ summaries. It must use SSL on `imap.qq.com:993`, EXAMINE/read-only selection, UID commands, and BODY.PEEK headers only; never call STORE, MOVE, COPY, or EXPUNGE.
+- Store the QQ authorization code only in the dedicated Windows Credential Manager entry `AI-Work/windows-gui/mailboxes` / `qq_mail_imap_authorization_code`. Never reuse the Graph token entry or use this credential for Draft or Send.
 - CDP attachment is opt-in and loopback-only. Never automatically close or restart Edge, reuse a locked daily Profile in a second process, copy a Profile, expose a debugging port to the LAN, or log a CDP websocket URL.
 - Browser DOM extraction may return only sender, subject, received time, and a hashed opaque reference. It must not query body content, click rows, mutate read state, or access cookies/local storage/session tokens.
 - Prefer list metadata summaries so unread state cannot change. If a future implementation opens a body, it must report the possible read-state change explicitly and requires targeted safety tests.

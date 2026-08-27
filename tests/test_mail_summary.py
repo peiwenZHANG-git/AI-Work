@@ -208,11 +208,12 @@ class MailSummaryTests(unittest.TestCase):
 
     @patch.dict("os.environ", {}, clear=True)
     @patch("windows_gui.mail_summary._ensure_mailbox_page")
-    def test_qq_ready_page_without_cdp_is_not_reported_as_zero(self, ensure):
+    def test_qq_without_imap_or_cdp_is_not_reported_as_zero(self, ensure):
         ensure.return_value = ({"controls": []}, "READY")
         result = _summarize_mailbox(MAILBOX_IDENTITIES["qq_mail"])
-        self.assertEqual("BROWSER_BACKEND_NOT_READY", result["status"])
+        self.assertEqual("IMAP_NOT_CONFIGURED", result["status"])
         self.assertEqual(0, result["today_count"])
+        ensure.assert_not_called()
 
     @patch("windows_gui.mail_summary._ensure_mailbox_page")
     def test_list_with_unparsed_items_is_not_reported_as_zero(self, ensure):
