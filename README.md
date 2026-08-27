@@ -9,9 +9,10 @@
 - `keyboard.py`：文本输入、按键和快捷键。
 - `windows.py`：窗口枚举、聚焦及聚焦后的输入操作。
 - `uia.py`：UI Automation 控件、菜单和保存对话框操作。
-- `mail_backends.py`：统一邮箱后端抽象、Graph READ-only adapter 和 Edge fallback adapter。
+- `mail_backends.py`：统一邮箱后端抽象、Graph 与 Edge adapter；摘要和搜索保持 READ-only，草稿仅保存不发送。
 - `mailboxes.py`：固定邮箱身份、权限边界和 Edge Profile 启动逻辑。
 - `mail_search.py`：统一 READ-only 邮件搜索、后端分发和安全结果引用。
+- `mail_draft.py`：统一草稿创建、Graph/Edge 后端分发和不发送安全检查。
 - `mail_summary.py`：邮箱身份和页面验证、只读列表解析、今日摘要及重要事项分类。
 
 ## 环境要求
@@ -62,7 +63,7 @@ Smoke test 只使用唯一命名的专用记事本文件，测试结果写入 `t
 
 ## MCP 工具
 
-当前服务器注册 26 个工具；原有 25 个工具的名称、参数和返回结构保持不变。
+当前服务器注册 27 个工具；原有 26 个工具的名称、参数和返回结构保持不变。
 
 | 工具 | 用途 |
 |---|---|
@@ -92,6 +93,7 @@ Smoke test 只使用唯一命名的专用记事本文件，测试结果写入 `t
 | `open_all_mailboxes` | 使用三个固定 Edge Profile 分别打开独立邮箱窗口，并返回每个邮箱的打开状态；不读取或修改邮件。 |
 | `summarize_all_mailboxes_today` | 硕士邮箱优先使用 Graph READ-only 元数据，Graph 不可用时回退现有 Edge 只读摘要；本科网易和 QQ 邮箱继续使用 Edge；外部返回结构保持兼容。 |
 | `search_mailboxes` | 按邮箱、关键词、发件人、ISO 8601 起止时间和最大数量执行 READ-only 搜索；不打开正文，不改变邮件状态。 |
+| `create_mail_draft` | 在指定已验证邮箱中创建并保存草稿；只保存不发送，不支持附件。 |
 
 ## 固定邮箱身份
 
@@ -101,9 +103,9 @@ Smoke test 只使用唯一命名的专用记事本文件，测试结果写入 `t
 |---|---|---|---|---|---|
 | `bachelor_mail` | 本科邮箱 | `Profile 1` | 网易企业邮箱 | 未配置；工具只打开指定 Profile，不猜测地址 | READ、DRAFT、SEND |
 | `master_mail` | 硕士邮箱 | `Profile 2` | Outlook Web | `https://outlook.office.com/mail/` | READ、DRAFT、SEND |
-| `qq_mail` | QQ邮箱 | `Profile 3` | QQ Mail | `https://mail.qq.com/` | READ |
+| `qq_mail` | QQ邮箱 | `Profile 3` | QQ Mail | `https://mail.qq.com/` | READ、DRAFT |
 
-所有发送动作都必须先生成草稿并等待用户确认。QQ 邮箱默认只读。删除、移动、标记或归档邮件前必须获得用户确认。任何邮箱操作都必须先核对邮箱身份与指定 Profile；无法确认时立即停止，禁止猜测。自动输入密码以及记录登录凭证、Cookie、token 或会话链接均被禁止。
+所有发送动作都必须先生成草稿并等待用户确认。QQ 邮箱允许创建草稿但不允许发送。删除、移动、标记或归档邮件前必须获得用户确认。任何邮箱操作都必须先核对邮箱身份与指定 Profile；无法确认时立即停止，禁止猜测。自动输入密码以及记录登录凭证、Cookie、token 或会话链接均被禁止。
 
 
 ### READ-only 邮件搜索
@@ -114,9 +116,20 @@ Smoke test 只使用唯一命名的专用记事本文件，测试结果写入 `t
 - QQ 与本科网易通过 Edge 只读解析当前已验证页面的可见邮件列表；该 fallback 不输入搜索框、不点击邮件、不滚动页面，因此只能覆盖当前可见列表，不代表全邮箱完整索引。
 - Edge 的 `message_reference` 是由邮箱 ID 和列表元数据生成的安全 hash，不包含 HWND、URL、sid 或会话材料；Graph 返回 Graph message id。
 
-### Outlook Graph READ-only 后端
+### 统一邮件草稿创建
 
-- 第一阶段仅迁移硕士 Outlook 的 READ-only 摘要路径；Graph scope 只有 `Mail.Read`，不申请 `Mail.ReadWrite` 或 `Mail.Send`，也不启用 draft/send。
+- `create_mail_draft(mailbox_id, to, subject, body)` 是新增的第 27 个工具；原 26 个工具的名称、参数和返回结构保持不变。
+- 草稿只能保存，不能发送；返回包含邮箱、状态、draft reference、收件人和主题，不返回正文。
+- 硕士 Outlook 在 Graph 可用时先调用 `/me` 校验登录账号，再用 `/me/messages` 创建草稿；Graph 未配置、未认证、token 失效或请求失败时回退已验证 Edge Profile。
+- 本科网易和 QQ 邮箱复用现有 Edge Profile / 服务域名校验，再通过 UIA 查找显式的新建邮件、收件人、主题、正文和存草稿控件；找不到必需控件时失败，不会改用发送或关闭窗口动作。
+- QQ 邮箱权限更新为 READ + DRAFT，但仍不允许 SEND。所有邮箱都未实现 Reply、Forward、Attachment 或 Send。
+- Graph 草稿路径需要委托 token 具备 `Mail.ReadWrite`；当前未实现 OAuth 登录流程，也不会在源码或配置中保存授权码、密码、cookie、sid 或 token。
+
+### Outlook Graph 后端
+
+- 摘要和搜索路径保持 READ-only，仅需委托 token 具备 `Mail.Read`。
+- 草稿创建路径需要委托 token 具备 `Mail.ReadWrite`；当前未实现 OAuth 登录流程。
+- 所有路径都不申请 `Mail.Send`，发送功能保持未实现。
 - Graph 请求只读取 `sender`、`subject`、`receivedDateTime` 和最多 10 条列表元数据，不读取正文，不改变已读状态。
 - 非秘密配置来自环境变量：`AI_WORK_OUTLOOK_TENANT_ID`、`AI_WORK_OUTLOOK_CLIENT_ID`、`AI_WORK_OUTLOOK_MAILBOX`。
 - 访问令牌只允许放在 Windows Credential Manager / 系统密钥库：service 为 `AI-Work/windows-gui/mailboxes`，username 为 `master_mail_graph_access_token`。源码、日志、测试 fixture 和 Git 中不得出现 token。

@@ -100,7 +100,7 @@ EXPECTED_TOOLS = {
     "get_mouse_position", "hotkey", "list_controls", "list_windows",
     "move_mouse", "press_key", "right_click", "screenshot", "scroll",
     "set_save_dialog_filename", "type_text", "open_all_mailboxes",
-    "summarize_all_mailboxes_today", "search_mailboxes",
+    "summarize_all_mailboxes_today", "search_mailboxes", "create_mail_draft",
 }
 
 

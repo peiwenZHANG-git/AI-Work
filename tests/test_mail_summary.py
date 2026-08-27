@@ -40,9 +40,8 @@ class MailSummaryTests(unittest.TestCase):
         self.assertEqual("Profile 3", qq.profile_directory)
         self.assertEqual("https://mail.qq.com/", qq.stable_url)
 
-    def test_permission_restrictions_remain_read_only_for_qq(self):
-        self.assertEqual(("READ",), MAILBOX_IDENTITIES["qq_mail"].permissions)
-        self.assertNotIn("DRAFT", MAILBOX_IDENTITIES["qq_mail"].permissions)
+    def test_qq_permissions_allow_draft_but_not_send(self):
+        self.assertEqual(("READ", "DRAFT"), MAILBOX_IDENTITIES["qq_mail"].permissions)
         self.assertNotIn("SEND", MAILBOX_IDENTITIES["qq_mail"].permissions)
         self.assertTrue(MAILBOX_IDENTITIES["master_mail"].send_requires_confirmation)
 

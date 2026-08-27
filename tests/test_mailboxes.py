@@ -56,7 +56,7 @@ class MailboxConfigurationTests(unittest.TestCase):
             ("outlook.cloud.microsoft",), master.service_domain_aliases
         )
         self.assertEqual("Profile 3", qq.profile_directory)
-        self.assertEqual(("READ",), qq.permissions)
+        self.assertEqual(("READ", "DRAFT"), qq.permissions)
         self.assertEqual("https://mail.qq.com/", qq.stable_url)
         self.assertEqual("mail.qq.com", qq.service_domain)
         self.assertTrue(bachelor.send_requires_confirmation)

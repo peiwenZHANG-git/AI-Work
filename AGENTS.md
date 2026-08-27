@@ -9,7 +9,7 @@ These instructions apply to the whole repository. This project is a Windows-only
 - Keep `windows_gui_mcp.py` as the backward-compatible stdio entry point.
 - Preserve the shared server name `windows-gui` and the exported `mcp` object.
 - Do not rename, remove, or change the signature or return shape of an existing `@mcp.tool()` without explicit user approval.
-- Import every tool module from the entry point so all 26 tools register exactly once.
+- Import every tool module from the entry point so all 27 tools register exactly once.
 - Keep PyAutoGUI `FAILSAFE` enabled.
 - Preserve the native `SendInput` Unicode path for non-ASCII text and the existing PyAutoGUI path for ASCII text.
 - Avoid unrelated formatting or refactors while fixing a targeted issue.
@@ -23,6 +23,7 @@ These instructions apply to the whole repository. This project is a Windows-only
 - Put fixed mailbox identities and Edge Profile launch behavior in `windows_gui/mailboxes.py`.
 - Put read-only mailbox page verification, list parsing, summaries, and classification in `windows_gui/mail_summary.py`.
 - Put backend-neutral mailbox search dispatch and safe result references in `windows_gui/mail_search.py`.
+- Put backend-neutral mailbox draft creation and no-send safety checks in `windows_gui/mail_draft.py`.
 - Keep the FastMCP instance and process-wide settings in `windows_gui/server.py`.
 - Re-export public tools from `windows_gui_mcp.py` for import compatibility.
 
@@ -42,7 +43,7 @@ These instructions apply to the whole repository. This project is a Windows-only
 - Mailbox configuration may contain only non-secret identity metadata. Never store passwords, Cookie values, sid values, tokens, session URLs, or other credentials.
 - Treat the process-local runtime binding created by an explicit `--profile-directory` launch as the primary Profile identity. Never infer Profile identity from page text or general UIA labels.
 - Bind a newly launched Edge HWND to exactly one mailbox identity in memory. Do not persist this binding; stop with an unknown-window status if no unique window can be bound.
-- `bachelor_mail` and `master_mail` allow READ, DRAFT, and SEND; `qq_mail` allows READ only.
+- `bachelor_mail` and `master_mail` allow READ, DRAFT, and SEND; `qq_mail` allows READ and DRAFT but never SEND.
 - Every SEND must first create a draft and then wait for explicit user confirmation.
 - Never enter passwords automatically.
 - Reading may include sender, subject, time, and body only when the user requests it.
@@ -74,7 +75,7 @@ Run the complete side-effect-free test suite:
 python -m unittest discover -s tests -t . -v
 ```
 
-Confirm that FastMCP registers exactly the documented 26 tools. The unit tests must fail if a tool is missing or unexpectedly added.
+Confirm that FastMCP registers exactly the documented 27 tools. The unit tests must fail if a tool is missing or unexpectedly added.
 
 When the task authorizes real desktop testing, run:
 

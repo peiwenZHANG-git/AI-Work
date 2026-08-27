@@ -68,7 +68,7 @@ _MAILBOXES = {
         profile_directory="Profile 3",
         service="QQ Mail",
         stable_url="https://mail.qq.com/",
-        permissions=("READ",),
+        permissions=("READ", "DRAFT"),
         send_requires_confirmation=True,
         service_domain="mail.qq.com",
     ),

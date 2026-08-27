@@ -2,6 +2,7 @@
 
 from windows_gui.keyboard import hotkey, press_key, type_text
 from windows_gui.mailboxes import open_all_mailboxes
+from windows_gui.mail_draft import create_mail_draft
 from windows_gui.mail_search import search_mailboxes
 from windows_gui.mail_summary import summarize_all_mailboxes_today
 from windows_gui.mouse import (
@@ -26,7 +27,7 @@ __all__ = [
     "get_mouse_position", "hotkey", "list_controls", "list_windows", "mcp",
     "move_mouse", "press_key", "right_click", "screenshot", "scroll",
     "set_save_dialog_filename", "type_text", "open_all_mailboxes",
-    "summarize_all_mailboxes_today", "search_mailboxes",
+    "summarize_all_mailboxes_today", "search_mailboxes", "create_mail_draft",
 ]
 
 
