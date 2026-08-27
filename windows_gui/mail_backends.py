@@ -1,15 +1,16 @@
-"""Backend-neutral mailbox abstractions for summary and search operations."""
+"""Backend-neutral mailbox abstractions for summary, search, draft, and send operations."""
 
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any, Callable, Protocol
 
 import keyring
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import requests
 
@@ -20,6 +21,8 @@ GRAPH_MESSAGES_ENDPOINT = 'https://graph.microsoft.com/v1.0/me/messages'
 GRAPH_ME_ENDPOINT = 'https://graph.microsoft.com/v1.0/me'
 GRAPH_DRAFT_SCOPE = 'Mail.ReadWrite'
 GRAPH_DRAFT_SCOPES = (GRAPH_DRAFT_SCOPE,)
+GRAPH_SEND_SCOPE = 'Mail.Send'
+GRAPH_SEND_SCOPES = (GRAPH_DRAFT_SCOPE, GRAPH_SEND_SCOPE)
 
 
 class BackendStatus(str, Enum):
@@ -30,6 +33,10 @@ class BackendStatus(str, Enum):
     FALLBACK_REQUIRED = 'FALLBACK_REQUIRED'
     FORBIDDEN = 'FORBIDDEN'
     IDENTITY_MISMATCH = 'IDENTITY_MISMATCH'
+    NOT_CONFIRMED = 'NOT_CONFIRMED'
+    DRAFT_NOT_FOUND = 'DRAFT_NOT_FOUND'
+    INVALID_DRAFT = 'INVALID_DRAFT'
+    DRAFT_MAILBOX_MISMATCH = 'DRAFT_MAILBOX_MISMATCH'
 
 
 @dataclass(frozen=True)
@@ -111,6 +118,23 @@ class MailDraftResult:
     reference_kind: str = 'GRAPH_DRAFT_ID'
 
 
+@dataclass(frozen=True)
+class MailSendRequest:
+    draft_reference: str
+    confirmed: bool
+
+
+@dataclass(frozen=True)
+class MailSendResult:
+    status: BackendStatus
+    message: str
+    recipient: str | None = None
+    subject: str | None = None
+    sent_reference: str | None = None
+    reference_kind: str | None = None
+    send_attempted: bool = False
+
+
 class MailBackend(Protocol):
     def summarize_today(self, max_emails: int) -> MailBackendResult:
         """Return a read-only summary without changing mailbox state."""
@@ -120,6 +144,9 @@ class MailBackend(Protocol):
 
     def create_draft(self, request: MailDraftRequest) -> MailDraftResult:
         """Create a draft without sending it or changing message read state."""
+
+    def send_draft(self, request: MailSendRequest) -> MailSendResult:
+        """Send an existing draft only after explicit confirmation."""
 
 
 @dataclass(frozen=True)
@@ -131,6 +158,10 @@ class GraphBackendConfig:
     token_username: str = 'master_mail_graph_access_token'
     endpoint: str = GRAPH_MESSAGES_ENDPOINT
     identity_endpoint: str = GRAPH_ME_ENDPOINT
+    draft_select_fields: str = (
+        'id,subject,toRecipients,ccRecipients,bccRecipients,'
+        'from,sender,isDraft'
+    )
 
     @classmethod
     def from_environment(cls) -> 'GraphBackendConfig':
@@ -162,6 +193,7 @@ class WindowsCredentialManagerTokenStore:
 
 GraphTransport = Callable[[str, dict[str, str], float], Any]
 GraphDraftTransport = Callable[[str, dict[str, str], dict[str, Any], float], Any]
+GraphSendTransport = Callable[[str, dict[str, str], float], Any]
 
 
 @dataclass
@@ -176,6 +208,11 @@ class GraphReadonlyBackend:
     draft_transport: GraphDraftTransport = field(
         default=lambda url, headers, payload, timeout: requests.post(
             url, headers=headers, json=payload, timeout=timeout
+        )
+    )
+    send_transport: GraphSendTransport = field(
+        default=lambda url, headers, timeout: requests.post(
+            url, headers=headers, timeout=timeout
         )
     )
 
@@ -349,6 +386,181 @@ class GraphReadonlyBackend:
         finally:
             del token
 
+    def send_draft(self, request: MailSendRequest) -> MailSendResult:
+        if not request.confirmed:
+            return MailSendResult(
+                BackendStatus.NOT_CONFIRMED,
+                '发送已有草稿需要 confirm_send=true 的明确确认',
+            )
+        if not self.config.is_configured:
+            return MailSendResult(
+                BackendStatus.NOT_AUTHENTICATED,
+                'Graph 后端未完成 Azure 应用与 OAuth 配置',
+            )
+
+        token = self.token_store.get_access_token()
+        if not token:
+            return MailSendResult(
+                BackendStatus.NOT_AUTHENTICATED,
+                'Graph 访问令牌不可用，需要完成委托登录',
+            )
+
+        headers = {'Authorization': f'Bearer {token}'}
+        send_attempted = False
+        try:
+            identity_response = self.transport(
+                self.config.identity_endpoint, headers, 10.0,
+            )
+            identity_status = getattr(identity_response, 'status_code', None)
+            if identity_status == 401:
+                return MailSendResult(
+                    BackendStatus.TOKEN_EXPIRED,
+                    'Graph 访问令牌已失效，需要重新完成委托登录',
+                )
+            if identity_status == 403:
+                return MailSendResult(
+                    BackendStatus.FORBIDDEN,
+                    'Graph 身份校验被拒绝；请检查委托权限',
+                )
+            if (
+                identity_status is None
+                or identity_status < 200
+                or identity_status >= 300
+            ):
+                return MailSendResult(
+                    BackendStatus.REQUEST_FAILED,
+                    f"Graph 身份校验失败：HTTP {identity_status or 'unknown'}",
+                )
+            try:
+                identity_payload = identity_response.json()
+            except Exception:
+                return MailSendResult(
+                    BackendStatus.REQUEST_FAILED,
+                    'Graph 身份校验响应不是有效的 JSON 对象',
+                )
+            actual_identities = {
+                str(identity_payload.get(key) or '').casefold()
+                for key in ('userPrincipalName', 'mail')
+            }
+            expected_identity = self.config.mailbox.casefold()
+            if expected_identity not in actual_identities:
+                return MailSendResult(
+                    BackendStatus.IDENTITY_MISMATCH,
+                    'Graph 登录账号与配置的硕士 Outlook 邮箱不一致',
+                )
+
+            encoded_reference = quote(request.draft_reference, safe='')
+            draft_url = (
+                f'{self.config.endpoint}/{encoded_reference}?'
+                + urlencode({'$select': self.config.draft_select_fields})
+            )
+            draft_response = self.transport(draft_url, headers, 10.0)
+            draft_status = getattr(draft_response, 'status_code', None)
+            if draft_status == 401:
+                return MailSendResult(
+                    BackendStatus.TOKEN_EXPIRED,
+                    'Graph 访问令牌已失效，需要重新完成委托登录',
+                )
+            if draft_status == 403:
+                return MailSendResult(
+                    BackendStatus.FORBIDDEN,
+                    'Graph 读取草稿被拒绝；请检查 Mail.ReadWrite 权限',
+                )
+            if draft_status == 404:
+                return MailSendResult(
+                    BackendStatus.DRAFT_NOT_FOUND,
+                    '指定 Graph 草稿不存在或已发送',
+                )
+            if draft_status is None or draft_status < 200 or draft_status >= 300:
+                return MailSendResult(
+                    BackendStatus.REQUEST_FAILED,
+                    f"Graph 读取草稿失败：HTTP {draft_status or 'unknown'}",
+                )
+            try:
+                draft_payload = draft_response.json()
+            except Exception:
+                return MailSendResult(
+                    BackendStatus.REQUEST_FAILED,
+                    'Graph 草稿响应不是有效的 JSON 对象',
+                )
+            try:
+                recipient, subject = self._parse_send_draft(draft_payload)
+            except ValueError as error:
+                return MailSendResult(
+                    BackendStatus.INVALID_DRAFT,
+                    str(error),
+                )
+            for owner_field in ('from', 'sender'):
+                owner = draft_payload.get(owner_field)
+                if not isinstance(owner, dict):
+                    continue
+                owner_address = owner.get('emailAddress')
+                if not isinstance(owner_address, dict):
+                    continue
+                address = str(owner_address.get('address') or '')
+                if address and address.casefold() != expected_identity:
+                    return MailSendResult(
+                        BackendStatus.IDENTITY_MISMATCH,
+                        'Graph 草稿所属账号与配置的硕士 Outlook 邮箱不一致',
+                        recipient,
+                        subject,
+                    )
+
+            send_attempted = True
+            send_response = self.send_transport(
+                f'{self.config.endpoint}/{encoded_reference}/send',
+                headers,
+                10.0,
+            )
+            send_status = getattr(send_response, 'status_code', None)
+            if send_status == 401:
+                return MailSendResult(
+                    BackendStatus.TOKEN_EXPIRED,
+                    'Graph 访问令牌已失效，需要重新完成委托登录',
+                    recipient,
+                    subject,
+                    send_attempted=send_attempted,
+                )
+            if send_status == 403:
+                return MailSendResult(
+                    BackendStatus.FORBIDDEN,
+                    'Graph 发送被拒绝；请确认委托令牌已具备 Mail.Send',
+                    recipient,
+                    subject,
+                    send_attempted=send_attempted,
+                )
+            if send_status == 404:
+                return MailSendResult(
+                    BackendStatus.DRAFT_NOT_FOUND,
+                    '发送时指定 Graph 草稿不存在或已被发送',
+                    recipient,
+                    subject,
+                    send_attempted=send_attempted,
+                )
+            if send_status is None or send_status < 200 or send_status >= 300:
+                return MailSendResult(
+                    BackendStatus.REQUEST_FAILED,
+                    f"Graph 发送草稿请求失败：HTTP {send_status or 'unknown'}",
+                    recipient,
+                    subject,
+                    send_attempted=send_attempted,
+                )
+            return MailSendResult(
+                BackendStatus.READY,
+                'Graph 已发送指定草稿；Graph send 响应未返回 message id',
+                recipient,
+                subject,
+                send_attempted=send_attempted,
+            )
+        except requests.RequestException as error:
+            return MailSendResult(
+                BackendStatus.REQUEST_FAILED,
+                f'Graph send request failed: {type(error).__name__}',
+                send_attempted=send_attempted,
+            )
+        finally:
+            del token
+
     def search(self, query: MailSearchQuery) -> MailSearchResult:
         if not self.config.is_configured:
             return MailSearchResult(
@@ -448,6 +660,32 @@ class GraphReadonlyBackend:
         )
 
     @staticmethod
+    def _parse_send_draft(payload: dict[str, Any]) -> tuple[str, str]:
+        if not str(payload.get('id') or ''):
+            raise ValueError('Graph 草稿元数据缺少 id')
+        if payload.get('isDraft') is not True:
+            raise ValueError('指定 Graph 邮件不是可发送草稿')
+        recipients = payload.get('toRecipients')
+        if not isinstance(recipients, list) or len(recipients) != 1:
+            raise ValueError('草稿必须且只能包含一个收件人')
+        recipient_entry = recipients[0]
+        if not isinstance(recipient_entry, dict):
+            raise ValueError('草稿收件人格式无效')
+        recipient_address = recipient_entry.get('emailAddress')
+        if not isinstance(recipient_address, dict):
+            raise ValueError('草稿收件人格式无效')
+        recipient = str(recipient_address.get('address') or '').strip()
+        if not re.fullmatch(r'[^@\s]+@[^@\s]+\.[^@\s]+', recipient):
+            raise ValueError('草稿收件人无效')
+        subject = str(payload.get('subject') or '').strip()
+        if not subject:
+            raise ValueError('草稿主题不能为空')
+        for recipient_field in ('ccRecipients', 'bccRecipients'):
+            if payload.get(recipient_field):
+                raise ValueError('安全发送路径不允许抄送或密送收件人')
+        return recipient, subject
+
+    @staticmethod
     def _parse_search_message(message: dict[str, Any]) -> MailSearchEmail:
         address = message.get('sender', {}).get('emailAddress', {})
         sender = (
@@ -514,6 +752,7 @@ class EdgeFallbackBackend:
     summarize: Callable[[], dict[str, Any]]
     search_messages: Callable[[MailSearchQuery], MailSearchResult] | None = None
     create_draft_impl: Callable[[MailDraftRequest], MailDraftResult] | None = None
+    send_draft_impl: Callable[[MailSendRequest], MailSendResult] | None = None
 
     def summarize_today(self, max_emails: int) -> MailBackendResult:
         result = self.summarize()
@@ -542,11 +781,25 @@ class EdgeFallbackBackend:
             )
         return self.create_draft_impl(request)
 
+    def send_draft(self, request: MailSendRequest) -> MailSendResult:
+        if not request.confirmed:
+            return MailSendResult(
+                BackendStatus.NOT_CONFIRMED,
+                '发送已有草稿需要 confirm_send=true 的明确确认',
+            )
+        if self.send_draft_impl is None:
+            return MailSendResult(
+                BackendStatus.FALLBACK_REQUIRED,
+                'Edge 发送已有草稿实现不可用',
+            )
+        return self.send_draft_impl(request)
+
 
 __all__ = [
     'BackendEmail', 'BackendStatus', 'EdgeFallbackBackend', 'MailSearchEmail',
     'MailSearchQuery', 'MailSearchResult', 'MailDraftRequest',
-    'MailDraftResult', 'GRAPH_DRAFT_SCOPES',
+    'MailDraftResult', 'MailSendRequest', 'MailSendResult',
+    'GRAPH_DRAFT_SCOPES', 'GRAPH_SEND_SCOPES',
     'GraphBackendConfig', 'GraphReadonlyBackend', 'MailBackend',
     'MailBackendResult', 'WindowsCredentialManagerTokenStore',
 ]
