@@ -64,6 +64,7 @@ def _empty_group(
         "today_count": 0,
         "emails": [],
         "read_state_change": "NONE",
+        "diagnostics": {},
     }
 
 
@@ -257,17 +258,9 @@ def _extract_today_emails(
 ) -> list[dict[str, Any]]:
     current_day = today or date.today()
     results = []
-    seen = set()
-    for control in snapshot.get("controls", []):
-        if control.get("control_type") not in _MAIL_CONTROL_TYPES:
+    for parsed in _extract_parsed_mail_rows(snapshot):
+        if not _looks_like_today(parsed["time"], current_day):
             continue
-        parsed = _parse_mail_accessible_name(str(control.get("name", "")))
-        if parsed is None or not _looks_like_today(parsed["time"], current_day):
-            continue
-        key = (parsed["sender"], parsed["subject"], parsed["time"])
-        if key in seen:
-            continue
-        seen.add(key)
         parsed.update({
             "summary": (
                 f"来自{parsed['sender']}的邮件，主题为《{parsed['subject']}》。"
@@ -280,6 +273,62 @@ def _extract_today_emails(
         if len(results) >= _MAX_EMAILS:
             break
     return results
+
+
+def _extract_parsed_mail_rows(
+    snapshot: dict[str, Any], limit: int = 100
+) -> list[dict[str, str]]:
+    results = []
+    seen = set()
+    for control in snapshot.get("controls", []):
+        if control.get("control_type") not in _MAIL_CONTROL_TYPES:
+            continue
+        parsed = _parse_mail_accessible_name(str(control.get("name", "")))
+        if parsed is None:
+            continue
+        key = (parsed["sender"], parsed["subject"], parsed["time"])
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append(parsed)
+        if len(results) >= limit:
+            break
+    return results
+
+
+def _mail_list_diagnostics(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Return structural counts only; never include mail text or URLs."""
+    controls = snapshot.get("controls", [])
+    container_types = {"List", "DataGrid", "Table"}
+    row_types = {"ListItem", "DataItem", "Option"}
+    list_container_count = sum(
+        control.get("control_type") in container_types
+        for control in controls
+    )
+    row_candidate_count = sum(
+        control.get("control_type") in row_types
+        for control in controls
+    )
+    date_or_time_signal_count = sum(
+        bool(re.search(
+            r"(?:\b\d{1,2}[:：]\d{2}\b|\b20\d{2}\b|今天|今日|today)",
+            str(control.get("name", "")),
+            re.IGNORECASE,
+        ))
+        for control in controls
+    )
+    return {
+        "list_container_found": list_container_count > 0,
+        "list_container_count": list_container_count,
+        "row_candidate_count": row_candidate_count,
+        "parsed_row_count": len(_extract_parsed_mail_rows(snapshot)),
+        "date_or_time_signal_count": date_or_time_signal_count,
+        "document_control_count": sum(
+            control.get("control_type") == "Document"
+            for control in controls
+        ),
+        "parser": "UIA_ACCESSIBLE_NAME",
+    }
 
 
 def _summarize_with_edge(identity: MailboxIdentity) -> dict[str, Any]:
@@ -313,7 +362,33 @@ def _summarize_with_edge(identity: MailboxIdentity) -> dict[str, Any]:
             )
             return _empty_group(identity, result_status, message)
 
+        diagnostics = _mail_list_diagnostics(snapshot)
+        if not diagnostics["list_container_found"]:
+            result = _empty_group(
+                identity,
+                "MAIL_LIST_NOT_FOUND",
+                "页面已验证，但 UIA 未暴露可确认的邮件列表容器",
+            )
+            result["diagnostics"] = diagnostics
+            return result
+        if diagnostics["parsed_row_count"] == 0:
+            result = _empty_group(
+                identity,
+                "MAIL_ITEMS_NOT_PARSED",
+                "邮件列表存在，但当前 UIA 行格式无法解析",
+            )
+            result["diagnostics"] = diagnostics
+            return result
+
         emails = _extract_today_emails(snapshot)
+        if not emails:
+            result = _empty_group(
+                identity,
+                "EMPTY_TODAY",
+                "已识别邮件列表和邮件行，确认当前可见列表没有今日邮件",
+            )
+            result["diagnostics"] = diagnostics
+            return result
         LOGGER.info("%s: READY - %d messages", identity.mailbox_id, len(emails))
         result = _empty_group(
             identity,
@@ -322,6 +397,7 @@ def _summarize_with_edge(identity: MailboxIdentity) -> dict[str, Any]:
         )
         result["today_count"] = len(emails)
         result["emails"] = emails
+        result["diagnostics"] = diagnostics
         return result
     except Exception as error:
         LOGGER.exception("%s: ERROR", identity.mailbox_id)

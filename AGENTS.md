@@ -58,6 +58,8 @@ These instructions apply to the whole repository. This project is a Windows-only
 - `summarize_all_mailboxes_today` must process identities in configured order and return `IDENTITY_MISMATCH` before reading mail when the bound Profile and expected service domain disagree.
 - Mail summary UIA traversal must remain bounded and read-only. Do not focus, invoke, select, or click a mail row merely to obtain a summary.
 - Prefer list metadata summaries so unread state cannot change. If a future implementation opens a body, it must report the possible read-state change explicitly and requires targeted safety tests.
+- Never translate zero parsed rows directly into zero messages. Use `MAIL_LIST_NOT_FOUND` when no trustworthy list container is exposed and `MAIL_ITEMS_NOT_PARSED` when rows exist but parsing fails. Return `EMPTY_TODAY` only after at least one mail row was parsed and none belongs to today.
+- Mail diagnostics may report control-type and structural counts only. Do not include sender, subject, body text, complete URLs, or session material in diagnostic output.
 - UIA may read the address bar only inside a bounded worker to extract the hostname. Immediately discard the complete value; never retain, return, log, construct, or reuse a URL containing sid or other session material.
 
 ## Required verification

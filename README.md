@@ -151,7 +151,7 @@ Smoke test 只使用唯一命名的专用记事本文件，测试结果写入 `t
 
 `summarize_all_mailboxes_today()` 严格按本科、硕士、QQ 邮箱顺序执行。硕士 Outlook 优先走 Graph READ-only，Graph 不可用时回退 Edge；本科网易和 QQ 走 Edge。Edge 路径的 Profile 身份来自本进程使用 `--profile-directory` 启动窗口时建立的内存绑定，不再由 UIA 页面内容反推。UIA 只读取地址栏并立即提取主机名，用于精确验证 `mailh.qiye.163.com`、`outlook.office.com`（以及重定向域名 `outlook.cloud.microsoft`）、`mail.qq.com` 或官方 QQ Mail 域名 `wx.mail.qq.com`；完整 URL 不会被保存、记录或返回。
 
-Edge fallback 摘要使用有 5 秒边界的只读 UI Automation 查询，不聚焦或点击邮件。当前实现只从可见邮件列表中识别发件人、主题和时间，最多 10 封，并据此生成简短摘要；不会为取得正文而打开邮件，因此返回的 `read_state_change` 为 `NONE`。页面已就绪但当前 UIA 列表没有可识别的今日邮件时，数量为 0。重要事项只做分类和摘要，不执行写操作。
+Edge fallback 摘要使用有 5 秒边界的只读 UI Automation 查询，不聚焦或点击邮件。当前实现只从可见邮件列表中识别发件人、主题和时间，最多 10 封，并据此生成简短摘要；不会为取得正文而打开邮件，因此返回的 `read_state_change` 为 `NONE`。页面已验证但 UIA 没有可信列表容器时返回 `MAIL_LIST_NOT_FOUND`；存在列表但邮件行格式无法解析时返回 `MAIL_ITEMS_NOT_PARSED`。只有至少成功解析到邮件行、并确认其中没有今日邮件时才返回 `EMPTY_TODAY` 和数量 0，禁止把解析失败报告为空邮箱。诊断字段只包含结构计数，不包含邮件文本、正文、完整 URL 或会话信息。
 
 ## 安全说明
 

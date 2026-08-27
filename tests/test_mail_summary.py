@@ -209,6 +209,47 @@ class MailSummaryTests(unittest.TestCase):
         )
         self.assertEqual("PAGE_NOT_READY", state)
 
+    @patch("windows_gui.mail_summary._ensure_mailbox_page")
+    def test_ready_page_without_list_is_not_reported_as_zero(self, ensure):
+        ensure.return_value = ({
+            "controls": [
+                {"control_type": "Text", "name": "今日 10:30"},
+                {"control_type": "Document", "name": "Mailbox"},
+            ]
+        }, "READY")
+        result = _summarize_mailbox(MAILBOX_IDENTITIES["qq_mail"])
+        self.assertEqual("MAIL_LIST_NOT_FOUND", result["status"])
+        self.assertEqual(0, result["today_count"])
+        self.assertFalse(result["diagnostics"]["list_container_found"])
+
+    @patch("windows_gui.mail_summary._ensure_mailbox_page")
+    def test_list_with_unparsed_items_is_not_reported_as_zero(self, ensure):
+        ensure.return_value = ({
+            "controls": [
+                {"control_type": "List", "name": "Inbox"},
+                {"control_type": "ListItem", "name": "unstructured 10:30"},
+            ]
+        }, "READY")
+        result = _summarize_mailbox(MAILBOX_IDENTITIES["master_mail"])
+        self.assertEqual("MAIL_ITEMS_NOT_PARSED", result["status"])
+        self.assertEqual(1, result["diagnostics"]["row_candidate_count"])
+        self.assertEqual(0, result["diagnostics"]["parsed_row_count"])
+
+    @patch("windows_gui.mail_summary._ensure_mailbox_page")
+    def test_empty_today_requires_at_least_one_parsed_older_row(self, ensure):
+        ensure.return_value = ({
+            "controls": [
+                {"control_type": "List", "name": "Inbox"},
+                {
+                    "control_type": "ListItem",
+                    "name": "Sender | Subject | 2000-01-01 10:30",
+                },
+            ]
+        }, "READY")
+        result = _summarize_mailbox(MAILBOX_IDENTITIES["master_mail"])
+        self.assertEqual("EMPTY_TODAY", result["status"])
+        self.assertEqual(1, result["diagnostics"]["parsed_row_count"])
+
     @patch("windows_gui.mail_summary.get_or_open_mailbox_window")
     @patch("windows_gui.mail_summary._find_verified_snapshot")
     def test_bachelor_navigation_to_legal_domain_becomes_ready(
