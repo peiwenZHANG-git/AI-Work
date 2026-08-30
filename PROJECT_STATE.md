@@ -35,17 +35,19 @@
 - 助手 QQ/本科草稿和本科 SMTP 已改为独立 Credential Manager 授权码；只读摘要授权码没有草稿或发送路径。
 - Outlook refresh 生命周期已提交：读取、Graph 交换、旋转写回由跨进程 Windows mutex 串行化；助手和摘要共用同一函数，access token 只留在内存。
 - Outlook 一次性 OAuth 登录已提交：authorization code + PKCE、精确回环回调、state 校验和专用 refresh token 写入。
+- OAuth 一次性登录与自动刷新共用跨进程锁；token 交换失败不会覆盖既有凭据。
 
 ## 4. 当前工作（待提交）
 
-- OAuth 锁同步增强（待提交）：一次性登录的 token 交换和 refresh token 写回复用 `graph_refresh_lock`，与计划任务/助手刷新互斥；网络失败显式转换且不覆盖既有凭据。
-- `AGENTS.md` 与 README 已同步该边界；保持 28 个 MCP 工具接口不变。
+- 本机只读健康检查（待提交）：`scripts/system_health.py` 检查环境变量和 Credential Manager 条目存在性、28 个 MCP 工具注册、计划任务、最近摘要状态和助手服务；凭据值读取后立即丢弃且不输出。
+- 该命令不操作桌面、不访问外部邮件服务、不读取邮件正文；助手服务未运行仅作 INFO。新增 10 项诊断测试，保持 28 个 MCP 工具接口不变。
 - `.vscode/mcp.json`：本机 GitHub MCP 配置，按既定决定保持本地修改，不提交、不还原。
-- 当前工作树验证基线（2026-08-31 实测）：`python -m compileall -q windows_gui_mcp.py windows_gui tests scripts` 通过；`python -m unittest discover -s tests -t . -v` 共 221 项全部通过；`mcp.list_tools()` 确认 28 个工具；`git diff --check` 通过。
+- 当前工作树验证基线（2026-08-31 实测）：`python -m compileall -q windows_gui_mcp.py windows_gui tests scripts` 通过；`python -m unittest discover -s tests -t . -v` 共 231 项全部通过；`mcp.list_tools()` 确认 28 个工具；`git diff --check` 通过。
 
 ## 5. 已知问题与阻塞
 
 - Outlook 一次性登录命令已具备，但本会话未执行真实 Microsoft 登录或用真实租户验证端到端授权。已有 refresh token 时，摘要/助手会安全刷新并轮换。摘要/搜索需要 `Mail.Read` 凭据，草稿需要 `Mail.ReadWrite`，发送还需要 `Mail.Send`。
+- 2026-08-31 健康检查确认：3 个助手专用授权码条目缺失，最近 `last-run.json` 记录整体失败（2026-08-29 生成，但三个邮箱读取状态本身均健康）；计划任务已启用且上次退出码为 0。缺失凭据需要用户提供授权码，不能自动输入或猜测。
 - 本科网易暂不支持经 Edge 发送已有草稿（draft hash 无法稳定定位并校验）；QQ 发送为设计性禁止。
 - Edge 摘要/搜索回退只解析当前已验证页面的可见列表，不代表完整邮箱索引，也不打开正文。
 - 本次会话未运行真实桌面 smoke test（按仓库规则需用户明确授权）。
@@ -63,8 +65,8 @@
 
 ## 7. 下一步
 
-1. 评审并提交一次性 Outlook OAuth 登录及其测试；保持 28 个工具的公开接口不变。
-2. 提交同步后的 `AGENTS.md`、README 和 `PROJECT_STATE.md`，不与代码改动混在同一提交。
+1. 评审并提交本机只读健康检查及其测试；保持 28 个工具的公开接口不变。
+2. 用户配置 3 个助手专用授权码后重新运行健康检查，再用显式授权执行一次真实 Outlook 登录。
 3. 每次提交前运行规定验证：compileall、完整单元测试、28 工具注册检查、`git diff --check`。
 4. 真实桌面验证仅在用户明确授权后运行 `python tests/smoke_test.py`；邮箱只读 smoke 仅在另行授权时使用 `--mailbox-readonly`。
 5. 后续增强：在用户授权的交互会话中执行一次真实 Outlook 登录；本科网易 Edge 发送仅在能稳定定位并校验既有草稿后再实现。
