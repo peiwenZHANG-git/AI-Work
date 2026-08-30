@@ -4,6 +4,14 @@
 
 These instructions apply to the whole repository. This project is a Windows-only FastMCP server that controls the interactive desktop, so changes must preserve existing behavior and be tested with strict safety boundaries.
 
+## Project state maintenance
+
+- Before starting a significant development task, read `PROJECT_STATE.md` to restore current project context.
+- After completing work that changes goals, architecture, features, backend behavior, known issues, or the verification baseline, update `PROJECT_STATE.md` so it reflects the real repository state.
+- Verify `PROJECT_STATE.md` claims against the working tree, Git history, and required verification output before recording them; do not rely on conversation memory alone.
+- Record only what a future AI/Codex session needs to resume work; do not log every minor edit.
+- Keep the project name and repository path at the top of `PROJECT_STATE.md`, and update its last-updated date whenever its content changes.
+
 ## Compatibility requirements
 
 - Keep `windows_gui_mcp.py` as the backward-compatible stdio entry point.
