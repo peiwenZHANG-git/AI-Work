@@ -31,14 +31,14 @@ from windows_gui.imap_mail import (
     _default_imap_factory,
 )
 from windows_gui.mail_digest import (
+    MailboxFlowError,
     MASTER_GRAPH_SCOPE,
     SummaryAPIError,
     _chat_once,
     _resolve_model,
     ensure_environment,
     load_summary_api_key,
-    read_master_refresh_token,
-    write_master_refresh_token,
+    refresh_master_graph_token,
 )
 
 
@@ -51,6 +51,14 @@ SMTP_HOSTS = {
     'bachelor_mail': ('smtp.qiye.163.com', 465),
 }
 SEND_DISABLED_MAILBOXES = {'qq_mail'}
+ASSISTANT_CREDENTIAL_SERVICE = 'AI-Work/windows-gui/mailboxes'
+ASSISTANT_DRAFT_CREDENTIAL_USERNAMES = {
+    'qq_mail': 'qq_mail_assistant_draft_authorization_code',
+    'bachelor_mail': 'bachelor_mail_assistant_draft_authorization_code',
+}
+BACHELOR_ASSISTANT_SMTP_CREDENTIAL_USERNAME = (
+    'bachelor_mail_assistant_smtp_authorization_code'
+)
 DRAFT_SYSTEM_PROMPT = (
     '你是邮件写作助手。根据用户的指令写一封完整的邮件。'
     '只输出一个 JSON 对象，格式为 {"subject": "...", "body": "..."}：'
@@ -177,40 +185,11 @@ def save_draft_imap(
             pass
 
 
-def exchange_master_refresh_token_with_scopes(
-    refresh_token: str, scopes: str
-) -> dict[str, Any]:
-    tenant = os.environ.get('AI_WORK_OUTLOOK_TENANT_ID', '').strip()
-    client = os.environ.get('AI_WORK_OUTLOOK_CLIENT_ID', '').strip()
-    if not tenant or not client:
-        raise AssistantError('Graph 租户或应用 ID 环境变量未配置')
-    base = f'https://login.microsoftonline.com/{tenant}/oauth2/v2.0'
-    try:
-        response = requests.post(
-            f'{base}/token',
-            data={
-                'grant_type': 'refresh_token',
-                'client_id': client,
-                'refresh_token': refresh_token,
-                'scope': scopes,
-            },
-            timeout=30,
-        )
-    except requests.RequestException as error:
-        raise AssistantError(f'Graph 令牌刷新网络失败：{type(error).__name__}')
-    payload = response.json()
-    if 'access_token' not in payload:
-        raise AssistantError(
-            f"Graph 令牌刷新失败：{payload.get('error', 'unknown_error')}"
-        )
-    return payload
-
-
 def _assistant_graph_token(scopes: str) -> str:
-    refresh_token = read_master_refresh_token()
-    payload = exchange_master_refresh_token_with_scopes(refresh_token, scopes)
-    if payload.get('refresh_token'):
-        write_master_refresh_token(payload['refresh_token'])
+    try:
+        payload = refresh_master_graph_token(scopes)
+    except MailboxFlowError as error:
+        raise AssistantError(str(error)) from error
     return str(payload['access_token'])
 
 
@@ -278,29 +257,22 @@ def ai_generate_draft(instruction: str) -> dict[str, str]:
     return generate_draft_via_ai(instruction, api_key)
 
 
-def _imap_account(mailbox_id: str) -> dict[str, str]:
+def _assistant_account(mailbox_id: str, credential_username: str) -> dict[str, str]:
     from windows_gui.imap_mail import (
         BachelorImapConfig,
         QqImapConfig,
     )
     from windows_gui.mail_backends import WindowsCredentialManagerSecretStore
-    from windows_gui.mail_digest import (
-        BACHELOR_IMAP_CREDENTIAL_SERVICE,
-        BACHELOR_IMAP_CREDENTIAL_USERNAME,
-        QQ_IMAP_CREDENTIAL_SERVICE,
-        QQ_IMAP_CREDENTIAL_USERNAME,
-    )
-
     if mailbox_id == 'qq_mail':
         config = QqImapConfig.from_environment()
         store = WindowsCredentialManagerSecretStore(
-            QQ_IMAP_CREDENTIAL_SERVICE, QQ_IMAP_CREDENTIAL_USERNAME
+            ASSISTANT_CREDENTIAL_SERVICE, credential_username
         )
         host, port = QQ_IMAP_HOST, QQ_IMAP_PORT
     elif mailbox_id == 'bachelor_mail':
         config = BachelorImapConfig.from_environment()
         store = WindowsCredentialManagerSecretStore(
-            BACHELOR_IMAP_CREDENTIAL_SERVICE, BACHELOR_IMAP_CREDENTIAL_USERNAME
+            ASSISTANT_CREDENTIAL_SERVICE, credential_username
         )
         host, port = BACHELOR_IMAP_HOST, BACHELOR_IMAP_PORT
     else:
@@ -327,7 +299,10 @@ def save_draft_for_mailbox(
         token = _assistant_graph_token(ASSISTANT_GRAPH_SCOPE)
         create_master_draft(token, to, subject, body)
         return '已保存到 Outlook 草稿箱'
-    account = _imap_account(mailbox_id)
+    credential_username = ASSISTANT_DRAFT_CREDENTIAL_USERNAMES.get(mailbox_id)
+    if not credential_username:
+        raise AssistantError(f'该邮箱不支持助手保存草稿：{mailbox_id}')
+    account = _assistant_account(mailbox_id, credential_username)
     folder = save_draft_imap(
         account['host'],
         int(account['port']),
@@ -356,7 +331,9 @@ def send_mail_for_mailbox(
         send_master_message(token, draft_id)
         return '邮件已通过 Outlook 发送'
     if mailbox_id == 'bachelor_mail':
-        account = _imap_account('bachelor_mail')
+        account = _assistant_account(
+            'bachelor_mail', BACHELOR_ASSISTANT_SMTP_CREDENTIAL_USERNAME
+        )
         folder = save_draft_imap(
             account['host'],
             int(account['port']),

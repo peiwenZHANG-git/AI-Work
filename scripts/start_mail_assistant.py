@@ -22,7 +22,10 @@ def trigger_refresh() -> None:
     try:
         urllib.request.urlopen(
             urllib.request.Request(
-                f'http://127.0.0.1:{PORT}/api/refresh', data=b'', method='POST'
+                f'http://127.0.0.1:{PORT}/api/refresh',
+                data=b'{}',
+                headers={'Content-Type': 'application/json'},
+                method='POST',
             ),
             timeout=5,
         )

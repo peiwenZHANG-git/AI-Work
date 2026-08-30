@@ -19,6 +19,15 @@ def _load_server_module():
     return module
 
 
+def _load_startup_module():
+    path = Path(__file__).resolve().parents[1] / 'scripts' / 'start_mail_assistant.py'
+    spec = importlib.util.spec_from_file_location('test_mail_assistant_startup_target', path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 class MailAssistantServerSecurityTests(unittest.TestCase):
     def setUp(self):
         self.server = _load_server_module()
@@ -34,6 +43,20 @@ class MailAssistantServerSecurityTests(unittest.TestCase):
                 '127.0.0.1:8931', 'http://localhost:8931/'
             )
         )
+
+    def test_startup_refresh_uses_required_json_media_type(self):
+        captured = []
+
+        def capture_urlopen(request, timeout=None):
+            captured.append(request)
+
+        startup = _load_startup_module()
+        with mock.patch.object(startup.urllib.request, 'urlopen', capture_urlopen):
+            startup.trigger_refresh()
+
+        self.assertEqual(1, len(captured))
+        self.assertEqual(b'{}', captured[0].data)
+        self.assertEqual('application/json', captured[0].headers.get('Content-type'))
         self.assertFalse(self.server.is_local_request('attacker.example:8931'))
         self.assertFalse(
             self.server.is_local_request(
@@ -54,7 +77,7 @@ class MailAssistantSendFlowTests(unittest.TestCase):
         with mock.patch.object(
             mail_assistant, 'ensure_environment'
         ), mock.patch.object(
-            mail_assistant, '_imap_account', return_value=account
+            mail_assistant, '_assistant_account', return_value=account
         ) as imap_account, mock.patch.object(
             mail_assistant,
             'save_draft_imap',
@@ -79,7 +102,10 @@ class MailAssistantSendFlowTests(unittest.TestCase):
             ['draft', 'smtp'], [call[0] for call in calls]
         )
         self.assertIn('草稿已保存到 草稿箱', detail)
-        imap_account.assert_called_once_with('bachelor_mail')
+        imap_account.assert_called_once_with(
+            'bachelor_mail',
+            mail_assistant.BACHELOR_ASSISTANT_SMTP_CREDENTIAL_USERNAME,
+        )
 
 
 if __name__ == '__main__':

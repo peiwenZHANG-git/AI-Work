@@ -22,6 +22,7 @@ import ssl
 import subprocess
 import time
 import winreg
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from email.utils import parseaddr, parsedate_to_datetime
@@ -70,6 +71,7 @@ MAX_IMAP_MESSAGE_BYTES = 400_000
 MAX_BODY_CHARS = 3500
 MAX_AI_MAILS_PER_RUN = 25
 GRAPH_MESSAGES_URL = 'https://graph.microsoft.com/v1.0/me/messages'
+GRAPH_REFRESH_MUTEX_NAME = 'Local\\AI-Work-MasterGraphRefresh'
 ZHIPU_CHAT_ENDPOINT = 'https://open.bigmodel.cn/api/paas/v4/chat/completions'
 DEFAULT_SUMMARY_MODEL = 'glm-4-flash'
 SUMMARY_API_KEY_USERNAME = 'zhipu_glm_api_key'
@@ -236,7 +238,9 @@ def write_master_refresh_token(token: str) -> None:
         raise ctypes.WinError(ctypes.get_last_error())
 
 
-def exchange_master_refresh_token(refresh_token: str) -> dict[str, Any]:
+def exchange_master_refresh_token(
+    refresh_token: str, scope: str = MASTER_GRAPH_SCOPE
+) -> dict[str, Any]:
     """Exchange the stored refresh token for a fresh in-memory access token."""
     tenant = os.environ.get('AI_WORK_OUTLOOK_TENANT_ID', '').strip()
     client = os.environ.get('AI_WORK_OUTLOOK_CLIENT_ID', '').strip()
@@ -250,18 +254,61 @@ def exchange_master_refresh_token(refresh_token: str) -> dict[str, Any]:
                 'grant_type': 'refresh_token',
                 'client_id': client,
                 'refresh_token': refresh_token,
-                'scope': MASTER_GRAPH_SCOPE,
+                'scope': scope,
             },
             timeout=15,
         )
     except requests.RequestException as error:
         raise MailboxFlowError(f'Graph 令牌刷新网络失败：{type(error).__name__}')
-    payload = response.json()
-    if 'access_token' not in payload:
+    try:
+        payload = response.json()
+    except ValueError as error:
+        raise MailboxFlowError('Graph 令牌接口响应不是 JSON') from error
+    if response.status_code != 200 or 'access_token' not in payload:
         raise MailboxFlowError(
             f"Graph 令牌刷新失败：{payload.get('error', 'unknown_error')}"
         )
     return payload
+
+
+@contextmanager
+def _graph_refresh_lock(timeout_seconds: float = 10.0):
+    """Serialize refresh-token rotation across helper and scheduler processes."""
+    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    handle = kernel32.CreateMutexW(None, False, GRAPH_REFRESH_MUTEX_NAME)
+    if not handle:
+        raise OSError(ctypes.get_last_error(), 'could not create Graph refresh lock')
+    acquired = False
+    try:
+        wait_result = kernel32.WaitForSingleObject(
+            handle, max(0, int(timeout_seconds * 1000))
+        )
+        # WAIT_ABANDONED grants a mutex whose owner died. Credential Manager
+        # reads/writes are independently atomic, so recovering is preferable
+        # to leaving an automated digest blocked until restart.
+        if wait_result not in (0, 0x00000080):
+            raise TimeoutError('timed out waiting for Graph refresh lock')
+        acquired = True
+        yield
+    finally:
+        if acquired:
+            kernel32.ReleaseMutex(handle)
+        kernel32.CloseHandle(handle)
+
+
+def refresh_master_graph_token(scope: str = MASTER_GRAPH_SCOPE) -> dict[str, Any]:
+    """Refresh and rotate the delegated token without retaining secrets."""
+    try:
+        with _graph_refresh_lock():
+            refresh_token = read_master_refresh_token()
+            payload = exchange_master_refresh_token(refresh_token, scope)
+            if payload.get('refresh_token'):
+                write_master_refresh_token(payload['refresh_token'])
+            return payload
+    except MailboxFlowError:
+        raise
+    except (OSError, ValueError) as error:
+        raise MailboxFlowError(f'Graph 凭据刷新失败：{type(error).__name__}') from error
 
 
 def strip_html(text: str) -> str:
@@ -809,23 +856,16 @@ def collect_master_digest() -> MailboxDigest:
         )
 
     try:
-        refresh_token = read_master_refresh_token()
-    except MailboxFlowError as error:
-        return failed(BackendStatus.NOT_AUTHENTICATED, str(error))
-    try:
-        payload = exchange_master_refresh_token(refresh_token)
+        payload = refresh_master_graph_token()
     except MailboxFlowError as error:
         status = (
-            BackendStatus.TOKEN_EXPIRED.value
+            BackendStatus.NOT_AUTHENTICATED.value
             if 'invalid_grant' in str(error)
+            or '未找到登录授权' in str(error)
+            or '环境变量未配置' in str(error)
             else BackendStatus.REQUEST_FAILED.value
         )
         return failed(status, str(error))
-    if payload.get('refresh_token'):
-        try:
-            write_master_refresh_token(payload['refresh_token'])
-        except (OSError, ValueError):
-            _LOGGER.warning('could not persist rotated refresh token')
 
     config = GraphBackendConfig.from_environment()
     if not config.is_configured:
