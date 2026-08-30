@@ -16,10 +16,10 @@
 
 ## 2. 架构
 
-- `windows_gui_mcp.py` 是向后兼容入口并重导出全部公共工具；FastMCP 实例与进程级设置在 `windows_gui/server.py`；28 个工具恰好注册一次（2026-08-30 重新确认）。
+- `windows_gui_mcp.py` 是向后兼容入口并重导出全部公共工具；FastMCP 实例与进程级设置在 `windows_gui/server.py`；28 个工具恰好注册一次（2026-08-31 重新确认）。
 - 模块职责遵循 `AGENTS.md`：鼠标/截图 `mouse.py`、键盘 `keyboard.py`、窗口 `windows.py`、UIA/菜单/保存对话框 `uia.py`；邮箱链路为 `mailboxes.py`（固定身份与 Edge 启动）、`mail_summary.py`（只读摘要与就绪校验）、`imap_mail.py`（QQ/网易 IMAP 只读传输）、`browser_mail.py`（可选 CDP/DOM 传输）、`mail_backends.py`（后端分发）、`mail_search.py`、`mail_draft.py`、`mail_send.py`。
 - 邮件后端优先级：Outlook（master_mail）优先 Microsoft Graph，失败回退经验证的 Edge 页面；QQ 与本科网易摘要优先 IMAP 只读后端，可选启用回环 CDP 浏览器 DOM 后端。
-- 摘要与助手（未提交）：`mail_digest.py` + `scripts/daily_mail_digest.py` 由计划任务触发；`mail_assistant.py` + `mail_assistant_page.py` + `scripts/mail_assistant_server.py` 提供本机 8931 网页。助手 Web 层校验 `Host`、`Origin` 和 JSON Content-Type；本科 SMTP 发送前先保存 IMAP 草稿。
+- 摘要与助手：`mail_digest.py` + `scripts/daily_mail_digest.py` 由计划任务触发；`mail_assistant.py` + `mail_assistant_page.py` + `scripts/mail_assistant_server.py` 提供本机 8931 网页。助手 Web 层校验 `Host`、`Origin` 和 JSON Content-Type；本科 SMTP 发送前先保存 IMAP 草稿。
 
 ## 3. 已完成功能（已提交）
 
@@ -30,24 +30,20 @@
 - `a0d6a92` / `0504b7e`：QQ 与本科网易 IMAP 只读后端（SSL、EXAMINE、UID、BODY.PEEK 头部；凭据走专用 Credential Manager 条目，本科用户名走环境变量）。
 - `c4a648e`：`PROJECT_STATE.md` 纳入仓库。
 - 验证基线（2026-08-30 实测）：`python -m compileall` 通过；`python -m unittest discover -s tests -t .` 189 项全部通过；工具注册数确认 28。
+- 每日邮件摘要 + AI 助手已提交：QQ/网易 IMAP 只读正文、Graph 只读摘要、GLM 摘要/翻译、计划任务、本机 8931 助手页、草稿保存和已确认本科 SMTP 发送。
+- 助手 QQ/本科草稿和本科 SMTP 已改为独立 Credential Manager 授权码；只读摘要授权码没有草稿或发送路径。
 
 ## 4. 进行中的工作（未提交）
 
-- 每日邮件摘要 + AI 邮件助手（2026-08-29 交付、本地可用，尚未提交）：
-  - 未跟踪文件：`windows_gui/mail_digest.py`、`windows_gui/mail_assistant.py`、`windows_gui/mail_assistant_page.py`、`scripts/daily_mail_digest.py`、`scripts/mail_assistant_server.py`、`scripts/start_mail_assistant.py`、`tests/test_mail_digest.py`、`tests/test_mail_digest_cache_load.py`、`tests/test_mail_assistant.py`。
-  - 计划任务 `AI-Work Daily Mail Digest` 已注册：每天 10:00 与 22:00 运行，当前状态 Ready；助手网页绑定 `127.0.0.1:8931`；GLM 摘要模型 `glm-4-flash`，密钥存于 Credential Manager。
-  - 助手能力：自然语言生成完整草稿；草稿可存入 QQ/本科邮箱的 IMAP 草稿箱与 Outlook 草稿箱；本科网易有 SMTP 发送路径（`smtp.qiye.163.com:465`）；巴黎萨克雷因学校管理员策略阻止自动写/发，页面提供"复制正文"降级；QQ 按安全规则禁止发送。
-- `windows_gui/imap_mail.py` 未提交新增 `fetch_messages_readonly`：以 `BODY.PEEK` 拉取正文（RFC822.SIZE 400KB 上限、INTERNALDATE 解析），供每日摘要使用；`tests/test_imap_mail.py` 尚未覆盖该函数。
-- `windows_gui/imap_mail.py` 未提交新增 `fetch_messages_readonly`：以 `BODY.PEEK` 拉取正文（RFC822.SIZE 400KB 上限、INTERNALDATE 解析），供每日摘要使用；`tests/test_imap_mail.py` 已覆盖 SSL、只读命令、大小上限、错误清理和正常解析路径。解析器兼容 `RFC822 SIZE` 与实际服务器返回的 `RFC822.SIZE`，可跳过超大邮件而不下载正文。
-- 本地助手 Web 服务只接受绑定地址 `127.0.0.1:8931` 和本机页面 Origin 的请求；变异 POST 必须使用 `application/json`，降低浏览器跨站简单请求触发草稿/发送/刷新的风险。
-- 本科邮箱通过助手 SMTP 发送时，先调用 IMAP 草稿保存，再尝试 SMTP；保存成功而发送失败时会留下草稿供人工检查。
+- Outlook refresh 生命周期增强（待提交）：`mail_digest.py` 新增共享 `refresh_master_graph_token`，用 Windows named mutex 串行化“读取 refresh token -> Graph 交换 -> 旋转 token 写回”；每日摘要和助手共用该函数，access token 只留在内存。
+- Token endpoint 的非 JSON 响应显式转为 `MailboxFlowError`，不再让计划任务或助手线程因解析异常崩溃；启动器自刷新请求也已适配助手 JSON Content-Type 校验。
+- `AGENTS.md` 与 README 已记录助手专用凭据边界；本节改动通过完整验证后需与状态文档分开提交。
 - `.vscode/mcp.json`：本机 GitHub MCP 配置，按既定决定保持本地修改，不提交、不还原。
-- 本次 `PROJECT_STATE.md` 重写：建议与代码改动分开提交。
-- 未提交验证基线（2026-08-31 实测）：`python -m compileall -q windows_gui_mcp.py windows_gui tests` 通过；`python -m unittest discover -s tests -t . -v` 共 205 项全部通过；`mcp.list_tools()` 确认 28 个工具。
+- 当前工作树验证基线（2026-08-31 实测）：`python -m compileall -q windows_gui_mcp.py windows_gui tests` 通过；`python -m unittest discover -s tests -t . -v` 共 210 项全部通过；`mcp.list_tools()` 确认 28 个工具；`git diff --check` 通过。
 
 ## 5. 已知问题与阻塞
 
-- Outlook Graph 未内置交互式 OAuth 登录或 token 刷新流程；摘要/搜索需要既有 `Mail.Read` 凭据，草稿需要 `Mail.ReadWrite`，发送还需要 `Mail.Send`。
+- Outlook Graph 未内置交互式 OAuth 登录；已有 refresh token 时，摘要/助手会安全刷新并轮换。摘要/搜索需要 `Mail.Read` 凭据，草稿需要 `Mail.ReadWrite`，发送还需要 `Mail.Send`。
 - 本科网易暂不支持经 Edge 发送已有草稿（draft hash 无法稳定定位并校验）；QQ 发送为设计性禁止。
 - Edge 摘要/搜索回退只解析当前已验证页面的可见列表，不代表完整邮箱索引，也不打开正文。
 - 本次会话未运行真实桌面 smoke test（按仓库规则需用户明确授权）。
@@ -65,11 +61,11 @@
 
 ## 7. 下一步
 
-1. 评审并提交每日摘要/AI 助手相关文件（含 `imap_mail.py` 的 `fetch_messages_readonly` 及其直接单测）；保持 28 个工具的公开接口不变。
-2. 本次 `PROJECT_STATE.md` 重写单独提交，不与代码改动混在同一提交。
+1. 评审并提交 OAuth refresh 串行化和助手专用凭据改动；保持 28 个工具的公开接口不变。
+2. 提交同步后的 `AGENTS.md`、README 和 `PROJECT_STATE.md`，不与代码改动混在同一提交。
 3. 每次提交前运行规定验证：compileall、完整单元测试、28 工具注册检查、`git diff --check`。
 4. 真实桌面验证仅在用户明确授权后运行 `python tests/smoke_test.py`；邮箱只读 smoke 仅在另行授权时使用 `--mailbox-readonly`。
-5. 后续增强：优先解决 Outlook OAuth/刷新生命周期；本科网易 Edge 发送仅在能稳定定位并校验既有草稿后再实现。
+5. 后续增强：补一次交互式 OAuth 登录引导；本科网易 Edge 发送仅在能稳定定位并校验既有草稿后再实现。
 
 ## 8. 最近一次更新
 
