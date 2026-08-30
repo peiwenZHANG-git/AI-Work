@@ -168,6 +168,7 @@ Smoke test 只使用唯一命名的专用记事本文件，测试结果写入 `t
 - 非秘密配置来自环境变量：`AI_WORK_OUTLOOK_TENANT_ID`、`AI_WORK_OUTLOOK_CLIENT_ID`、`AI_WORK_OUTLOOK_MAILBOX`。
 - 摘要 refresh token 存放在 Windows Credential Manager 的 `AI-Work/windows-gui/mailboxes` / `master_mail_graph_refresh_token`；Microsoft 返回旋转 token 时立即写回该专用条目。源码、日志、测试 fixture 和 Git 中不得出现 token。
 - refresh token 的读取、交换和旋转写回由 Windows named mutex 串行化，避免计划任务与助手并发轮换导致对方失效。访问 token 只保留在内存。
+- 一次性 OAuth 登录的 token 交换和 refresh token 写回也使用同一把跨进程锁，避免登录与计划任务并发轮换时互相失效。
 - 交互式登录只通过显式命令触发；token 交换失败时不会覆盖既有凭据。刷新失败、refresh token 失效或 Graph 请求失败时，仍明确返回失败或回退到现有 Edge READ-only 摘要路径。
 
 `open_all_mailboxes()` 和 Edge 摘要路径共享内部 `get_or_open_mailbox_window()` 管理层；Outlook Graph 可用时不会调用该 Edge 窗口管理层，Graph 不可用时按上述规则回退。每个邮箱在 Agent 中最多绑定一个 Edge HWND：有效运行时绑定返回 `REUSED_EXISTING_WINDOW`；Server 重启后优先通过窗口 PID 和进程命令行中的 `--profile-directory` 找回窗口。Edge 复用同一浏览器进程、主命令行不含 Profile 参数时，使用 Edge 浏览器标题中精确的 Profile 显示名称后缀恢复绑定，不从页面 UIA 内容猜测。恢复返回 `RESTORED_WINDOW_BINDING`；只有未找到对应 Profile 窗口时才返回 `CREATED_NEW_WINDOW`。该逻辑不会关闭用户原本打开的重复窗口。

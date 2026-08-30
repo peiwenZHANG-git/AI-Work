@@ -34,14 +34,14 @@
 - 每日邮件摘要 + AI 助手已提交：QQ/网易 IMAP 只读正文、Graph 只读摘要、GLM 摘要/翻译、计划任务、本机 8931 助手页、草稿保存和已确认本科 SMTP 发送。
 - 助手 QQ/本科草稿和本科 SMTP 已改为独立 Credential Manager 授权码；只读摘要授权码没有草稿或发送路径。
 - Outlook refresh 生命周期已提交：读取、Graph 交换、旋转写回由跨进程 Windows mutex 串行化；助手和摘要共用同一函数，access token 只留在内存。
+- Outlook 一次性 OAuth 登录已提交：authorization code + PKCE、精确回环回调、state 校验和专用 refresh token 写入。
 
 ## 4. 当前工作（待提交）
 
-- Outlook 一次性登录增强（待提交）：`master_oauth.py` 使用 PKCE、精确 `/callback`、精确回环 Host、OAuth `state` 和 S256 code challenge；无效回调不会取消等待。成功时只写回 `master_mail_graph_refresh_token`，失败不覆盖既有凭据。
-- `scripts/authenticate_master_mail.py` 是显式交互命令，支持 `--no-open`、`--port` 和 `--timeout`；浏览器启动只发生在该命令中，单元测试全部 mock。
-- `AGENTS.md` 与 README 已同步 OAuth 安全边界；保持 28 个 MCP 工具接口不变。
+- OAuth 锁同步增强（待提交）：一次性登录的 token 交换和 refresh token 写回复用 `graph_refresh_lock`，与计划任务/助手刷新互斥；网络失败显式转换且不覆盖既有凭据。
+- `AGENTS.md` 与 README 已同步该边界；保持 28 个 MCP 工具接口不变。
 - `.vscode/mcp.json`：本机 GitHub MCP 配置，按既定决定保持本地修改，不提交、不还原。
-- 当前工作树验证基线（2026-08-31 实测）：`python -m compileall -q windows_gui_mcp.py windows_gui tests scripts` 通过；`python -m unittest discover -s tests -t . -v` 共 220 项全部通过；`mcp.list_tools()` 确认 28 个工具；`git diff --check` 通过。
+- 当前工作树验证基线（2026-08-31 实测）：`python -m compileall -q windows_gui_mcp.py windows_gui tests scripts` 通过；`python -m unittest discover -s tests -t . -v` 共 221 项全部通过；`mcp.list_tools()` 确认 28 个工具；`git diff --check` 通过。
 
 ## 5. 已知问题与阻塞
 
