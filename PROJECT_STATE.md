@@ -2,7 +2,8 @@
 
 - 项目名称：AI-Work — 仅面向 Windows 的 FastMCP 桌面自动化服务器
 - 仓库路径：`D:\21781\Documents\Codex\AI-Work`
-- 远程仓库：`https://github.com/peiwenZHANG-git/AI-Work.git`（origin；`main` 与 `origin/main` 当前均指向 `0504b7e`）
+- 远程仓库：`https://github.com/peiwenZHANG-git/AI-Work.git`（origin）
+- 状态基线：本文档内容核实于 2026-08-30；Git 当前 HEAD 与分支指向请实时查询（如 `git rev-parse main origin/main`），本文档不记录会随提交立即过时的动态 hash。
 - 维护规则：开始新的重要开发任务前先阅读本文档；完成影响项目状态的重要工作后更新本文档。只记录恢复上下文所需信息，不记录微小修改；记录前须用仓库、Git 历史和验证输出核实。
 
 ## 1. 当前目标
