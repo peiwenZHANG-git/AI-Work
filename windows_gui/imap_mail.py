@@ -5,12 +5,14 @@ from __future__ import annotations
 import hashlib
 import imaplib
 import os
+import re
 import socket
 import ssl
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from email import policy
 from email.parser import BytesParser
+from email.message import Message
 from typing import Any, Callable, Protocol
 
 from .mail_backends import (
@@ -307,13 +309,99 @@ class BachelorImapReadonlyBackend(ImapReadonlyBackend):
     """China Communication University NetEase mailbox specialization."""
 
 
+@dataclass
+class ReadonlyMailboxMessage:
+    """One parsed message fetched strictly read-only with BODY.PEEK."""
+
+    uid: bytes
+    received: datetime | None
+    message: Message
+
+
+def _parse_rfc822_size(fetch_payload: list[Any]) -> int | None:
+    for part in fetch_payload:
+        if isinstance(part, tuple) and part and isinstance(part[0], bytes):
+            match = re.search(rb'RFC822\.?SIZE\s+(\d+)', part[0], re.IGNORECASE)
+            if match:
+                return int(match.group(1))
+    return None
+
+
+def fetch_messages_readonly(
+    imap_factory: ImapFactory,
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+    *,
+    since_date: date | None = None,
+    limit: int = 25,
+    max_message_bytes: int = 400_000,
+    timeout: float = 10.0,
+) -> list[ReadonlyMailboxMessage]:
+    """Fetch messages since ``since_date`` with bodies via BODY.PEEK (read-only)."""
+    context = ssl.create_default_context()
+    connection = imap_factory(host, port, timeout, context)
+    results: list[ReadonlyMailboxMessage] = []
+    try:
+        status, _ = connection.login(username, password)
+        if status != 'OK':
+            raise imaplib.IMAP4.error('login failed')
+        status, _ = connection.select('INBOX', readonly=True)
+        if status != 'OK':
+            raise imaplib.IMAP4.error('read-only select failed')
+        status, search_data = connection.uid(
+            'SEARCH', None, 'SINCE', _imap_date(since_date or date.today())
+        )
+        if status != 'OK' or not search_data:
+            raise imaplib.IMAP4.error('UID SEARCH failed')
+        uids = search_data[0].split() if search_data[0] else []
+        for uid in reversed(uids[-limit:]):
+            status, size_payload = connection.uid('FETCH', uid, '(RFC822.SIZE)')
+            if status != 'OK':
+                continue
+            size = _parse_rfc822_size(size_payload)
+            if size is not None and size > max_message_bytes:
+                continue
+            status, message_payload = connection.uid(
+                'FETCH', uid, '(INTERNALDATE BODY.PEEK[])'
+            )
+            if status != 'OK':
+                continue
+            raw = b''
+            metadata = b''
+            for part in message_payload or []:
+                if isinstance(part, tuple) and len(part) >= 2:
+                    if isinstance(part[0], bytes):
+                        metadata += part[0]
+                    if isinstance(part[1], bytes):
+                        raw += part[1]
+            if not raw:
+                continue
+            results.append(
+                ReadonlyMailboxMessage(
+                    uid=uid,
+                    received=_parse_internal_date(metadata),
+                    message=BytesParser(policy=policy.default).parsebytes(raw),
+                )
+            )
+        return results
+    finally:
+        try:
+            connection.logout()
+        except Exception:
+            pass
+
+
 __all__ = [
     'BACHELOR_IMAP_CREDENTIAL_SERVICE',
     'BACHELOR_IMAP_CREDENTIAL_USERNAME', 'BACHELOR_IMAP_HOST',
     'BACHELOR_IMAP_PORT', 'BACHELOR_IMAP_USERNAME_ENVIRONMENT',
     'BachelorImapConfig', 'BachelorImapReadonlyBackend',
     'ImapReadonlyBackend', 'ImapReadonlyConfig',
+    'ReadonlyMailboxMessage',
     'QQ_IMAP_CREDENTIAL_SERVICE', 'QQ_IMAP_CREDENTIAL_USERNAME',
     'QQ_IMAP_HOST', 'QQ_IMAP_PORT', 'QQ_IMAP_USERNAME_ENVIRONMENT',
     'QqImapConfig', 'QqImapReadonlyBackend', 'SecureSecretStore',
+    'fetch_messages_readonly',
 ]

@@ -1,0 +1,214 @@
+"""Local web app for the AI mail assistant (127.0.0.1 only)."""
+
+import json
+import sys
+import threading
+import webbrowser
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import urlparse
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from windows_gui.mail_assistant import (
+    AssistantError,
+    ai_generate_draft,
+    build_assistant_page,
+    send_mail_for_mailbox,
+    save_draft_for_mailbox,
+)
+from windows_gui.mail_digest import DIGEST_DIR
+from windows_gui.mail_digest import run_digest_update
+
+
+PORT = 8931
+REFRESH_STATE = {'running': False, 'last_finished': None, 'last_ok': None}
+
+
+def is_local_request(host: str | None, origin: str | None = None) -> bool:
+    """Accept browser traffic only from the explicitly bound local origin."""
+    if (host or '').casefold() != f'127.0.0.1:{PORT}':
+        return False
+    if not origin:
+        return True
+    normalized = origin.rstrip('/').casefold()
+    return normalized in {
+        f'http://127.0.0.1:{PORT}',
+        f'http://localhost:{PORT}',
+    }
+
+
+def is_json_request(content_type: str | None) -> bool:
+    """Require a CORS preflight before mutating assistant requests."""
+    media_type = (content_type or '').split(';', 1)[0].strip().casefold()
+    return media_type == 'application/json'
+
+
+def _refresh_worker() -> None:
+    try:
+        result = run_digest_update(with_toasts=True)
+        REFRESH_STATE['last_finished'] = result['generated_at']
+        REFRESH_STATE['last_ok'] = result['ok']
+    except Exception as error:  # keep the server alive on surprises
+        REFRESH_STATE['last_finished'] = None
+        REFRESH_STATE['last_ok'] = False
+        print(f'refresh failed: {type(error).__name__}: {error}', file=sys.stderr)
+    finally:
+        REFRESH_STATE['running'] = False
+
+
+def start_refresh() -> None:
+    if REFRESH_STATE['running']:
+        return
+    REFRESH_STATE['running'] = True
+    threading.Thread(target=_refresh_worker, daemon=True).start()
+
+
+class MailAssistantHandler(BaseHTTPRequestHandler):
+    server_version = 'MailAssistant/1.0'
+
+    def _send_html(self, html: str, code: int = 200) -> None:
+        data = html.encode('utf-8')
+        self.send_response(code)
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _send_json(self, payload: dict, code: int = 200) -> None:
+        data = json.dumps(payload, ensure_ascii=False).encode('utf-8')
+        self.send_response(code)
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):  # noqa: N802 - http.server API
+        path = urlparse(self.path).path
+        if not is_local_request(self.headers.get('Host'), self.headers.get('Origin')):
+            self._send_json({'error': 'request origin is not local'}, 403)
+            return
+        if path == '/':
+            self._send_html(build_assistant_page())
+            return
+        if path == '/digest':
+            files = sorted(DIGEST_DIR.glob('*.html'))
+            if not files:
+                self._send_html('<h1>还没有摘要，请先运行一次更新</h1>', 404)
+                return
+            self._send_html(files[-1].read_text(encoding='utf-8'))
+            return
+        if path == '/api/status':
+            self._send_json({'status': 'ok'})
+            return
+        if path == '/api/refresh-status':
+            self._send_json({
+                'running': REFRESH_STATE['running'],
+                'last_finished': REFRESH_STATE['last_finished'],
+                'last_ok': REFRESH_STATE['last_ok'],
+            })
+            return
+        if path == '/api/stats':
+            stats_file = DIGEST_DIR / 'last-run.json'
+            try:
+                data = json.loads(stats_file.read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                self._send_json({'generated_at': None, 'mailboxes': []})
+                return
+            names = {
+                'qq_mail': 'QQ 邮箱',
+                'bachelor_mail': '传媒大学',
+                'master_mail': '巴黎萨克雷',
+            }
+            mailboxes = [
+                {
+                    'id': item.get('mailbox_id'),
+                    'name': names.get(item.get('mailbox_id'), item.get('mailbox_id')),
+                    'count': item.get('count', 0),
+                    'ok': item.get('status') in ('READY', 'EMPTY_TODAY'),
+                }
+                for item in data.get('mailboxes', [])
+            ]
+            self._send_json({'generated_at': data.get('generated_at'), 'mailboxes': mailboxes})
+            return
+        self._send_html('<h1>404</h1>', 404)
+
+    def do_POST(self):  # noqa: N802 - http.server API
+        path = urlparse(self.path).path
+        if not is_local_request(self.headers.get('Host'), self.headers.get('Origin')):
+            self._send_json({'error': 'request origin is not local'}, 403)
+            return
+        if not is_json_request(self.headers.get('Content-Type')):
+            self._send_json({'error': 'request must be application/json'}, 415)
+            return
+        length = int(self.headers.get('Content-Length') or 0)
+        try:
+            payload = json.loads(self.rfile.read(length) or b'{}')
+        except ValueError:
+            self._send_json({'error': '请求不是有效的 JSON'}, 400)
+            return
+        handlers = {
+            '/api/refresh': self._handle_refresh,
+            '/api/ai-draft': self._handle_ai_draft,
+            '/api/save-draft': self._handle_save_draft,
+            '/api/send-mail': self._handle_send_mail,
+        }
+        handler = handlers.get(path)
+        if handler is None:
+            self._send_json({'error': 'unknown endpoint'}, 404)
+            return
+        try:
+            handler(payload)
+        except AssistantError as error:
+            self._send_json({'error': str(error)}, 400)
+        except Exception as error:  # keep the server alive on surprises
+            self._send_json({'error': f'{type(error).__name__}: {error}'}, 500)
+
+    def _handle_ai_draft(self, payload: dict) -> None:
+        draft = ai_generate_draft(str(payload.get('instruction') or ''))
+        self._send_json(draft)
+
+    def _handle_refresh(self, payload: dict) -> None:
+        start_refresh()
+        self._send_json({'started': True, 'running': REFRESH_STATE['running']})
+
+    def _handle_save_draft(self, payload: dict) -> None:
+        detail = save_draft_for_mailbox(
+            str(payload.get('mailbox_id') or ''),
+            str(payload.get('to') or ''),
+            str(payload.get('subject') or ''),
+            str(payload.get('body') or ''),
+        )
+        self._send_json({'detail': detail})
+
+    def _handle_send_mail(self, payload: dict) -> None:
+        detail = send_mail_for_mailbox(
+            str(payload.get('mailbox_id') or ''),
+            str(payload.get('to') or ''),
+            str(payload.get('subject') or ''),
+            str(payload.get('body') or ''),
+        )
+        self._send_json({'detail': detail})
+
+    def log_message(self, format, *args):  # silence default stderr noise
+        pass
+
+
+def main() -> int:
+    try:
+        server = ThreadingHTTPServer(('127.0.0.1', PORT), MailAssistantHandler)
+    except OSError:
+        webbrowser.open(f'http://127.0.0.1:{PORT}/')
+        return 0
+    print(f'mail assistant listening on http://127.0.0.1:{PORT}/')
+    start_refresh()
+    if '--open' in sys.argv:
+        webbrowser.open(f'http://127.0.0.1:{PORT}/')
+    server.serve_forever()
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
