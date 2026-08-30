@@ -36,6 +36,7 @@ These instructions apply to the whole repository. This project is a Windows-only
 - Put backend-neutral mailbox draft creation and no-send safety checks in `windows_gui/mail_draft.py`.
 - Put confirmed sending of existing mailbox drafts in `windows_gui/mail_send.py`.
 - Put shared digest collection, Outlook refresh rotation, GLM enrichment, and digest rendering in `windows_gui/mail_digest.py`.
+- Put one-time Outlook authorization-code login, PKCE, and loopback callback validation in `windows_gui/master_oauth.py`; expose it through `scripts/authenticate_master_mail.py`, not a FastMCP tool.
 - Put natural-language draft generation and local assistant draft/SMTP actions in `windows_gui/mail_assistant.py`; put the loopback HTTP UI in `scripts/mail_assistant_server.py`.
 - Keep the FastMCP instance and process-wide settings in `windows_gui/server.py`.
 - Re-export public tools from `windows_gui_mcp.py` for import compatibility.
@@ -74,6 +75,7 @@ These instructions apply to the whole repository. This project is a Windows-only
 - Store the QQ authorization code only in the dedicated Windows Credential Manager entry `AI-Work/windows-gui/mailboxes` / `qq_mail_imap_authorization_code`. Never reuse the Graph token entry or use this credential for Draft or Send.
 - Prefer `BachelorImapReadonlyBackend` for bachelor summaries using SSL on `imaphz.qiye.163.com:993` with system CA and hostname verification. Read its username from `AI_WORK_BACHELOR_IMAP_USERNAME` and its authorization code only from `AI-Work/windows-gui/mailboxes` / `bachelor_mail_imap_authorization_code`; never reuse QQ/Graph credentials or use it for Search, Draft, Send, or SMTP.
 - The local assistant must use separate Credential Manager usernames under the same service: `qq_mail_assistant_draft_authorization_code`, `bachelor_mail_assistant_draft_authorization_code`, and `bachelor_mail_assistant_smtp_authorization_code`. A missing assistant credential is an explicit configuration error; never fall back to read-only summary credentials.
+- Outlook interactive login must use authorization code + PKCE, bind only to `127.0.0.1`, require exact `/callback` path and Host, verify OAuth `state`, and never print or retain authorization codes or tokens. Only the rotated refresh token is written to `master_mail_graph_refresh_token`; failed token exchange must not overwrite or erase the existing entry. Browser launch is allowed only through the explicit login command; unit tests must mock it.
 - CDP attachment is opt-in and loopback-only. Never automatically close or restart Edge, reuse a locked daily Profile in a second process, copy a Profile, expose a debugging port to the LAN, or log a CDP websocket URL.
 - Browser DOM extraction may return only sender, subject, received time, and a hashed opaque reference. It must not query body content, click rows, mutate read state, or access cookies/local storage/session tokens.
 - Prefer list metadata summaries so unread state cannot change. If a future implementation opens a body, it must report the possible read-state change explicitly and requires targeted safety tests.
