@@ -311,6 +311,13 @@ def refresh_master_graph_token(scope: str = MASTER_GRAPH_SCOPE) -> dict[str, Any
         raise MailboxFlowError(f'Graph 凭据刷新失败：{type(error).__name__}') from error
 
 
+@contextmanager
+def graph_refresh_lock(timeout_seconds: float = 10.0):
+    """Public primitive that serializes any token rotation with refreshes."""
+    with _graph_refresh_lock(timeout_seconds):
+        yield
+
+
 def strip_html(text: str) -> str:
     text = re.sub(r'(?is)<(script|style)[^>]*>.*?</\1>', ' ', text)
     text = re.sub(r'(?s)<[^>]+>', ' ', text)

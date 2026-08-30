@@ -5,12 +5,19 @@ from __future__ import annotations
 import base64
 import hashlib
 import io
+import requests
 from types import SimpleNamespace
 import unittest
 from unittest import mock
+from contextlib import contextmanager
 
 from windows_gui import master_oauth
 from windows_gui.mail_digest import MailboxFlowError
+
+
+@contextmanager
+def fake_noop_lock(timeout_seconds=10.0):
+    yield
 
 
 class AuthorizationUrlTests(unittest.TestCase):
@@ -135,6 +142,15 @@ class CallbackValidationTests(unittest.TestCase):
 class AuthorizationExchangeTests(unittest.TestCase):
     def test_exchange_posts_pkce_and_persists_refresh_token(self):
         calls = []
+        events = []
+
+        @contextmanager
+        def fake_lock(timeout_seconds=10.0):
+            events.append(f'lock-enter:{timeout_seconds}')
+            try:
+                yield
+            finally:
+                events.append('lock-exit')
 
         def transport(url, data=None, timeout=None):
             calls.append((url, data, timeout))
@@ -150,6 +166,8 @@ class AuthorizationExchangeTests(unittest.TestCase):
             'tenant', 'client', state='s', code_verifier='a' * 64
         )
         with mock.patch.object(
+            master_oauth, 'graph_refresh_lock', fake_lock
+        ), mock.patch.object(
             master_oauth, 'write_master_refresh_token'
         ) as write:
             result = master_oauth.exchange_authorization_code(
@@ -157,6 +175,7 @@ class AuthorizationExchangeTests(unittest.TestCase):
             )
 
         self.assertTrue(result['stored_refresh_token'])
+        self.assertEqual(['lock-enter:15.0', 'lock-exit'], events)
         write.assert_called_once_with('runtime-rotation')
         url, data, timeout = calls[0]
         self.assertIn('/oauth2/v2.0/token', url)
@@ -174,6 +193,8 @@ class AuthorizationExchangeTests(unittest.TestCase):
             'tenant', 'client', state='s', code_verifier='a' * 64
         )
         with mock.patch.object(
+            master_oauth, 'graph_refresh_lock', fake_noop_lock
+        ), mock.patch.object(
             master_oauth, 'write_master_refresh_token'
         ) as write:
             with self.assertRaisesRegex(MailboxFlowError, 'invalid_grant'):
@@ -183,6 +204,28 @@ class AuthorizationExchangeTests(unittest.TestCase):
                     'bad-code',
                     flow,
                     transport=lambda *args, **kwargs: response,
+                )
+
+        write.assert_not_called()
+
+    def test_network_error_is_explicit_and_does_not_store_token(self):
+        _, flow = master_oauth.build_authorization_url(
+            'tenant', 'client', state='s', code_verifier='a' * 64
+        )
+
+        def failing_transport(*args, **kwargs):
+            raise requests.RequestException('offline')
+
+        with mock.patch.object(
+            master_oauth, 'graph_refresh_lock', fake_noop_lock
+        ), mock.patch.object(
+            master_oauth, 'write_master_refresh_token'
+        ) as write:
+            with self.assertRaisesRegex(
+                MailboxFlowError, 'OAuth token 网络失败'
+            ):
+                master_oauth.exchange_authorization_code(
+                    'tenant', 'client', 'code', flow, transport=failing_transport
                 )
 
         write.assert_not_called()

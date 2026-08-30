@@ -16,6 +16,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 import requests
 
 from .mail_digest import (
+    graph_refresh_lock,
     MailboxFlowError,
     write_master_refresh_token,
 )
@@ -190,36 +191,41 @@ def exchange_authorization_code(
     post = transport or requests.post
     base = f'https://login.microsoftonline.com/{tenant}/oauth2/v2.0'
     try:
-        response = post(
-            f'{base}/token',
-            data={
-                'grant_type': 'authorization_code',
-                'client_id': client_id,
-                'code': code,
-                'redirect_uri': flow.redirect_uri,
-                'code_verifier': flow.code_verifier,
-                'scope': MASTER_LOGIN_SCOPE,
-            },
-            timeout=30,
-        )
-    except requests.RequestException as error:
-        raise MailboxFlowError(f'OAuth token 网络失败：{type(error).__name__}') from error
-    try:
-        payload = response.json()
-    except ValueError as error:
-        raise MailboxFlowError('OAuth token 响应不是 JSON') from error
-    if response.status_code != 200 or not payload.get('access_token'):
-        raise MailboxFlowError(
-            f"OAuth 登录失败：{payload.get('error', 'unknown_error')}"
-        )
-    refresh_token = payload.get('refresh_token')
-    if not refresh_token:
-        raise MailboxFlowError('OAuth 响应缺少 refresh token，未保存任何凭据')
-    try:
-        write_master_refresh_token(str(refresh_token))
+        with graph_refresh_lock(15.0):
+            try:
+                response = post(
+                    f'{base}/token',
+                    data={
+                        'grant_type': 'authorization_code',
+                        'client_id': client_id,
+                        'code': code,
+                        'redirect_uri': flow.redirect_uri,
+                        'code_verifier': flow.code_verifier,
+                        'scope': MASTER_LOGIN_SCOPE,
+                    },
+                    timeout=30,
+                )
+            except requests.RequestException as error:
+                raise MailboxFlowError(
+                    f'OAuth token 网络失败：{type(error).__name__}'
+                ) from error
+            try:
+                payload = response.json()
+            except ValueError as error:
+                raise MailboxFlowError('OAuth token 响应不是 JSON') from error
+            if response.status_code != 200 or not payload.get('access_token'):
+                raise MailboxFlowError(
+                    f"OAuth 登录失败：{payload.get('error', 'unknown_error')}"
+                )
+            refresh_token = payload.get('refresh_token')
+            if not refresh_token:
+                raise MailboxFlowError('OAuth 响应缺少 refresh token，未保存任何凭据')
+            write_master_refresh_token(str(refresh_token))
+            return {'stored_refresh_token': True}
+    except MailboxFlowError:
+        raise
     except (OSError, ValueError) as error:
         raise MailboxFlowError(f'OAuth 凭据写入失败：{type(error).__name__}') from error
-    return {'stored_refresh_token': True}
 
 
 def bootstrap_master_login(
