@@ -167,6 +167,7 @@ Smoke test 只使用唯一命名的专用记事本文件，测试结果写入 `t
 ### 计划任务恢复
 
 - 预览恢复命令：`python scripts/install_scheduled_tasks.py --dry-run`。
+- 只读校验当前定义：`python scripts/install_scheduled_tasks.py --check`；它会报告路径、参数、触发时间和执行限制差异，但不会启动或修改任务。
 - 需要创建或修复 `AI-Work Daily Mail Digest` 时显式运行 `python scripts/install_scheduled_tasks.py`；任务在每日 10:00 和 22:00 触发，禁止并发实例，最长运行 1 小时。
 - 安装只写入计划任务定义，不会立即读取邮件；真实邮箱读取仍由计划时间或用户显式启动决定。
 - 该命令不打开浏览器、不操作桌面、不访问外部邮件服务、不读取邮件正文，也绝不输出或保存凭据值；助手服务未运行只报告 `INFO`，不影响必需检查结论。
