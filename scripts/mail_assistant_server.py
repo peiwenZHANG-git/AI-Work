@@ -24,6 +24,7 @@ from windows_gui.mail_digest import run_digest_update
 
 
 PORT = 8931
+MAX_JSON_BODY_BYTES = 256 * 1024
 REFRESH_STATE = {'running': False, 'last_finished': None, 'last_ok': None}
 
 
@@ -44,6 +45,21 @@ def is_json_request(content_type: str | None) -> bool:
     """Require a CORS preflight before mutating assistant requests."""
     media_type = (content_type or '').split(';', 1)[0].strip().casefold()
     return media_type == 'application/json'
+
+
+def parse_content_length(
+    value: str | None, max_bytes: int = MAX_JSON_BODY_BYTES
+) -> tuple[int, str | None]:
+    """Parse a bounded Content-Length without allowing unbounded reads."""
+    try:
+        length = int((value or '0').strip())
+    except ValueError:
+        return 0, 'invalid_content_length'
+    if length < 0:
+        return 0, 'invalid_content_length'
+    if length > max_bytes:
+        return 0, 'content_too_large'
+    return length, None
 
 
 def _refresh_worker() -> None:
@@ -143,7 +159,15 @@ class MailAssistantHandler(BaseHTTPRequestHandler):
         if not is_json_request(self.headers.get('Content-Type')):
             self._send_json({'error': 'request must be application/json'}, 415)
             return
-        length = int(self.headers.get('Content-Length') or 0)
+        length, length_error = parse_content_length(
+            self.headers.get('Content-Length')
+        )
+        if length_error:
+            self._send_json(
+                {'error': length_error},
+                413 if length_error == 'content_too_large' else 400,
+            )
+            return
         try:
             payload = json.loads(self.rfile.read(length) or b'{}')
         except ValueError:
