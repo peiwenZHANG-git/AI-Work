@@ -216,6 +216,12 @@ class WindowsCredentialManagerSecretStore:
         secret = keyring.get_password(self.service, self.username)
         return secret if isinstance(secret, str) and secret else None
 
+    def set_secret(self, secret: str) -> None:
+        blob = secret.encode('utf-8')
+        if not blob or len(blob) > 2560:
+            raise ValueError('credential must contain 1..2560 UTF-8 bytes')
+        keyring.set_password(self.service, self.username, secret)
+
 
 GraphTransport = Callable[[str, dict[str, str], float], Any]
 GraphDraftTransport = Callable[[str, dict[str, str], dict[str, Any], float], Any]
