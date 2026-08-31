@@ -42,11 +42,12 @@
 - 计划任务恢复安装器已提交：幂等注册每日摘要任务，支持 10:00/22:00 双触发、禁止并发、1 小时超时和 `--dry-run`；安装本身不触发邮件读取。
 - 计划任务定义只读校验已提交：`--check` 比较动作、参数、工作目录、触发时间和执行限制；健康检查将其作为必需项。
 - 计划任务定义漂移已修复：真实任务现在使用带引号脚本参数和 `PT1H` 执行限制；`--check` 通过。
+- 锁冲突可见性已提交：计划任务摘要因运行锁被占用而跳过时返回 `ok=false`、`reason=lock_busy`，不再把未更新的 `last-run.json` 伪装成成功。
 
 ## 4. 当前工作（待提交）
 
 - `.vscode/mcp.json`：本机 GitHub MCP 配置，按既定决定保持本地修改，不提交、不还原。
-- 无待提交源码。当前提交前验证基线（2026-08-31 实测）：`python -m compileall -q windows_gui_mcp.py windows_gui tests scripts` 通过；`python -m unittest discover -s tests -t . -v` 共 256 项全部通过；`mcp.list_tools()` 确认 28 个工具；`git diff --check` 通过。
+- 无待提交源码。当前提交前验证基线（2026-08-31 实测）：`python -m compileall -q windows_gui_mcp.py windows_gui tests scripts` 通过；`python -m unittest discover -s tests -t . -v` 共 257 项全部通过；`mcp.list_tools()` 确认 28 个工具；`git diff --check` 通过。
 
 ## 5. 已知问题与阻塞
 
