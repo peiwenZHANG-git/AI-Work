@@ -36,14 +36,13 @@
 - Outlook refresh 生命周期已提交：读取、Graph 交换、旋转写回由跨进程 Windows mutex 串行化；助手和摘要共用同一函数，access token 只留在内存。
 - Outlook 一次性 OAuth 登录已提交：authorization code + PKCE、精确回环回调、state 校验和专用 refresh token 写入。
 - OAuth 一次性登录与自动刷新共用跨进程锁；token 交换失败不会覆盖既有凭据。
+- 摘要 HTML 与状态 JSON 使用临时文件加原子替换；`last-run.json` 记录 `ok`、邮箱健康、计数和 Toast 状态。
+- 本机只读健康检查已提交：检查环境变量和凭据存在性、28 个 MCP 工具注册、计划任务、最近摘要状态和助手服务；凭据值读取后立即丢弃且不输出。
 
 ## 4. 当前工作（待提交）
 
-- 健康与恢复修正（待提交）：`last-run.json` 此前没有 `ok` 字段；健康检查不再误把它作为失败依据。邮箱状态和报告新鲜度（13 小时上限）是必需检查，Toast 显示单独作为可选 INFO。
-- 摘要 HTML 和状态 JSON 改为临时文件加原子替换；`last-run.json` 现在记录 `ok`、邮箱健康、计数和 Toast 状态。状态写入失败会让 `run_digest_update` 返回显式失败，避免计划任务假成功。
-- 新增 4 项摘要恢复/健康语义测试，保持 28 个 MCP 工具接口不变。
 - `.vscode/mcp.json`：本机 GitHub MCP 配置，按既定决定保持本地修改，不提交、不还原。
-- 当前工作树验证基线（2026-08-31 实测）：`python -m compileall -q windows_gui_mcp.py windows_gui tests scripts` 通过；`python -m unittest discover -s tests -t . -v` 共 235 项全部通过；`mcp.list_tools()` 确认 28 个工具；`git diff --check` 通过。
+- 无待提交源码。当前提交前验证基线（2026-08-31 实测）：`python -m compileall -q windows_gui_mcp.py windows_gui tests scripts` 通过；`python -m unittest discover -s tests -t . -v` 共 235 项全部通过；`mcp.list_tools()` 确认 28 个工具；`git diff --check` 通过。
 
 ## 5. 已知问题与阻塞
 
@@ -66,8 +65,7 @@
 
 ## 7. 下一步
 
-1. 评审并提交摘要健康语义修正及其测试；保持 28 个工具的公开接口不变。
-2. 在下一次计划任务或用户显式授权的读取后确认 `last-run.json` 原子更新；用户配置 3 个助手专用授权码后重新运行健康检查，再用显式授权执行一次真实 Outlook 登录。
+1. 在下一次计划任务或用户显式授权的读取后确认 `last-run.json` 原子更新；用户配置 3 个助手专用授权码后重新运行健康检查，再用显式授权执行一次真实 Outlook 登录。
 3. 每次提交前运行规定验证：compileall、完整单元测试、28 工具注册检查、`git diff --check`。
 4. 真实桌面验证仅在用户明确授权后运行 `python tests/smoke_test.py`；邮箱只读 smoke 仅在另行授权时使用 `--mailbox-readonly`。
 5. 后续增强：在用户授权的交互会话中执行一次真实 Outlook 登录；本科网易 Edge 发送仅在能稳定定位并校验既有草稿后再实现。
