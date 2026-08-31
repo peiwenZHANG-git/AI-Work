@@ -41,8 +41,10 @@
 
 ## 4. 当前工作（待提交）
 
+- 安全凭据配置 CLI（待提交）：`scripts/configure_mail_credentials.py` 使用隐藏提示和白名单目标配置凭据；`--missing-assistant` 只配置三个助手专用授权码，写入后仅验证存在性，不在 argv、日志或输出中保留密钥。
+- `WindowsCredentialManagerSecretStore` 新增 `set_secret`，限制非空且不超过 2560 UTF-8 字节。
 - `.vscode/mcp.json`：本机 GitHub MCP 配置，按既定决定保持本地修改，不提交、不还原。
-- 无待提交源码。当前提交前验证基线（2026-08-31 实测）：`python -m compileall -q windows_gui_mcp.py windows_gui tests scripts` 通过；`python -m unittest discover -s tests -t . -v` 共 235 项全部通过；`mcp.list_tools()` 确认 28 个工具；`git diff --check` 通过。
+- 当前工作树验证基线（2026-08-31 实测）：`python -m compileall -q windows_gui_mcp.py windows_gui tests scripts` 通过；`python -m unittest discover -s tests -t . -v` 共 241 项全部通过；`mcp.list_tools()` 确认 28 个工具；`git diff --check` 通过。
 
 ## 5. 已知问题与阻塞
 
@@ -65,7 +67,7 @@
 
 ## 7. 下一步
 
-1. 在下一次计划任务或用户显式授权的读取后确认 `last-run.json` 原子更新；用户配置 3 个助手专用授权码后重新运行健康检查，再用显式授权执行一次真实 Outlook 登录。
+1. 用户运行 `python scripts/configure_mail_credentials.py --missing-assistant` 配置 3 个助手专用授权码后重新运行健康检查，再用显式授权执行一次真实 Outlook 登录。
 3. 每次提交前运行规定验证：compileall、完整单元测试、28 工具注册检查、`git diff --check`。
 4. 真实桌面验证仅在用户明确授权后运行 `python tests/smoke_test.py`；邮箱只读 smoke 仅在另行授权时使用 `--mailbox-readonly`。
 5. 后续增强：在用户授权的交互会话中执行一次真实 Outlook 登录；本科网易 Edge 发送仅在能稳定定位并校验既有草稿后再实现。

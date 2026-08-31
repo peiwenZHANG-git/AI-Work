@@ -20,6 +20,7 @@
 - `mail_digest.py`：计划任务摘要、Outlook refresh 轮换、GLM 摘要/翻译和本地 HTML 渲染。
 - `master_oauth.py` / `scripts/authenticate_master_mail.py`：一次性 Outlook OAuth 登录和 refresh token 安全写入。
 - `mail_assistant.py` / `scripts/mail_assistant_server.py`：本机 AI 草稿助手和 `127.0.0.1:8931` 页面。
+- `scripts/configure_mail_credentials.py`：交互式写入白名单凭据；输入不回显，密钥不从命令行或日志传递。
 - `scripts/system_health.py`：本机只读健康检查，验证配置/凭据存在性、MCP 注册、计划任务、助手服务和最近摘要运行状态。
 
 ## 环境要求
@@ -153,6 +154,7 @@ Smoke test 只使用唯一命名的专用记事本文件，测试结果写入 `t
 - `scripts/daily_mail_digest.py` 生成三邮箱摘要；`scripts/mail_assistant_server.py` 只绑定 `127.0.0.1:8931`，并校验 Host、Origin 和 JSON Content-Type。
 - AI 中文摘要/翻译调用 Zhipu GLM；QQ 助手只能保存草稿，本科 SMTP 发送前先保存草稿，页面发送按钮仍需显式确认。
 - 助手 QQ/本科草稿和本科 SMTP 使用独立的 Credential Manager 授权码条目；缺失时明确失败，绝不回退只读摘要凭据。
+- 运行 `python scripts/configure_mail_credentials.py --missing-assistant` 配置三个助手专用授权码；每个密钥需隐藏输入两次。只能用 `--key`/`--all-configurable` 选择白名单目标，不能用参数传递密钥值；覆盖已有条目需显式 `--force`。
 
 ### 本机健康检查
 
