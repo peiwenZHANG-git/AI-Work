@@ -22,6 +22,7 @@
 - `mail_assistant.py` / `scripts/mail_assistant_server.py`：本机 AI 草稿助手和 `127.0.0.1:8931` 页面。
 - `scripts/configure_mail_credentials.py`：交互式写入白名单凭据；输入不回显，密钥不从命令行或日志传递。
 - `scripts/system_health.py`：本机只读健康检查，验证配置/凭据存在性、MCP 注册、计划任务、助手服务和最近摘要运行状态。
+- `scripts/install_scheduled_tasks.py`：幂等恢复每日摘要计划任务；只注册任务，不自动触发邮件读取。
 
 ## 环境要求
 
@@ -162,6 +163,12 @@ Smoke test 只使用唯一命名的专用记事本文件，测试结果写入 `t
 - 检查范围限于本机配置和运行状态：环境变量名存在性、Credential Manager 条目存在性、28 个 MCP 工具注册、计划任务、最近 `last-run.json` 状态和助手服务状态。
 - 摘要健康检查要求邮箱状态全部为 `READY`/`EMPTY_TODAY`，且报告不超过 13 小时（覆盖每日 10:00/22:00 两次调度）；Toast 是否显示单独作为可选 INFO，不与邮件读取健康混在一起。
 - 摘要 HTML 和 `last-run.json` 使用临时文件加原子替换写入；状态包含 `ok`、邮箱读取结果、计数和 Toast 状态。状态写入失败会让任务显式失败，不会留下“任务成功但报告过期”的假信号。
+
+### 计划任务恢复
+
+- 预览恢复命令：`python scripts/install_scheduled_tasks.py --dry-run`。
+- 需要创建或修复 `AI-Work Daily Mail Digest` 时显式运行 `python scripts/install_scheduled_tasks.py`；任务在每日 10:00 和 22:00 触发，禁止并发实例，最长运行 1 小时。
+- 安装只写入计划任务定义，不会立即读取邮件；真实邮箱读取仍由计划时间或用户显式启动决定。
 - 该命令不打开浏览器、不操作桌面、不访问外部邮件服务、不读取邮件正文，也绝不输出或保存凭据值；助手服务未运行只报告 `INFO`，不影响必需检查结论。
 
 ### Outlook 一次性登录

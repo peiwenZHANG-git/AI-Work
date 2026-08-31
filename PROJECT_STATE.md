@@ -38,13 +38,13 @@
 - OAuth 一次性登录与自动刷新共用跨进程锁；token 交换失败不会覆盖既有凭据。
 - 摘要 HTML 与状态 JSON 使用临时文件加原子替换；`last-run.json` 记录 `ok`、邮箱健康、计数和 Toast 状态。
 - 本机只读健康检查已提交：检查环境变量和凭据存在性、28 个 MCP 工具注册、计划任务、最近摘要状态和助手服务；凭据值读取后立即丢弃且不输出。
+- 安全凭据配置 CLI 已提交：隐藏提示、白名单目标、双重输入确认，且不在 argv、日志或输出中保留密钥。
+- 计划任务恢复安装器已提交：幂等注册每日摘要任务，支持 10:00/22:00 双触发、禁止并发、1 小时超时和 `--dry-run`；安装本身不触发邮件读取。
 
 ## 4. 当前工作（待提交）
 
-- 安全凭据配置 CLI（待提交）：`scripts/configure_mail_credentials.py` 使用隐藏提示和白名单目标配置凭据；`--missing-assistant` 只配置三个助手专用授权码，写入后仅验证存在性，不在 argv、日志或输出中保留密钥。
-- `WindowsCredentialManagerSecretStore` 新增 `set_secret`，限制非空且不超过 2560 UTF-8 字节。
 - `.vscode/mcp.json`：本机 GitHub MCP 配置，按既定决定保持本地修改，不提交、不还原。
-- 当前工作树验证基线（2026-08-31 实测）：`python -m compileall -q windows_gui_mcp.py windows_gui tests scripts` 通过；`python -m unittest discover -s tests -t . -v` 共 241 项全部通过；`mcp.list_tools()` 确认 28 个工具；`git diff --check` 通过。
+- 无待提交源码。当前提交前验证基线（2026-08-31 实测）：`python -m compileall -q windows_gui_mcp.py windows_gui tests scripts` 通过；`python -m unittest discover -s tests -t . -v` 共 248 项全部通过；`mcp.list_tools()` 确认 28 个工具；`git diff --check` 通过。
 
 ## 5. 已知问题与阻塞
 
@@ -67,7 +67,7 @@
 
 ## 7. 下一步
 
-1. 用户运行 `python scripts/configure_mail_credentials.py --missing-assistant` 配置 3 个助手专用授权码后重新运行健康检查，再用显式授权执行一次真实 Outlook 登录。
+1. 如计划任务定义漂移，先用 `--dry-run` 预览，再显式运行 `python scripts/install_scheduled_tasks.py` 修复；用户配置 3 个助手专用授权码后重新运行健康检查，再用显式授权执行一次真实 Outlook 登录。
 3. 每次提交前运行规定验证：compileall、完整单元测试、28 工具注册检查、`git diff --check`。
 4. 真实桌面验证仅在用户明确授权后运行 `python tests/smoke_test.py`；邮箱只读 smoke 仅在另行授权时使用 `--mailbox-readonly`。
 5. 后续增强：在用户授权的交互会话中执行一次真实 Outlook 登录；本科网易 Edge 发送仅在能稳定定位并校验既有草稿后再实现。
