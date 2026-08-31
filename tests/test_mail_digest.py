@@ -9,6 +9,7 @@ from datetime import datetime
 from email.message import EmailMessage
 from types import SimpleNamespace
 import tempfile
+import unittest.mock as mock
 
 from windows_gui.mail_digest import (
     MailboxDigest,
@@ -30,6 +31,7 @@ from windows_gui.mail_digest import (
     graph_body_text,
     strip_html,
 )
+import windows_gui.mail_digest as mail_digest
 
 
 def _mail(sender: str, subject: str, time: str, **extra) -> SimpleNamespace:
@@ -251,6 +253,24 @@ class RunArtifactTest(unittest.TestCase):
         self.assertTrue(status['toast_shown'])
         self.assertEqual(2, status['mailbox_count'])
         self.assertEqual(1, status['total_mails'])
+
+
+class RunDigestLockTest(unittest.TestCase):
+    def test_lock_busy_is_reported_as_failed_skip(self):
+        with mock.patch.object(
+            mail_digest, '_acquire_run_lock', return_value=False
+        ), mock.patch.object(
+            mail_digest, '_release_run_lock'
+        ) as release:
+            result = mail_digest.run_digest_update()
+
+        self.assertFalse(result['ok'])
+        self.assertTrue(result['skipped'])
+        self.assertEqual('lock_busy', result['reason'])
+        self.assertIsInstance(result['generated_at'], str)
+        self.assertTrue(result['generated_at'])
+        self.assertEqual('', result['digest_path'])
+        release.assert_not_called()
 
 
 class MailBodyTextTest(unittest.TestCase):

@@ -1358,8 +1358,9 @@ def run_digest_update(
 ) -> dict[str, Any]:
     if not _acquire_run_lock():
         return {
-            'ok': True,
+            'ok': False,
             'skipped': True,
+            'reason': 'lock_busy',
             'generated_at': datetime.now().astimezone().isoformat(),
             'digest_path': '',
             'opened_html': False,
