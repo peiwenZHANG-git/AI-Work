@@ -144,6 +144,135 @@ class MailAssistantTest(unittest.TestCase):
         self.assertEqual('Subject Bcc: attacker@example.edu', message['Subject'])
         self.assertIsNone(message['Bcc'])
 
+    def test_master_draft_uses_separate_stage_and_confirm_calls(self):
+        calls = []
+        with mock.patch.object(
+            mail_assistant, 'ensure_environment'
+        ), mock.patch.dict(
+            'os.environ', {'AI_WORK_OUTLOOK_MAILBOX': 'me@example.edu'}
+        ), mock.patch.object(
+            mail_assistant,
+            '_assistant_graph_token',
+            side_effect=['write-token', 'send-token'],
+        ), mock.patch.object(
+            mail_assistant,
+            'verify_master_mailbox',
+            side_effect=lambda token, mailbox: calls.append(('identity', token)),
+        ), mock.patch.object(
+            mail_assistant,
+            'create_master_draft',
+            side_effect=lambda token, to, subject, body: calls.append(
+                ('draft', token)
+            ) or 'draft-1',
+        ) as create_draft, mock.patch.object(
+            mail_assistant,
+            'verify_master_staged_draft',
+            side_effect=lambda token, draft_id, to, subject, body: calls.append(
+                ('verify', token, draft_id)
+            ),
+        ), mock.patch.object(
+            mail_assistant,
+            'send_master_message',
+            side_effect=lambda token, draft_id: calls.append(('send', token, draft_id)),
+        ):
+            staged = mail_assistant.stage_draft_for_mailbox(
+                'master_mail',
+                'teacher@example.edu',
+                'Subject',
+                'Body',
+            )
+            detail = mail_assistant.send_staged_draft(staged['pending_id'])
+
+        self.assertTrue(staged['pending_id'])
+        self.assertEqual(
+            [
+                ('identity', 'write-token'),
+                ('draft', 'write-token'),
+                ('identity', 'send-token'),
+                ('verify', 'send-token', 'draft-1'),
+                ('send', 'send-token', 'draft-1'),
+            ],
+            calls,
+        )
+        self.assertIn('已确认发送', detail)
+        create_draft.assert_called_once()
+
+    def test_pending_draft_token_is_single_use(self):
+        pending_id = mail_assistant._store_pending_draft({
+            'mailbox_id': 'unknown_mailbox',
+        })
+        with self.assertRaises(AssistantError):
+            mail_assistant.send_staged_draft(pending_id)
+        with self.assertRaises(AssistantError):
+            mail_assistant.send_staged_draft(pending_id)
+
+    def test_bachelor_confirm_sends_existing_staged_draft(self):
+        account = {
+            'host': 'imap.example.com',
+            'port': '993',
+            'username': 'me@example.edu',
+            'password': 'runtime-secret',
+        }
+        reference = {
+            'folder': 'Drafts',
+            'uidvalidity': '99',
+            'uid': '11',
+            'message_sha256': 'valid-hash',
+        }
+
+        with mock.patch.object(
+            mail_assistant, 'ensure_environment'
+        ), mock.patch.object(
+            mail_assistant,
+            '_assistant_account',
+            return_value=account,
+        ), mock.patch.object(
+            mail_assistant, 'stage_draft_imap', return_value=reference
+        ):
+            staged = mail_assistant.stage_draft_for_mailbox(
+                'bachelor_mail',
+                'teacher@example.edu',
+                'Subject',
+                'Body',
+            )
+
+        existing_message = build_draft_message(
+            'me@example.edu',
+            'teacher@example.edu',
+            'Subject',
+            'Body',
+        )
+        sent_messages = []
+        credential_usernames = []
+
+        def capture_account(mailbox_id, credential_username):
+            credential_usernames.append(credential_username)
+            if credential_username == mail_assistant.BACHELOR_ASSISTANT_SMTP_CREDENTIAL_USERNAME:
+                pass
+            return account
+
+        with mock.patch.object(
+            mail_assistant, 'ensure_environment'
+        ), mock.patch.object(
+            mail_assistant, '_assistant_account', side_effect=capture_account
+        ), mock.patch.object(
+            mail_assistant,
+            'fetch_staged_draft_imap',
+            return_value=existing_message,
+        ), mock.patch.object(
+            mail_assistant,
+            'send_existing_email_smtp',
+            side_effect=lambda account_arg, message: sent_messages.append(message),
+        ):
+            detail = mail_assistant.send_staged_draft(staged['pending_id'])
+
+        self.assertIn('已确认发送本科邮箱已保存草稿', detail)
+        self.assertEqual([existing_message], sent_messages)
+        self.assertIn(
+            mail_assistant.BACHELOR_ASSISTANT_SMTP_CREDENTIAL_USERNAME,
+            credential_usernames,
+        )
+
     def test_build_draft_message_sets_headers(self) -> None:
         message = build_draft_message('me@example.com', 'you@example.com', '主题', '正文')
         self.assertEqual(message['To'], 'you@example.com')

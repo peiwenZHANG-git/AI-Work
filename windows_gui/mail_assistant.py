@@ -8,13 +8,19 @@ save drafts but can never send (project safety rule).
 from __future__ import annotations
 
 import email.utils
+import hashlib
 import imaplib
 import os
 import re
+import secrets
 import smtplib
 import ssl
+import threading
 import time
+from email.parser import BytesParser
+from email import policy
 from email.message import EmailMessage
+from urllib.parse import quote
 from typing import Any
 
 import requests
@@ -42,11 +48,16 @@ from windows_gui.mail_digest import (
 )
 
 
-ASSISTANT_GRAPH_SCOPE = (
+ASSISTANT_SAVE_GRAPH_SCOPE = (
+    'https://graph.microsoft.com/Mail.ReadWrite '
+    'offline_access'
+)
+ASSISTANT_SEND_GRAPH_SCOPE = (
     'https://graph.microsoft.com/Mail.ReadWrite '
     'https://graph.microsoft.com/Mail.Send offline_access'
 )
 GRAPH_MESSAGES_URL = 'https://graph.microsoft.com/v1.0/me/messages'
+GRAPH_ME_URL = 'https://graph.microsoft.com/v1.0/me'
 SMTP_HOSTS = {
     'bachelor_mail': ('smtp.qiye.163.com', 465),
 }
@@ -71,6 +82,8 @@ MAX_INSTRUCTION_CHARS = 8_000
 MAX_RECIPIENT_CHARS = 320
 MAX_SUBJECT_CHARS = 200
 MAX_BODY_CHARS = 50_000
+PENDING_DRAFTS: dict[str, dict[str, Any]] = {}
+_PENDING_LOCK = threading.Lock()
 
 
 class AssistantError(Exception):
@@ -192,6 +205,72 @@ def find_drafts_folder(connection: Any) -> str | None:
     return fallback
 
 
+def stage_draft_imap(
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+    from_addr: str,
+    to: str,
+    subject: str,
+    body: str,
+    *,
+    imap_factory: Any = None,
+) -> str:
+    """Append one draft and return its stable staging reference."""
+    message = build_draft_message(from_addr, to, subject, body)
+    context = ssl.create_default_context()
+    factory = imap_factory or _default_imap_factory
+    connection = factory(host, port, 30, context)
+    try:
+        status, _ = connection.login(username, password)
+        if status != 'OK':
+            raise AssistantError('IMAP 登录失败，请检查授权码')
+        folder = find_drafts_folder(connection) or 'Drafts'
+        imap_folder = f'"{folder}"' if ' ' in folder else folder
+        status, data = connection.append(
+            imap_folder,
+            '(\\Draft)',
+            imaplib.Time2Internaldate(time.time()),
+            message.as_bytes(),
+        )
+        if status != 'OK':
+            raise AssistantError(f'保存草稿失败：{data!r}')
+        response = b''
+        for item in data or []:
+            response += item if isinstance(item, bytes) else str(item).encode()
+        match = re.search(rb'APPENDUID\s+(\d+)\s+(\d+)', response)
+        if not match:
+            raise AssistantError('草稿未返回稳定 UID，已停止发送流程')
+        uidvalidity, uid = match.group(1), match.group(2)
+        status, _ = connection.select(imap_folder, readonly=True)
+        if status != 'OK':
+            raise AssistantError('无法只读校验刚保存的草稿')
+        status, data = connection.uid('FETCH', uid, '(BODY.PEEK[])')
+        if status != 'OK':
+            raise AssistantError('无法读取刚保存的草稿')
+        raw = b''
+        for item in data or []:
+            if isinstance(item, tuple) and len(item) >= 2 and isinstance(item[1], bytes):
+                raw += item[1]
+        if not raw:
+            raise AssistantError('刚保存的草稿内容为空')
+        parsed = BytesParser(policy=policy.default).parsebytes(raw)
+        _validate_staged_message(parsed, to, subject, body)
+        return {
+            'folder': folder,
+            'uidvalidity': uidvalidity.decode('ascii'),
+            'uid': uid.decode('ascii'),
+            'message_sha256': _message_sha256(raw),
+            'message_bytes': raw,
+        }
+    finally:
+        try:
+            connection.logout()
+        except Exception:
+            pass
+
+
 def save_draft_imap(
     host: str,
     port: int,
@@ -204,32 +283,69 @@ def save_draft_imap(
     *,
     imap_factory: Any = None,
 ) -> str:
-    """Append the message to the mailbox Drafts folder; return folder name."""
-    message = build_draft_message(from_addr, to, subject, body)
-    context = ssl.create_default_context()
-    factory = imap_factory or _default_imap_factory
-    connection = factory(host, port, 30, context)
-    try:
-        status, _ = connection.login(username, password)
-        if status != 'OK':
-            raise AssistantError('IMAP 登录失败，请检查授权码')
-        folder = find_drafts_folder(connection) or 'Drafts'
-        if ' ' in folder:
-            folder = f'"{folder}"'
-        status, data = connection.append(
-            folder,
-            '(\\Draft)',
-            imaplib.Time2Internaldate(time.time()),
-            message.as_bytes(),
+    reference = stage_draft_imap(
+        host, port, username, password, from_addr, to, subject, body,
+        imap_factory=imap_factory,
+    )
+    return reference['folder']
+
+
+def _validate_staged_message(
+    message: EmailMessage,
+    to: str,
+    subject: str,
+    body: str,
+    *,
+    expected_from: str | None = None,
+) -> None:
+    recipients = [
+        address.strip().casefold()
+        for _name, address in email.utils.getaddresses(
+            message.get_all('To', [])
         )
-        if status != 'OK':
-            raise AssistantError(f'保存草稿失败：{data!r}')
-        return folder
-    finally:
+        if address.strip()
+    ]
+    if recipients != [to.casefold()]:
+        raise AssistantError('草稿收件人校验失败')
+    if expected_from:
+        from_addresses = [
+            address.strip().casefold()
+            for _name, address in email.utils.getaddresses(
+                message.get_all('From', [])
+            )
+            if address.strip()
+        ]
+        if from_addresses != [expected_from.casefold()]:
+            raise AssistantError('草稿发件人校验失败')
+    if str(message.get('Subject') or '') != subject:
+        raise AssistantError('草稿主题校验失败')
+    try:
+        content = message.get_content()
+    except Exception as error:
+        raise AssistantError('草稿正文不可解析') from error
+    if validate_body(content) != validate_body(body):
+        raise AssistantError('草稿正文校验失败')
+
+
+def _message_sha256(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _store_pending_draft(context: dict[str, Any]) -> str:
+    while True:
+        pending_id = secrets.token_urlsafe(32)
+        with _PENDING_LOCK:
+            if pending_id not in PENDING_DRAFTS:
+                PENDING_DRAFTS[pending_id] = context
+                return pending_id
+
+
+def _take_pending_draft(pending_id: str) -> dict[str, Any]:
+    with _PENDING_LOCK:
         try:
-            connection.logout()
-        except Exception:
-            pass
+            return PENDING_DRAFTS.pop(str(pending_id))
+        except KeyError as error:
+            raise AssistantError('待发送草稿不存在、已确认或服务已重启') from error
 
 
 def _assistant_graph_token(scopes: str) -> str:
@@ -276,6 +392,125 @@ def send_master_message(access_token: str, draft_id: str) -> None:
         )
     if response.status_code not in (200, 202):
         raise AssistantError(f'发送失败：HTTP {response.status_code}')
+
+
+def verify_master_mailbox(access_token: str, expected_mailbox: str) -> None:
+    expected = validate_recipient(expected_mailbox)
+    response = requests.get(
+        f'{GRAPH_ME_URL}?$select=mail,userPrincipalName',
+        headers={'Authorization': f'Bearer {access_token}'},
+        timeout=30,
+    )
+    if response.status_code != 200:
+        raise AssistantError(f'无法校验 Outlook 身份：HTTP {response.status_code}')
+    profile = response.json()
+    actual_values = {
+        str(profile.get('mail') or '').strip().casefold(),
+        str(profile.get('userPrincipalName') or '').strip().casefold(),
+    }
+    if expected.casefold() not in actual_values:
+        raise AssistantError('Outlook 身份与配置的 master_mail 不匹配')
+
+
+def verify_master_staged_draft(
+    access_token: str,
+    draft_id: str,
+    to: str,
+    subject: str,
+    body: str,
+) -> None:
+    to, subject, body = validate_draft_fields(to, subject, body)
+    response = requests.get(
+        (
+            f'{GRAPH_MESSAGES_URL}/{quote(draft_id, safe="")}'
+            '?$select=subject,toRecipients,body'
+        ),
+        headers={'Authorization': f'Bearer {access_token}'},
+        timeout=30,
+    )
+    if response.status_code != 200:
+        raise AssistantError(f'无法读取待发送草稿：HTTP {response.status_code}')
+    payload = response.json()
+    recipients = [
+        str(
+            ((item or {}).get('emailAddress') or {}).get('address') or ''
+        ).strip().casefold()
+        for item in payload.get('toRecipients') or []
+    ]
+    if recipients != [to.casefold()]:
+        raise AssistantError('待发送草稿收件人校验失败')
+    if validate_subject(payload.get('subject')) != subject:
+        raise AssistantError('待发送草稿主题校验失败')
+    graph_body = (payload.get('body') or {}).get('content')
+    if validate_body(graph_body) != body:
+        raise AssistantError('待发送草稿正文校验失败')
+
+
+def fetch_staged_draft_imap(
+    account: dict[str, str],
+    context: dict[str, Any],
+    *,
+    imap_factory: Any = None,
+) -> EmailMessage:
+    context = dict(context)
+    to, subject, body = validate_draft_fields(
+        context.get('to'), context.get('subject'), context.get('body')
+    )
+    context_ssl = ssl.create_default_context()
+    factory = imap_factory or _default_imap_factory
+    connection = factory(
+        account['host'], int(account['port']), 30, context_ssl
+    )
+    try:
+        status, _ = connection.login(account['username'], account['password'])
+        if status != 'OK':
+            raise AssistantError('IMAP 登录失败，无法读取待发送草稿')
+        folder = str(context.get('folder') or '')
+        imap_folder = f'"{folder}"' if ' ' in folder else folder
+        status, mailbox_data = connection.select(imap_folder, readonly=True)
+        if status != 'OK':
+            raise AssistantError('无法只读访问待发送草稿')
+        mailbox_response = b''
+        for item in mailbox_data or []:
+            mailbox_response += item if isinstance(item, bytes) else str(item).encode()
+        validity = re.search(rb'UIDVALIDITY\s+(\d+)', mailbox_response)
+        if not validity or validity.group(1).decode() != str(
+            context.get('uidvalidity')
+        ):
+            raise AssistantError('草稿文件夹状态已变化，请重新保存')
+        status, data = connection.uid(
+            'FETCH', str(context.get('uid')).encode('ascii'), '(BODY.PEEK[])'
+        )
+        if status != 'OK':
+            raise AssistantError('无法读取待发送草稿')
+        raw = b''
+        for item in data or []:
+            if isinstance(item, tuple) and len(item) >= 2 and isinstance(item[1], bytes):
+                raw += item[1]
+        if hashlib.sha256(raw).hexdigest() != context.get('message_sha256'):
+            raise AssistantError('待发送草稿内容校验失败')
+        message = BytesParser(policy=policy.default).parsebytes(raw)
+        _validate_staged_message(message, to, subject, body)
+        return message
+    finally:
+        try:
+            connection.logout()
+        except Exception:
+            pass
+
+
+def send_existing_email_smtp(
+    account: dict[str, str], message: EmailMessage
+) -> None:
+    context = ssl.create_default_context()
+    with smtplib.SMTP_SSL(
+        account['host'],
+        int(account['port']),
+        timeout=30,
+        context=context,
+    ) as server:
+        server.login(account['username'], account['password'])
+        server.send_message(message)
 
 
 def send_mail_smtp(
@@ -343,7 +578,8 @@ def save_draft_for_mailbox(
     to, subject, body = validate_draft_fields(to, subject, body)
     if mailbox_id == 'master_mail':
         mailbox = os.environ.get('AI_WORK_OUTLOOK_MAILBOX', '').strip()
-        token = _assistant_graph_token(ASSISTANT_GRAPH_SCOPE)
+        token = _assistant_graph_token(ASSISTANT_SAVE_GRAPH_SCOPE)
+        verify_master_mailbox(token, mailbox)
         create_master_draft(token, to, subject, body)
         return '已保存到 Outlook 草稿箱'
     credential_username = ASSISTANT_DRAFT_CREDENTIAL_USERNAMES.get(mailbox_id)
@@ -363,24 +599,28 @@ def save_draft_for_mailbox(
     return f'已保存到草稿箱（{folder}）'
 
 
-def send_mail_for_mailbox(
+def stage_draft_for_mailbox(
     mailbox_id: str, to: str, subject: str, body: str
-) -> str:
+) -> dict[str, str]:
     ensure_environment()
     to, subject, body = validate_draft_fields(to, subject, body)
-    if mailbox_id == 'qq_mail':
-        raise AssistantError('QQ 邮箱按安全规则不允许发送，请改用草稿箱')
     if mailbox_id == 'master_mail':
         mailbox = os.environ.get('AI_WORK_OUTLOOK_MAILBOX', '').strip()
-        token = _assistant_graph_token(ASSISTANT_GRAPH_SCOPE)
+        token = _assistant_graph_token(ASSISTANT_SAVE_GRAPH_SCOPE)
+        verify_master_mailbox(token, mailbox)
         draft_id = create_master_draft(token, to, subject, body)
-        send_master_message(token, draft_id)
-        return '邮件已通过 Outlook 发送'
-    if mailbox_id == 'bachelor_mail':
-        account = _assistant_account(
-            'bachelor_mail', BACHELOR_ASSISTANT_SMTP_CREDENTIAL_USERNAME
-        )
-        folder = save_draft_imap(
+        context = {
+            'mailbox_id': mailbox_id,
+            'draft_id': draft_id,
+            'to': to,
+            'subject': subject,
+            'body': body,
+        }
+        detail = 'Outlook 草稿已保存，请再次确认发送'
+    elif mailbox_id in ('qq_mail', 'bachelor_mail'):
+        credential_username = ASSISTANT_DRAFT_CREDENTIAL_USERNAMES[mailbox_id]
+        account = _assistant_account(mailbox_id, credential_username)
+        reference = stage_draft_imap(
             account['host'],
             int(account['port']),
             account['username'],
@@ -390,18 +630,57 @@ def send_mail_for_mailbox(
             subject,
             body,
         )
-        host, port = SMTP_HOSTS['bachelor_mail']
-        send_mail_smtp(
-            host,
-            port,
-            account['username'],
-            account['password'],
-            account['username'],
+        context = {
+            'mailbox_id': mailbox_id,
+            'draft_credential_username': credential_username,
+            'from_addr': account['username'],
+            'folder': reference['folder'],
+            'uidvalidity': reference['uidvalidity'],
+            'uid': reference['uid'],
+            'message_sha256': reference['message_sha256'],
+            'to': to,
+            'subject': subject,
+            'body': body,
+        }
+        detail = f"草稿已保存到 {reference['folder']}，请再次确认发送"
+    else:
+        raise AssistantError(f'不支持的邮箱：{mailbox_id}')
+    pending_id = _store_pending_draft(context)
+    return {'pending_id': pending_id, 'mailbox_id': mailbox_id, 'detail': detail}
+
+
+def send_staged_draft(pending_id: str) -> str:
+    context = _take_pending_draft(pending_id)
+    mailbox_id = str(context.get('mailbox_id') or '')
+    to, subject, body = validate_draft_fields(
+        context.get('to'), context.get('subject'), context.get('body')
+    )
+    if mailbox_id == 'qq_mail':
+        raise AssistantError('QQ 邮箱按安全规则不允许发送')
+    if mailbox_id == 'master_mail':
+        expected_mailbox = os.environ.get('AI_WORK_OUTLOOK_MAILBOX', '').strip()
+        token = _assistant_graph_token(ASSISTANT_SEND_GRAPH_SCOPE)
+        verify_master_mailbox(token, expected_mailbox)
+        verify_master_staged_draft(
+            token,
+            str(context.get('draft_id')),
             to,
             subject,
             body,
         )
-        return f'草稿已保存到 {folder}，邮件已通过本科邮箱发送'
+        send_master_message(token, str(context.get('draft_id')))
+        return '已确认发送 Outlook 草稿'
+    if mailbox_id == 'bachelor_mail':
+        draft_account = _assistant_account(
+            mailbox_id,
+            str(context.get('draft_credential_username')),
+        )
+        message = fetch_staged_draft_imap(draft_account, context)
+        account = _assistant_account(
+            'bachelor_mail', BACHELOR_ASSISTANT_SMTP_CREDENTIAL_USERNAME
+        )
+        send_existing_email_smtp(account, message)
+        return '已确认发送本科邮箱已保存草稿'
     raise AssistantError(f'不支持的邮箱：{mailbox_id}')
 
 

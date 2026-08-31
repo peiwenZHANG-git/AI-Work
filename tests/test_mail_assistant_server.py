@@ -104,46 +104,51 @@ class MailAssistantServerSecurityTests(unittest.TestCase):
 
 
 class MailAssistantSendFlowTests(unittest.TestCase):
-    def test_bachelor_send_creates_draft_before_smtp(self):
-        account = {
-            'host': 'imap.example.com',
-            'port': '993',
-            'username': 'student@example.com',
-            'password': 'runtime-secret',
-        }
-        calls = []
-        with mock.patch.object(
-            mail_assistant, 'ensure_environment'
-        ), mock.patch.object(
-            mail_assistant, '_assistant_account', return_value=account
-        ) as imap_account, mock.patch.object(
-            mail_assistant,
-            'save_draft_imap',
-            side_effect=lambda *args, **kwargs: calls.append(('draft', args)) or '草稿箱',
-        ), mock.patch.object(
-            mail_assistant, 'SMTP_HOSTS', {'bachelor_mail': ('smtp.example.com', 465)}
-        ), mock.patch.object(
-            mail_assistant,
-            'send_mail_smtp',
-            side_effect=lambda *args, **kwargs: calls.append(('smtp', args)),
-        ):
-            detail = mail_assistant.send_mail_for_mailbox(
-                'bachelor_mail',
-                'teacher@example.com',
-                'Subject',
-                'Body',
-            )
+    def setUp(self):
+        self.server = _load_server_module()
 
-        self.assertEqual('draft', calls[0][0])
-        self.assertEqual('smtp', calls[1][0])
-        self.assertEqual(
-            ['draft', 'smtp'], [call[0] for call in calls]
+    def test_stage_and_send_endpoints_are_separate(self):
+        handler = object.__new__(self.server.MailAssistantHandler)
+        responses = []
+        handler._send_json = lambda payload, code=200: responses.append(
+            (payload, code)
         )
-        self.assertIn('草稿已保存到 草稿箱', detail)
-        imap_account.assert_called_once_with(
+
+        def post(path, payload):
+            handler.path = path
+            handler.headers = {
+                'Host': '127.0.0.1:8931',
+                'Content-Type': 'application/json',
+                'Content-Length': str(len(payload)),
+            }
+            handler.rfile = io.BytesIO(payload)
+            handler.do_POST()
+
+        with mock.patch.object(
+            self.server,
+            'stage_draft_for_mailbox',
+            return_value={'pending_id': 'pending-token', 'detail': 'staged'},
+        ) as stage, mock.patch.object(
+            self.server,
+            'send_staged_draft',
+            return_value='sent',
+        ) as send:
+            post(
+                '/api/stage-draft',
+                b'{"mailbox_id":"bachelor_mail","to":"teacher@example.edu",'
+                b'"subject":"Subject","body":"Body"}',
+            )
+            post('/api/send-mail', b'{"pending_id":"pending-token"}')
+
+        self.assertEqual([( {'pending_id': 'pending-token', 'detail': 'staged'}, 200)], responses[:1])
+        self.assertEqual([({'detail': 'sent'}, 200)], responses[1:])
+        stage.assert_called_once_with(
             'bachelor_mail',
-            mail_assistant.BACHELOR_ASSISTANT_SMTP_CREDENTIAL_USERNAME,
+            'teacher@example.edu',
+            'Subject',
+            'Body',
         )
+        send.assert_called_once_with('pending-token')
 
 
 if __name__ == '__main__':

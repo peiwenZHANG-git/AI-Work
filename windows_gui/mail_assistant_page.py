@@ -118,7 +118,8 @@ button:disabled { opacity: 0.55; cursor: wait; }
         <div class="actions">
           <button class="act" id="copy">复制正文</button>
           <button class="act" id="save">保存到草稿箱</button>
-          <button class="act send" id="send">发送邮件</button>
+          <button class="act send" id="send">保存并准备发送</button>
+          <button class="act send" id="confirm-send" style="display:none;">确认发送已保存草稿</button>
         </div>
       </section>
     </div>
@@ -170,22 +171,55 @@ document.getElementById('save').addEventListener('click', async () => {
   } catch (error) { setStatus('保存失败：' + error.message); }
   $('save').disabled = false;
 });
+let stagedPendingId = '';
+let stagedMailboxId = '';
+function resetStagedDraft(message) {
+  stagedPendingId = '';
+  stagedMailboxId = '';
+  const confirmButton = document.getElementById('confirm-send');
+  confirmButton.style.display = 'none';
+  confirmButton.disabled = false;
+  if (message) setStatus(message);
+}
 document.getElementById('send').addEventListener('click', async () => {
   const select = $('mailbox');
-  const mailboxName = select.options[select.selectedIndex].text;
   if (select.value === 'qq_mail') { setStatus('QQ 邮箱按安全规则不支持发送，只能保存草稿。'); return; }
-  if (!confirm('确认通过 ' + mailboxName + ' 发送这封邮件吗？')) return;
-  $('send').disabled = true; setStatus('正在发送…');
+  resetStagedDraft();
+  $('send').disabled = true; setStatus('正在保存待确认草稿…');
   try {
-    const data = await api('/api/send-mail', {
+    const data = await api('/api/stage-draft', {
       mailbox_id: select.value,
       to: $('to').value,
       subject: $('subject').value,
       body: $('draft-body').value,
     });
+    stagedPendingId = data.pending_id;
+    stagedMailboxId = select.value;
+    $('confirm-send').style.display = '';
+    $('confirm-send').disabled = false;
+    setStatus(data.detail || '草稿已保存，请点击确认发送。');
+  } catch (error) {
+    setStatus('准备失败：' + error.message);
+    $('send').disabled = false;
+  }
+});
+document.getElementById('confirm-send').addEventListener('click', async () => {
+  const select = $('mailbox');
+  if (!stagedPendingId || stagedMailboxId !== select.value) {
+    resetStagedDraft('请重新保存待发送草稿。');
+    $('send').disabled = false;
+    return;
+  }
+  $('confirm-send').disabled = true; setStatus('正在发送已保存草稿…');
+  try {
+    const data = await api('/api/send-mail', { pending_id: stagedPendingId });
+    resetStagedDraft();
+    $('send').disabled = false;
     setStatus(data.detail || '已发送');
-  } catch (error) { setStatus('发送失败：' + error.message); }
-  $('send').disabled = false;
+  } catch (error) {
+    resetStagedDraft('发送失败：' + error.message + ' 如草稿仍在，请重新保存并发送。');
+    $('send').disabled = false;
+  }
 });
 document.getElementById('copy').addEventListener('click', async () => {
   try {
@@ -223,9 +257,15 @@ function refreshMailboxUi() {
   noticeBox.style.display = isMaster ? 'block' : 'none';
   document.getElementById('save').disabled = isMaster;
   document.getElementById('send').disabled = isMaster || mailboxSelect.value === 'qq_mail';
+  resetStagedDraft();
 }
 mailboxSelect.addEventListener('change', refreshMailboxUi);
 refreshMailboxUi();
+['to', 'subject', 'draft-body'].forEach((id) => {
+  document.getElementById(id).addEventListener('input', () => {
+    if (stagedPendingId) resetStagedDraft('草稿字段已修改，请重新保存并准备发送。');
+  });
+});
 const EXAMPLES = [
   '给课程负责人写一封简短邮件，说明实习报告初稿已完成，询问本周内能否给出反馈',
   '写一封请假邮件，因身体不适申请明天请假一天，语气诚恳',

@@ -16,8 +16,9 @@ from windows_gui.mail_assistant import (
     AssistantError,
     ai_generate_draft,
     build_assistant_page,
-    send_mail_for_mailbox,
     save_draft_for_mailbox,
+    send_staged_draft,
+    stage_draft_for_mailbox,
 )
 from windows_gui.mail_digest import DIGEST_DIR
 from windows_gui.mail_digest import run_digest_update
@@ -177,6 +178,7 @@ class MailAssistantHandler(BaseHTTPRequestHandler):
             '/api/refresh': self._handle_refresh,
             '/api/ai-draft': self._handle_ai_draft,
             '/api/save-draft': self._handle_save_draft,
+            '/api/stage-draft': self._handle_stage_draft,
             '/api/send-mail': self._handle_send_mail,
         }
         handler = handlers.get(path)
@@ -207,13 +209,17 @@ class MailAssistantHandler(BaseHTTPRequestHandler):
         )
         self._send_json({'detail': detail})
 
-    def _handle_send_mail(self, payload: dict) -> None:
-        detail = send_mail_for_mailbox(
+    def _handle_stage_draft(self, payload: dict) -> None:
+        result = stage_draft_for_mailbox(
             str(payload.get('mailbox_id') or ''),
             str(payload.get('to') or ''),
             str(payload.get('subject') or ''),
             str(payload.get('body') or ''),
         )
+        self._send_json(result)
+
+    def _handle_send_mail(self, payload: dict) -> None:
+        detail = send_staged_draft(str(payload.get('pending_id') or ''))
         self._send_json({'detail': detail})
 
     def log_message(self, format, *args):  # silence default stderr noise
