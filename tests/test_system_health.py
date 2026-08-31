@@ -9,6 +9,7 @@ import subprocess
 from types import SimpleNamespace
 import tempfile
 import unittest
+from datetime import datetime, timezone, timedelta
 from unittest import mock
 
 
@@ -123,18 +124,73 @@ class SystemHealthTests(unittest.TestCase):
         self.assertFalse(result['ok'])
 
     def test_last_run_summary_contains_status_not_message_content(self):
+        now = datetime(2026, 8, 31, 11, 0, tzinfo=timezone(timedelta(hours=2)))
         summary = self.health.summarize_last_run({
             'generated_at': '2026-08-31T10:00:00+02:00',
-            'ok': True,
+            'toast_shown': True,
             'message': 'private mail sentence',
             'mailboxes': [
                 {'mailbox_id': 'qq_mail', 'status': 'EMPTY_TODAY', 'count': 0},
                 {'mailbox_id': 'master_mail', 'status': 'READY', 'count': 2},
             ],
-        })
-        self.assertTrue(summary['run_ok'])
+        }, now_factory=lambda: now)
+        self.assertTrue(summary['fresh'])
+        self.assertEqual(1, summary['age_hours'])
+        self.assertTrue(summary['toast_shown'])
         self.assertTrue(summary['all_mailboxes_ok'])
         self.assertNotIn('private mail sentence', repr(summary))
+
+    def test_mail_digest_is_healthy_even_if_toast_was_not_shown(self):
+        now = datetime(2026, 8, 31, 11, 0, tzinfo=timezone(timedelta(hours=2)))
+        data = {
+            'generated_at': '2026-08-31T10:00:00+02:00',
+            'toast_shown': False,
+            'mailboxes': [
+                {'mailbox_id': 'qq_mail', 'status': 'EMPTY_TODAY', 'count': 0},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'last-run.json'
+            path.write_text(json.dumps(data), encoding='utf-8')
+            result = self.health.check_last_digest(path, now_factory=lambda: now)
+
+        self.assertTrue(result['ok'])
+        self.assertEqual('ok', result['detail'])
+        self.assertFalse(result['last_run']['toast_shown'])
+
+    def test_stale_mail_digest_is_required_failure(self):
+        now = datetime(2026, 8, 31, 11, 0, tzinfo=timezone(timedelta(hours=2)))
+        data = {
+            'generated_at': '2026-08-30T10:00:00+02:00',
+            'toast_shown': True,
+            'mailboxes': [
+                {'mailbox_id': 'qq_mail', 'status': 'EMPTY_TODAY', 'count': 0},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'last-run.json'
+            path.write_text(json.dumps(data), encoding='utf-8')
+            result = self.health.check_last_digest(path, now_factory=lambda: now)
+
+        self.assertFalse(result['ok'])
+        self.assertEqual('stale:25.0h', result['detail'])
+
+    def test_invalid_generated_at_is_stale(self):
+        now = datetime(2026, 8, 31, 11, 0, tzinfo=timezone(timedelta(hours=2)))
+        data = {
+            'generated_at': 'not-a-time',
+            'toast_shown': True,
+            'mailboxes': [
+                {'mailbox_id': 'qq_mail', 'status': 'EMPTY_TODAY', 'count': 0},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'last-run.json'
+            path.write_text(json.dumps(data), encoding='utf-8')
+            result = self.health.check_last_digest(path, now_factory=lambda: now)
+
+        self.assertFalse(result['ok'])
+        self.assertEqual('stale:unknown', result['detail'])
 
     def test_last_digest_missing_file_is_explicit_failure(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -160,7 +216,7 @@ class SystemHealthTests(unittest.TestCase):
         ), mock.patch.object(
             self.health,
             'check_last_digest',
-            return_value={'ok': True, 'detail': 'ok', 'last_run': {}},
+            return_value={'ok': True, 'detail': 'ok', 'last_run': {'toast_shown': True}},
         ), mock.patch.object(
             self.health,
             'check_assistant_server',

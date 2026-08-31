@@ -1,11 +1,14 @@
 """Unit tests for the nightly digest formatting and toast helpers."""
 
 import hashlib
+import json
 import requests
 import unittest
+from pathlib import Path
 from datetime import datetime
 from email.message import EmailMessage
 from types import SimpleNamespace
+import tempfile
 
 from windows_gui.mail_digest import (
     MailboxDigest,
@@ -17,6 +20,7 @@ from windows_gui.mail_digest import (
     build_toast_powershell,
     build_full_ai_prompt,
     format_digest,
+    write_run_artifacts,
     format_digest_html,
     enrich_digests,
     call_mail_translation,
@@ -212,6 +216,41 @@ class MailDigestTest(unittest.TestCase):
         self.assertIn('A&amp;B &lt;标题&gt;\'\'', script)
         self.assertIn('C&amp;D', script)
         self.assertIn('ToastText04', script)
+
+
+class RunArtifactTest(unittest.TestCase):
+    def test_write_run_artifacts_records_complete_status(self):
+        mailboxes = [
+            SimpleNamespace(
+                mailbox_id='qq_mail', status='EMPTY_TODAY', ok=True,
+                message='ok', emails=[],
+            ),
+            SimpleNamespace(
+                mailbox_id='master_mail', status='READY', ok=True,
+                message='ok', emails=['mail'],
+            ),
+        ]
+        generated = datetime(2026, 8, 31, 10, 0)
+        with tempfile.TemporaryDirectory() as directory:
+            digest_path = Path(directory) / 'digest.html'
+            status_path = Path(directory) / 'last-run.json'
+            write_run_artifacts(
+                digest_path,
+                '<html>ok</html>',
+                mailboxes,
+                generated,
+                True,
+                status_path=status_path,
+            )
+            status = json.loads(status_path.read_text(encoding='utf-8'))
+            digest_text = digest_path.read_text(encoding='utf-8')
+
+        self.assertTrue(digest_text.startswith('<html>'))
+        self.assertTrue(status['ok'])
+        self.assertTrue(status['mailboxes_ok'])
+        self.assertTrue(status['toast_shown'])
+        self.assertEqual(2, status['mailbox_count'])
+        self.assertEqual(1, status['total_mails'])
 
 
 class MailBodyTextTest(unittest.TestCase):

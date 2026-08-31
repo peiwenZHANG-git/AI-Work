@@ -20,6 +20,7 @@ import os
 import re
 import ssl
 import subprocess
+import tempfile
 import time
 import winreg
 from contextlib import contextmanager
@@ -1298,14 +1299,20 @@ def write_run_artifacts(
     mailboxes: list[MailboxDigest],
     generated_at: datetime,
     toast_shown: bool,
+    status_path: Path | None = None,
 ) -> None:
     DIGEST_DIR.mkdir(parents=True, exist_ok=True)
-    digest_path.write_text(digest_text, encoding='utf-8')
+    _atomic_write_text(digest_path, digest_text)
+    mailboxes_ok = all(box.ok for box in mailboxes)
     status = {
         'date': f'{generated_at:%Y-%m-%d}',
         'generated_at': generated_at.isoformat(),
+        'ok': mailboxes_ok and toast_shown,
+        'mailboxes_ok': mailboxes_ok,
         'toast_shown': toast_shown,
         'digest_path': str(digest_path),
+        'mailbox_count': len(mailboxes),
+        'total_mails': sum(len(box.emails) for box in mailboxes),
         'mailboxes': [
             {
                 'mailbox_id': box.mailbox_id,
@@ -1316,10 +1323,31 @@ def write_run_artifacts(
             for box in mailboxes
         ],
     }
-    (DIGEST_DIR / 'last-run.json').write_text(
+    _atomic_write_text(
+        status_path or (DIGEST_DIR / 'last-run.json'),
         json.dumps(status, ensure_ascii=False, indent=2),
-        encoding='utf-8',
     )
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f'.{path.name}.',
+        suffix='.tmp',
+        dir=str(path.parent),
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, 'w', encoding='utf-8', newline='') as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        try:
+            temporary_path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def run_digest_update(
@@ -1367,9 +1395,23 @@ def run_digest_update(
                 )
             else:
                 toast_shown = show_toast(*build_toast_lines(mailboxes, generated_at))
-        write_run_artifacts(
-            digest_path, html_text, mailboxes, generated_at, toast_shown
-        )
+        try:
+            write_run_artifacts(
+                digest_path, html_text, mailboxes, generated_at, toast_shown
+            )
+        except OSError as error:
+            _LOGGER.exception('could not persist digest artifacts')
+            return {
+                'ok': False,
+                'artifact_written': False,
+                'artifact_error': type(error).__name__,
+                'generated_at': generated_at.isoformat(),
+                'digest_path': str(digest_path),
+                'opened_html': False,
+                'mailbox_count': len(mailboxes),
+                'total_mails': sum(len(box.emails) for box in mailboxes),
+                'text': digest_text,
+            }
         opened_html = False
         if open_html:
             try:
@@ -1380,6 +1422,7 @@ def run_digest_update(
         all_ok = all(box.ok for box in mailboxes)
         return {
             'ok': all_ok and toast_shown,
+            'artifact_written': True,
             'generated_at': generated_at.isoformat(),
             'digest_path': str(digest_path),
             'opened_html': opened_html,

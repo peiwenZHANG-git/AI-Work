@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from datetime import datetime
 from typing import Any, Callable
 
 import requests
@@ -72,6 +73,10 @@ CREDENTIAL_CHECKS = {
     'glm_api_key': (CREDENTIAL_SERVICE, SUMMARY_API_KEY_USERNAME),
     'master_graph_refresh': (CREDENTIAL_SERVICE, MASTER_REFRESH_USERNAME),
 }
+
+
+def _local_now() -> datetime:
+    return datetime.now().astimezone()
 
 
 def check_environment(names: tuple[str, ...] = ENVIRONMENT_VARIABLES) -> dict[str, Any]:
@@ -182,7 +187,12 @@ def check_assistant_server(timeout: float = 0.5) -> dict[str, Any]:
     }
 
 
-def summarize_last_run(data: dict[str, Any]) -> dict[str, Any]:
+def summarize_last_run(
+    data: dict[str, Any],
+    *,
+    now_factory: Callable[[], datetime] = _local_now,
+    max_age_hours: float = 13.0,
+) -> dict[str, Any]:
     mailboxes = []
     for item in data.get('mailboxes') or []:
         mailbox_id = str(item.get('mailbox_id') or 'unknown')
@@ -195,15 +205,32 @@ def summarize_last_run(data: dict[str, Any]) -> dict[str, Any]:
     all_mailboxes_ok = bool(mailboxes) and all(
         mailbox['status'] in healthy_statuses for mailbox in mailboxes
     )
+    generated_at_raw = str(data.get('generated_at') or '')
+    try:
+        generated_at = datetime.fromisoformat(generated_at_raw)
+        age_hours = (
+            now_factory().timestamp() - generated_at.timestamp()
+        ) / 3600
+        fresh = 0 <= age_hours <= max_age_hours
+    except (ValueError, TypeError, OSError):
+        age_hours = None
+        fresh = False
     return {
         'generated_at': data.get('generated_at'),
-        'run_ok': data.get('ok') is True,
         'all_mailboxes_ok': all_mailboxes_ok,
+        'age_hours': age_hours,
+        'fresh': fresh,
+        'toast_shown': data.get('toast_shown') is True,
         'mailboxes': mailboxes,
     }
 
 
-def check_last_digest(stats_path: Path | None = None) -> dict[str, Any]:
+def check_last_digest(
+    stats_path: Path | None = None,
+    *,
+    now_factory: Callable[[], datetime] = _local_now,
+    max_age_hours: float = 13.0,
+) -> dict[str, Any]:
     path = stats_path or (DIGEST_DIR / 'last-run.json')
     try:
         data = json.loads(path.read_text(encoding='utf-8'))
@@ -213,11 +240,22 @@ def check_last_digest(stats_path: Path | None = None) -> dict[str, Any]:
             'detail': f'not_available:{type(error).__name__}',
             'last_run': None,
         }
-    summary = summarize_last_run(data)
-    ok = bool(summary['run_ok'] and summary['all_mailboxes_ok'])
+    summary = summarize_last_run(
+        data,
+        now_factory=now_factory,
+        max_age_hours=max_age_hours,
+    )
+    ok = bool(summary['all_mailboxes_ok'] and summary['fresh'])
+    failures = []
+    if not summary['all_mailboxes_ok']:
+        failures.append('mailbox_failure')
+    if not summary['fresh']:
+        age = summary['age_hours']
+        failures.append('stale:unknown' if age is None else f'stale:{age:.1f}h')
+    detail = 'ok' if ok else ';'.join(failures)
     return {
         'ok': ok,
-        'detail': 'ok' if ok else 'last_run_reported_failure',
+        'detail': detail,
         'last_run': summary,
     }
 
@@ -226,7 +264,15 @@ def collect_health(
     *,
     assistant_timeout: float = 0.5,
     task_runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    now_factory: Callable[[], datetime] = _local_now,
+    max_digest_age_hours: float = 13.0,
 ) -> dict[str, Any]:
+    digest_check = check_last_digest(
+        now_factory=now_factory,
+        max_age_hours=max_digest_age_hours,
+    )
+    digest_summary = digest_check.get('last_run') or {}
+    notification_ok = bool(digest_summary.get('toast_shown'))
     checks = [
         {
             'name': 'environment_configuration',
@@ -251,7 +297,13 @@ def collect_health(
         {
             'name': 'last_mail_digest',
             'required': True,
-            **check_last_digest(),
+            **digest_check,
+        },
+        {
+            'name': 'last_digest_notification',
+            'required': False,
+            'ok': notification_ok,
+            'detail': 'toast_shown' if notification_ok else 'toast_not_shown',
         },
         {
             'name': 'assistant_server',
