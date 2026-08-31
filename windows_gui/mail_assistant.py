@@ -67,6 +67,10 @@ DRAFT_SYSTEM_PROMPT = (
     '开头有合适的称呼、结尾有落款。不要输出 JSON 以外的任何文字。'
 )
 EMAIL_PATTERN = re.compile(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}')
+MAX_INSTRUCTION_CHARS = 8_000
+MAX_RECIPIENT_CHARS = 320
+MAX_SUBJECT_CHARS = 200
+MAX_BODY_CHARS = 50_000
 
 
 class AssistantError(Exception):
@@ -78,6 +82,43 @@ def extract_recipient(instruction: str) -> str:
     return match.group(0) if match else ''
 
 
+def validate_recipient(value: str) -> str:
+    recipient = str(value or '').strip()
+    if not recipient:
+        raise AssistantError('收件人不能为空')
+    if len(recipient) > MAX_RECIPIENT_CHARS:
+        raise AssistantError('收件人长度超过限制')
+    if any(character in recipient for character in '\r\n'):
+        raise AssistantError('收件人不能包含换行符')
+    if not EMAIL_PATTERN.fullmatch(recipient) or '..' in recipient.split('@', 1)[1]:
+        raise AssistantError('收件人必须是单个有效邮箱地址')
+    return recipient
+
+
+def validate_subject(value: str) -> str:
+    subject = ' '.join(str(value or '').split())
+    if not subject:
+        raise AssistantError('主题不能为空')
+    if len(subject) > MAX_SUBJECT_CHARS:
+        raise AssistantError('主题长度超过限制')
+    return subject
+
+
+def validate_body(value: str) -> str:
+    body = str(value or '').replace('\r\n', '\n').replace('\r', '\n').strip()
+    if not body:
+        raise AssistantError('正文不能为空')
+    if len(body) > MAX_BODY_CHARS:
+        raise AssistantError('正文长度超过限制')
+    if '\x00' in body:
+        raise AssistantError('正文包含无效字符')
+    return body
+
+
+def validate_draft_fields(to: str, subject: str, body: str) -> tuple[str, str, str]:
+    return validate_recipient(to), validate_subject(subject), validate_body(body)
+
+
 def generate_draft_via_ai(
     instruction: str,
     api_key: str,
@@ -86,6 +127,11 @@ def generate_draft_via_ai(
     transport: Any = None,
 ) -> dict[str, str]:
     model_name = _resolve_model(model)
+    instruction = str(instruction or '').strip()
+    if not instruction:
+        raise AssistantError('请先输入写邮件的指令')
+    if len(instruction) > MAX_INSTRUCTION_CHARS:
+        raise AssistantError('写邮件指令长度超过限制')
     post = transport or requests.post
     content = _chat_once(
         post,
@@ -106,14 +152,15 @@ def generate_draft_via_ai(
     if not isinstance(parsed, dict) or not str(parsed.get('subject') or '').strip():
         raise SummaryAPIError('AI 未返回有效的草稿')
     return {
-        'subject': ' '.join(str(parsed.get('subject')).split()),
-        'body': str(parsed.get('body') or '').strip(),
+        'subject': validate_subject(parsed.get('subject')),
+        'body': validate_body(parsed.get('body')),
     }
 
 
 def build_draft_message(
     from_addr: str, to: str, subject: str, body: str
 ) -> EmailMessage:
+    to, subject, body = validate_draft_fields(to, subject, body)
     message = EmailMessage()
     message['From'] = from_addr
     message['To'] = to
@@ -194,6 +241,7 @@ def _assistant_graph_token(scopes: str) -> str:
 
 
 def create_master_draft(access_token: str, to: str, subject: str, body: str) -> str:
+    to, subject, body = validate_draft_fields(to, subject, body)
     response = requests.post(
         GRAPH_MESSAGES_URL,
         headers={'Authorization': f'Bearer {access_token}'},
@@ -292,8 +340,7 @@ def save_draft_for_mailbox(
     mailbox_id: str, to: str, subject: str, body: str
 ) -> str:
     ensure_environment()
-    if not to or not subject or not body:
-        raise AssistantError('收件人、主题和正文都不能为空')
+    to, subject, body = validate_draft_fields(to, subject, body)
     if mailbox_id == 'master_mail':
         mailbox = os.environ.get('AI_WORK_OUTLOOK_MAILBOX', '').strip()
         token = _assistant_graph_token(ASSISTANT_GRAPH_SCOPE)
@@ -320,8 +367,7 @@ def send_mail_for_mailbox(
     mailbox_id: str, to: str, subject: str, body: str
 ) -> str:
     ensure_environment()
-    if not to or not subject or not body:
-        raise AssistantError('收件人、主题和正文都不能为空')
+    to, subject, body = validate_draft_fields(to, subject, body)
     if mailbox_id == 'qq_mail':
         raise AssistantError('QQ 邮箱按安全规则不允许发送，请改用草稿箱')
     if mailbox_id == 'master_mail':
