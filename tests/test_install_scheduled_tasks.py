@@ -63,6 +63,8 @@ class InstallScheduledTasksTests(unittest.TestCase):
         self.assertIn("-Daily -At '22:00'", script)
         self.assertIn("-MultipleInstances IgnoreNew", script)
         self.assertIn("-ExecutionTimeLimit (New-TimeSpan -Hours 1)", script)
+        self.assertIn("-AllowStartIfOnBatteries:$false", script)
+        self.assertIn("-DontStopIfGoingOnBatteries:$false", script)
         self.assertIn("-Force", script)
         self.assertIn('"C:\\repo\\scripts\\daily_mail_digest.py"', script)
 
@@ -109,7 +111,7 @@ class InstallScheduledTasksTests(unittest.TestCase):
         self.assertEqual(r'C:\repo', definition['working_directory'])
         self.assertEqual(['10:00', '22:00'], definition['trigger_times'])
         self.assertEqual('IgnoreNew', definition['multiple_instances'])
-        self.assertEqual('01:00:00', definition['execution_time_limit'])
+        self.assertEqual('PT1H', definition['execution_time_limit'])
 
     def test_check_script_queries_local_task_without_starting_it(self):
         script = self.installer.build_check_script()
@@ -124,7 +126,7 @@ class InstallScheduledTasksTests(unittest.TestCase):
             'working_directory': 'repo',
             'trigger_times': ['10:00', '22:00'],
             'multiple_instances': 'IgnoreNew',
-            'execution_time_limit': '01:00:00',
+            'execution_time_limit': 'PT1H',
         }
         actual = dict(desired, trigger_times='22:00,10:00')
         self.assertEqual([], self.installer.compare_task_definitions(desired, actual))
@@ -147,7 +149,7 @@ class InstallScheduledTasksTests(unittest.TestCase):
             'working_directory': desired['working_directory'],
             'trigger_times': '22:00,10:00',
             'multiple_instances': 'IgnoreNew',
-            'execution_time_limit': '01:00:00',
+            'execution_time_limit': 'PT1H',
         }
 
         def runner(command, **kwargs):

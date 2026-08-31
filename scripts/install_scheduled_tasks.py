@@ -48,8 +48,8 @@ $triggers = {triggers}
 $settings = New-ScheduledTaskSettingsSet `
     -MultipleInstances IgnoreNew `
     -ExecutionTimeLimit (New-TimeSpan -Hours 1) `
-    -DisallowStartIfOnBatteries `
-    -StopIfGoingOnBatteries
+    -AllowStartIfOnBatteries:$false `
+    -DontStopIfGoingOnBatteries:$false
 Register-ScheduledTask `
     -TaskName {powershell_single_quote(TASK_NAME)} `
     -Action $action `
@@ -72,7 +72,7 @@ def expected_task_definition(
         'working_directory': str(root),
         'trigger_times': sorted(DIGEST_TIMES),
         'multiple_instances': 'IgnoreNew',
-        'execution_time_limit': '01:00:00',
+        'execution_time_limit': 'PT1H',
     }
 
 
