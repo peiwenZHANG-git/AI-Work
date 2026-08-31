@@ -169,6 +169,53 @@ def check_scheduled_task(
     return parsed
 
 
+def check_task_definition(
+    root: Path = ROOT,
+    *,
+    python_executable: str = sys.executable,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> dict[str, Any]:
+    """Ask the recovery installer for a read-only definition comparison."""
+    command = [
+        python_executable,
+        str(root / 'scripts' / 'install_scheduled_tasks.py'),
+        '--check',
+        '--root',
+        str(root),
+        '--python-executable',
+        python_executable,
+    ]
+    try:
+        result = runner(command, capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError) as error:
+        return {
+            'ok': False,
+            'detail': f'check_failed:{type(error).__name__}',
+        }
+    if result.returncode not in (0, 1):
+        return {
+            'ok': False,
+            'detail': f'check_exit_{result.returncode}',
+        }
+    try:
+        payload = json.loads(result.stdout)
+    except ValueError:
+        return {
+            'ok': False,
+            'detail': 'invalid_check_output',
+        }
+    if not isinstance(payload, dict) or not isinstance(payload.get('ok'), bool):
+        return {
+            'ok': False,
+            'detail': 'invalid_check_payload',
+        }
+    return {
+        'ok': payload['ok'],
+        'detail': str(payload.get('detail') or 'unknown'),
+        'differences': payload.get('differences') or [],
+    }
+
+
 def check_assistant_server(timeout: float = 0.5) -> dict[str, Any]:
     try:
         response = requests.get(
@@ -264,6 +311,7 @@ def collect_health(
     *,
     assistant_timeout: float = 0.5,
     task_runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    definition_runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
     now_factory: Callable[[], datetime] = _local_now,
     max_digest_age_hours: float = 13.0,
 ) -> dict[str, Any]:
@@ -293,6 +341,11 @@ def collect_health(
             'name': 'scheduled_mail_digest',
             'required': True,
             **check_scheduled_task(runner=task_runner),
+        },
+        {
+            'name': 'scheduled_task_definition',
+            'required': True,
+            **check_task_definition(runner=definition_runner),
         },
         {
             'name': 'last_mail_digest',

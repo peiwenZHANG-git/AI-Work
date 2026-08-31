@@ -8,6 +8,7 @@ from pathlib import Path
 from contextlib import redirect_stdout
 import subprocess
 import unittest
+import json
 from unittest import mock
 
 
@@ -63,7 +64,7 @@ class InstallScheduledTasksTests(unittest.TestCase):
         self.assertIn("-MultipleInstances IgnoreNew", script)
         self.assertIn("-ExecutionTimeLimit (New-TimeSpan -Hours 1)", script)
         self.assertIn("-Force", script)
-        self.assertIn(r"'C:\repo\scripts\daily_mail_digest.py'", script)
+        self.assertIn('"C:\\repo\\scripts\\daily_mail_digest.py"', script)
 
     def test_install_task_invokes_powershell_without_side_effect_in_test(self):
         captured = {}
@@ -96,6 +97,85 @@ class InstallScheduledTasksTests(unittest.TestCase):
         self.assertFalse(result['ok'])
         self.assertEqual('access denied', result['detail'])
 
+    def test_expected_definition_contains_fixed_safe_settings(self):
+        definition = self.installer.expected_task_definition(
+            root=Path(r'C:\repo'),
+            python_executable=r'C:\Python\pythonw.exe',
+        )
+        self.assertEqual(r'C:\Python\pythonw.exe', definition['execute'])
+        self.assertEqual(
+            r'"C:\repo\scripts\daily_mail_digest.py"', definition['arguments']
+        )
+        self.assertEqual(r'C:\repo', definition['working_directory'])
+        self.assertEqual(['10:00', '22:00'], definition['trigger_times'])
+        self.assertEqual('IgnoreNew', definition['multiple_instances'])
+        self.assertEqual('01:00:00', definition['execution_time_limit'])
+
+    def test_check_script_queries_local_task_without_starting_it(self):
+        script = self.installer.build_check_script()
+        self.assertIn("Get-ScheduledTask -TaskName 'AI-Work Daily Mail Digest'", script)
+        self.assertIn('ConvertTo-Json', script)
+        self.assertNotIn('Start-ScheduledTask', script)
+
+    def test_check_detects_definition_drift(self):
+        desired = {
+            'execute': 'pythonw',
+            'arguments': '"daily.py"',
+            'working_directory': 'repo',
+            'trigger_times': ['10:00', '22:00'],
+            'multiple_instances': 'IgnoreNew',
+            'execution_time_limit': '01:00:00',
+        }
+        actual = dict(desired, trigger_times='22:00,10:00')
+        self.assertEqual([], self.installer.compare_task_definitions(desired, actual))
+        actual['execute'] = 'wrong-python'
+        actual['working_directory'] = 'elsewhere'
+        actual['multiple_instances'] = 'Parallel'
+        differences = self.installer.compare_task_definitions(desired, actual)
+        self.assertEqual(
+            ['execute', 'working_directory', 'multiple_instances'], differences
+        )
+
+    def test_check_query_success_reports_definition_state(self):
+        desired = self.installer.expected_task_definition(
+            root=Path(r'C:\repo'),
+            python_executable=r'C:\Python\pythonw.exe',
+        )
+        actual = {
+            'execute': desired['execute'],
+            'arguments': desired['arguments'],
+            'working_directory': desired['working_directory'],
+            'trigger_times': '22:00,10:00',
+            'multiple_instances': 'IgnoreNew',
+            'execution_time_limit': '01:00:00',
+        }
+
+        def runner(command, **kwargs):
+            return subprocess.CompletedProcess(
+                command, 0, json.dumps(actual), ''
+            )
+
+        result = self.installer.check_task_definition(
+            root=Path(r'C:\repo'),
+            python_executable=r'C:\Python\pythonw.exe',
+            runner=runner,
+        )
+        self.assertTrue(result['ok'])
+        self.assertEqual([], result['differences'])
+
+    def test_check_query_failure_is_explicit(self):
+        def runner(command, **kwargs):
+            return subprocess.CompletedProcess(command, 2, '', 'access denied')
+
+        result = self.installer.check_task_definition(
+            root=Path(r'C:\repo'),
+            python_executable=r'C:\Python\pythonw.exe',
+            runner=runner,
+        )
+        self.assertFalse(result['ok'])
+        self.assertEqual(['query_failed'], result['differences'])
+        self.assertEqual('access denied', result['detail'])
+
     def test_dry_run_prints_command_without_registering(self):
         output = []
         with mock.patch.object(
@@ -114,6 +194,37 @@ class InstallScheduledTasksTests(unittest.TestCase):
 
         self.assertEqual(0, exit_code)
         install_task.assert_not_called()
+
+    def test_check_mode_prints_json_and_does_not_install(self):
+        result_payload = {
+            'ok': True,
+            'differences': [],
+            'detail': 'definition_matches',
+            'desired': {},
+            'actual': {},
+        }
+        output = io.StringIO()
+        with mock.patch.object(
+            self.installer,
+            'check_task_definition',
+            return_value=result_payload,
+        ) as check, mock.patch.object(
+            self.installer, 'install_task'
+        ) as install_task, redirect_stdout(
+            output
+        ):
+            exit_code = self.installer.main(
+                [
+                    '--root', r'C:\repo',
+                    '--python-executable', r'C:\Python\pythonw.exe',
+                    '--check',
+                ],
+            )
+
+        self.assertEqual(0, exit_code)
+        check.assert_called_once()
+        install_task.assert_not_called()
+        self.assertIn('definition_matches', output.getvalue())
 
 
 if __name__ == '__main__':

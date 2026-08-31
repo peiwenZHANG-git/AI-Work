@@ -123,6 +123,31 @@ class SystemHealthTests(unittest.TestCase):
         self.assertIn('/v', captured['command'])
         self.assertFalse(result['ok'])
 
+    def test_task_definition_check_parses_installer_report(self):
+        payload = {
+            'ok': False,
+            'detail': 'definition_drift',
+            'differences': ['execution_time_limit'],
+        }
+
+        def runner(command, **kwargs):
+            return subprocess.CompletedProcess(
+                command, 1, json.dumps(payload), ''
+            )
+
+        result = self.health.check_task_definition(runner=runner)
+        self.assertFalse(result['ok'])
+        self.assertEqual('definition_drift', result['detail'])
+        self.assertEqual(['execution_time_limit'], result['differences'])
+
+    def test_task_definition_check_rejects_invalid_output(self):
+        def runner(command, **kwargs):
+            return subprocess.CompletedProcess(command, 0, 'not-json', '')
+
+        result = self.health.check_task_definition(runner=runner)
+        self.assertFalse(result['ok'])
+        self.assertEqual('invalid_check_output', result['detail'])
+
     def test_last_run_summary_contains_status_not_message_content(self):
         now = datetime(2026, 8, 31, 11, 0, tzinfo=timezone(timedelta(hours=2)))
         summary = self.health.summarize_last_run({
@@ -213,6 +238,10 @@ class SystemHealthTests(unittest.TestCase):
             self.health,
             'check_scheduled_task',
             return_value={'ok': True, 'enabled': True, 'status': 'Ready', 'last_result': 0},
+        ), mock.patch.object(
+            self.health,
+            'check_task_definition',
+            return_value={'ok': True, 'detail': 'definition_matches', 'differences': []},
         ), mock.patch.object(
             self.health,
             'check_last_digest',
