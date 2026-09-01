@@ -39,6 +39,7 @@ These instructions apply to the whole repository. This project is a Windows-only
 - Scheduled digest runs must persist non-sensitive stage diagnostics (for example `last-attempt.json`) containing only status, counts, stage, and error type; never put sender, subject, body, URL, or credential material into diagnostics.
 - Put one-time Outlook authorization-code login, PKCE, and loopback callback validation in `windows_gui/master_oauth.py`; expose it through `scripts/authenticate_master_mail.py`, not a FastMCP tool.
 - Put natural-language draft generation and local assistant draft/SMTP actions in `windows_gui/mail_assistant.py`; put the loopback HTTP UI in `scripts/mail_assistant_server.py`.
+- The local assistant HTTP server must guard background refresh startup with a lock, return generic details for unexpected failures, and send `nosniff`, `no-referrer`, frame protection, and CSP headers for HTML responses.
 - Put interactive whitelisted credential setup in `scripts/configure_mail_credentials.py`; secrets must arrive only through hidden prompts and must never be accepted from argv, environment, logs, JSON, or test output.
 - Put idempotent scheduled-task recovery in `scripts/install_scheduled_tasks.py`; unit tests must inject the process runner, and actual registration may happen only through an explicit CLI invocation.
 - Keep the FastMCP instance and process-wide settings in `windows_gui/server.py`.

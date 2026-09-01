@@ -154,6 +154,7 @@ Smoke test 只使用唯一命名的专用记事本文件，测试结果写入 `t
 
 - `scripts/daily_mail_digest.py` 生成三邮箱摘要；`scripts/mail_assistant_server.py` 只绑定 `127.0.0.1:8931`，并校验 Host、Origin 和 JSON Content-Type。
 - 助手变异请求的 JSON 主体上限为 256 KiB；无效或负数 `Content-Length` 会在读取请求体前拒绝。
+- 助手页面响应带 `nosniff`、`no-referrer`、同源 frame 保护和 CSP；后台刷新由锁保护，避免并发点击启动多个读取任务。
 - AI 指令、收件人、主题和正文都有长度上限；收件人必须是单个普通邮箱地址，主题会去除换行以阻止 SMTP/Graph 头注入。
 - 发送采用两阶段确认：第一次点击只保存待发送草稿并生成一次性引用；必须再次点击“确认发送已保存草稿”。后端会校验已保存草稿的收件人、主题、正文和位置后才发送；修改草稿字段会使待发送引用失效。
 - 助手 SMTP 路径只接受已取回并校验的 `EmailMessage`；不存在“用新字段即时构建并发送”的旁路。
