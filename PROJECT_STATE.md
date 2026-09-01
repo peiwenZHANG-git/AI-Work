@@ -45,16 +45,18 @@
 - 锁冲突可见性已提交：计划任务摘要因运行锁被占用而跳过时返回 `ok=false`、`reason=lock_busy`，不再把未更新的 `last-run.json` 伪装成成功。
 - 助手服务输入边界已提交：变异 POST 的 JSON 主体限制为 256 KiB；无效、负数或超限 `Content-Length` 在读取请求体前拒绝。
 - 助手字段校验已提交：收件人必须是单个普通邮箱地址并限制长度；主题去除换行、正文拒绝 NUL，AI 指令与生成字段也有上限。无效收件人会在访问凭据、IMAP、SMTP 或 Graph 前失败。
+- 两阶段草稿发送已提交：先保存/校验草稿并返回一次性引用；用户再次确认后只发送该已存在草稿。IMAP 校验 folder/UID/UIDVALIDITY/哈希与收件人、主题、正文、发件人；Graph 校验身份和草稿元数据。
+- 摘要诊断已提交：每次运行在开始、读取邮箱、artifact 写入、完成或异常阶段记录 `last-attempt.json`；内容仅含阶段、状态、计数和错误类型。Windows `os.replace` 增加重试和完整临时文件回退。
 
 ## 4. 当前工作（待提交）
 
 - `.vscode/mcp.json`：本机 GitHub MCP 配置，按既定决定保持本地修改，不提交、不还原。
-- 无待提交源码。当前提交前验证基线（2026-08-31 实测）：`python -m compileall -q windows_gui_mcp.py windows_gui tests scripts` 通过；`python -m unittest discover -s tests -t . -v` 共 264 项全部通过；`mcp.list_tools()` 确认 28 个工具；`git diff --check` 通过。
+- 无待提交源码。当前提交前验证基线（2026-09-01 实测）：`python -m compileall -q windows_gui_mcp.py windows_gui tests scripts` 通过；`python -m unittest discover -s tests -t . -v` 共 268 项全部通过；`mcp.list_tools()` 确认 28 个工具；`git diff --check` 通过。
 
 ## 5. 已知问题与阻塞
 
 - Outlook 一次性登录命令已具备，但本会话未执行真实 Microsoft 登录或用真实租户验证端到端授权。已有 refresh token 时，摘要/助手会安全刷新并轮换。摘要/搜索需要 `Mail.Read` 凭据，草稿需要 `Mail.ReadWrite`，发送还需要 `Mail.Send`。
-- 2026-08-31 健康检查确认：3 个助手专用授权码条目缺失；最近 `last-run.json` 生成于 2026-08-29，三个邮箱读取状态均健康且 Toast 已显示，但报告已超过 13 小时新鲜度上限，属于必需失败。计划任务定义漂移已修复，等待下一次调度运行新代码。缺失凭据需要用户提供授权码，不能自动输入或猜测。
+- 2026-09-01 检查确认：3 个助手专用授权码条目缺失；计划任务 10:00 运行返回 `1`，`last-run.json` 仍未更新。诊断修复将在 22:00 运行时生效，用于记录失败阶段。缺失凭据需要用户提供授权码，不能自动输入或猜测。
 - 本科网易暂不支持经 Edge 发送已有草稿（draft hash 无法稳定定位并校验）；QQ 发送为设计性禁止。
 - Edge 摘要/搜索回退只解析当前已验证页面的可见列表，不代表完整邮箱索引，也不打开正文。
 - 本次会话未运行真实桌面 smoke test（按仓库规则需用户明确授权）。
@@ -73,11 +75,11 @@
 
 ## 7. 下一步
 
-1. 等待下一次计划任务运行后确认 `last-run.json` 原子更新；用户配置 3 个助手专用授权码后重新运行健康检查，再用显式授权执行一次真实 Outlook 登录。
+1. 22:00 计划任务运行后读取 `last-attempt.json` 和 `last-run.json` 判断失败阶段；用户配置 3 个助手专用授权码后重新运行健康检查，再用显式授权执行一次真实 Outlook 登录。
 2. 每次提交前运行规定验证：compileall、完整单元测试、28 工具注册检查、`git diff --check`。
 3. 真实桌面验证仅在用户明确授权后运行 `python tests/smoke_test.py`；邮箱只读 smoke 仅在另行授权时使用 `--mailbox-readonly`。
 4. 后续增强：在用户授权的交互会话中执行一次真实 Outlook 登录；本科网易 Edge 发送仅在能稳定定位并校验既有草稿后再实现。
 
 ## 8. 最近一次更新
 
-2026-08-31（Europe/Paris）
+2026-09-01（Europe/Paris）
