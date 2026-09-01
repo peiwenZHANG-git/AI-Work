@@ -303,6 +303,10 @@ class MailAssistantTest(unittest.TestCase):
             credential_usernames,
         )
 
+    def test_no_fresh_field_smtp_bypass_exists(self):
+        self.assertFalse(hasattr(mail_assistant, 'send_mail_smtp'))
+        self.assertTrue(hasattr(mail_assistant, 'send_existing_email_smtp'))
+
     def test_graph_confirmation_requires_existing_draft(self):
         payload = {
             'subject': 'Subject',

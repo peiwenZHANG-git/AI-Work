@@ -550,23 +550,6 @@ def send_existing_email_smtp(
         server.send_message(message)
 
 
-def send_mail_smtp(
-    host: str,
-    port: int,
-    username: str,
-    password: str,
-    from_addr: str,
-    to: str,
-    subject: str,
-    body: str,
-) -> None:
-    message = build_draft_message(from_addr, to, subject, body)
-    context = ssl.create_default_context()
-    with smtplib.SMTP_SSL(host, port, timeout=30, context=context) as server:
-        server.login(username, password)
-        server.send_message(message)
-
-
 def ai_generate_draft(instruction: str) -> dict[str, str]:
     ensure_environment()
     api_key = load_summary_api_key()
