@@ -52,6 +52,7 @@
 
 ## 4. 当前工作（待提交）
 
+- 计划任务电源策略校验（待提交）：`--check` 增加 `DisallowStartIfOnBatteries` 和 `StopIfGoingOnBatteries`；助手 500 响应改为通用 `internal_server_error`，不再返回原始异常细节。
 - `.vscode/mcp.json`：本机 GitHub MCP 配置，按既定决定保持本地修改，不提交、不还原。
 - 当前工作树验证基线（2026-09-01 实测）：`python -m compileall -q windows_gui_mcp.py windows_gui tests scripts` 通过；`python -m unittest discover -s tests -t . -v` 共 272 项全部通过；`mcp.list_tools()` 确认 28 个工具；`git diff --check` 通过。
 
