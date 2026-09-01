@@ -74,6 +74,29 @@ class MailAssistantServerSecurityTests(unittest.TestCase):
                 )
                 self.assertEqual(0, handler.rfile.tell())
 
+    def test_generic_failure_does_not_return_internal_details(self):
+        handler = object.__new__(self.server.MailAssistantHandler)
+        handler.path = '/api/ai-draft'
+        handler.headers = {
+            'Host': '127.0.0.1:8931',
+            'Content-Type': 'application/json',
+            'Content-Length': str(len(b'{"instruction":"private instruction"}')),
+        }
+        handler.rfile = io.BytesIO(b'{"instruction":"private instruction"}')
+        responses = []
+        handler._send_json = lambda payload, code=200: responses.append(
+            (payload, code)
+        )
+
+        with mock.patch.object(
+            self.server,
+            'ai_generate_draft',
+            side_effect=RuntimeError('private C:\\path and session detail'),
+        ):
+            handler.do_POST()
+
+        self.assertEqual([({'error': 'internal_server_error'}, 500)], responses)
+
     def test_foreign_browser_origin_is_rejected(self):
         self.assertTrue(self.server.is_local_request('127.0.0.1:8931'))
         self.assertTrue(

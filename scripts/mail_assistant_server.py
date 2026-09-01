@@ -71,7 +71,7 @@ def _refresh_worker() -> None:
     except Exception as error:  # keep the server alive on surprises
         REFRESH_STATE['last_finished'] = None
         REFRESH_STATE['last_ok'] = False
-        print(f'refresh failed: {type(error).__name__}: {error}', file=sys.stderr)
+        print(f'refresh failed: {type(error).__name__}', file=sys.stderr)
     finally:
         REFRESH_STATE['running'] = False
 
@@ -190,7 +190,8 @@ class MailAssistantHandler(BaseHTTPRequestHandler):
         except AssistantError as error:
             self._send_json({'error': str(error)}, 400)
         except Exception as error:  # keep the server alive on surprises
-            self._send_json({'error': f'{type(error).__name__}: {error}'}, 500)
+            print(f'request failed: {type(error).__name__}', file=sys.stderr)
+            self._send_json({'error': 'internal_server_error'}, 500)
 
     def _handle_ai_draft(self, payload: dict) -> None:
         draft = ai_generate_draft(str(payload.get('instruction') or ''))

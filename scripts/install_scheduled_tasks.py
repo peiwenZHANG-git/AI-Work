@@ -73,6 +73,8 @@ def expected_task_definition(
         'trigger_times': sorted(DIGEST_TIMES),
         'multiple_instances': 'IgnoreNew',
         'execution_time_limit': 'PT1H',
+        'disallow_start_on_batteries': True,
+        'stop_if_going_on_batteries': True,
     }
 
 
@@ -92,6 +94,8 @@ $triggerTimes = @(
     trigger_times = [string]$triggerTimes
     multiple_instances = [string]$task.Settings.MultipleInstances
     execution_time_limit = [string]$task.Settings.ExecutionTimeLimit
+    disallow_start_on_batteries = [bool]$task.Settings.DisallowStartIfOnBatteries
+    stop_if_going_on_batteries = [bool]$task.Settings.StopIfGoingOnBatteries
 }} | ConvertTo-Json -Compress
 """
 
@@ -111,6 +115,8 @@ def compare_task_definitions(
         'trigger_times': actual_trigger_times,
         'multiple_instances': str(actual.get('multiple_instances') or ''),
         'execution_time_limit': str(actual.get('execution_time_limit') or ''),
+        'disallow_start_on_batteries': actual.get('disallow_start_on_batteries') is True,
+        'stop_if_going_on_batteries': actual.get('stop_if_going_on_batteries') is True,
     }
     differences = []
     for key, expected_value in desired.items():

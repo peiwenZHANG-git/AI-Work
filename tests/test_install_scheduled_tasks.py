@@ -112,12 +112,16 @@ class InstallScheduledTasksTests(unittest.TestCase):
         self.assertEqual(['10:00', '22:00'], definition['trigger_times'])
         self.assertEqual('IgnoreNew', definition['multiple_instances'])
         self.assertEqual('PT1H', definition['execution_time_limit'])
+        self.assertTrue(definition['disallow_start_on_batteries'])
+        self.assertTrue(definition['stop_if_going_on_batteries'])
 
     def test_check_script_queries_local_task_without_starting_it(self):
         script = self.installer.build_check_script()
         self.assertIn("Get-ScheduledTask -TaskName 'AI-Work Daily Mail Digest'", script)
         self.assertIn('ConvertTo-Json', script)
         self.assertNotIn('Start-ScheduledTask', script)
+        self.assertIn('disallow_start_on_batteries', script)
+        self.assertIn('stop_if_going_on_batteries', script)
 
     def test_check_detects_definition_drift(self):
         desired = {
@@ -127,15 +131,24 @@ class InstallScheduledTasksTests(unittest.TestCase):
             'trigger_times': ['10:00', '22:00'],
             'multiple_instances': 'IgnoreNew',
             'execution_time_limit': 'PT1H',
+            'disallow_start_on_batteries': True,
+            'stop_if_going_on_batteries': True,
         }
         actual = dict(desired, trigger_times='22:00,10:00')
         self.assertEqual([], self.installer.compare_task_definitions(desired, actual))
         actual['execute'] = 'wrong-python'
         actual['working_directory'] = 'elsewhere'
         actual['multiple_instances'] = 'Parallel'
+        actual['stop_if_going_on_batteries'] = False
         differences = self.installer.compare_task_definitions(desired, actual)
         self.assertEqual(
-            ['execute', 'working_directory', 'multiple_instances'], differences
+            [
+                'execute',
+                'working_directory',
+                'multiple_instances',
+                'stop_if_going_on_batteries',
+            ],
+            differences,
         )
 
     def test_check_query_success_reports_definition_state(self):
@@ -150,6 +163,8 @@ class InstallScheduledTasksTests(unittest.TestCase):
             'trigger_times': '22:00,10:00',
             'multiple_instances': 'IgnoreNew',
             'execution_time_limit': 'PT1H',
+            'disallow_start_on_batteries': True,
+            'stop_if_going_on_batteries': True,
         }
 
         def runner(command, **kwargs):
