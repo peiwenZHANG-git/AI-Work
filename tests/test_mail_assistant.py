@@ -3,6 +3,7 @@
 import unittest
 from types import SimpleNamespace
 import unittest.mock as mock
+import hashlib
 
 import windows_gui.mail_assistant as mail_assistant
 
@@ -301,6 +302,93 @@ class MailAssistantTest(unittest.TestCase):
             mail_assistant.BACHELOR_ASSISTANT_SMTP_CREDENTIAL_USERNAME,
             credential_usernames,
         )
+
+    def test_graph_confirmation_requires_existing_draft(self):
+        payload = {
+            'subject': 'Subject',
+            'toRecipients': [{'emailAddress': {'address': 'teacher@example.edu'}}],
+            'body': {'contentType': 'Text', 'content': 'Body'},
+        }
+
+        def make_get(is_draft):
+            def get(url, headers=None, timeout=None):
+                self.assertIn('isDraft', url)
+                return SimpleNamespace(status_code=200, json=lambda: dict(payload, isDraft=is_draft))
+            return get
+
+        with mock.patch.object(
+            mail_assistant.requests, 'get', side_effect=make_get(True)
+        ):
+            mail_assistant.verify_master_staged_draft(
+                'token', 'draft-1', 'teacher@example.edu', 'Subject', 'Body'
+            )
+
+        with mock.patch.object(
+            mail_assistant.requests, 'get', side_effect=make_get(False)
+        ):
+            with self.assertRaises(AssistantError):
+                mail_assistant.verify_master_staged_draft(
+                    'token', 'draft-1', 'teacher@example.edu', 'Subject', 'Body'
+                )
+
+    def test_imap_confirmation_requires_draft_flag(self):
+        message = build_draft_message(
+            'me@example.edu', 'teacher@example.edu', 'Subject', 'Body'
+        )
+        raw = message.as_bytes()
+        context = {
+            'folder': 'Drafts',
+            'uidvalidity': '99',
+            'uid': '11',
+            'message_sha256': hashlib.sha256(raw).hexdigest(),
+            'to': 'teacher@example.edu',
+            'subject': 'Subject',
+            'body': 'Body',
+        }
+        account = {
+            'host': 'imap.example.com',
+            'port': '993',
+            'username': 'me@example.edu',
+            'password': 'runtime-secret',
+        }
+
+        class FakeConnection:
+            def __init__(self, flags):
+                self.flags = flags
+
+            def login(self, username, password):
+                return 'OK', [b'authenticated']
+
+            def select(self, mailbox, readonly=False):
+                self.readonly = readonly
+                return 'OK', [b'Flags 1 UIDVALIDITY 99']
+
+            def uid(self, command, uid, *args):
+                metadata = (
+                    b'11 (UID 11 FLAGS (' + self.flags + b') BODY[] {'
+                    + str(len(raw)).encode()
+                    + b'}'
+                )
+                return 'OK', [(metadata, raw), b')']
+
+            def logout(self):
+                return 'BYE', [b'logout']
+
+        with mock.patch.object(
+            mail_assistant,
+            '_default_imap_factory',
+            side_effect=lambda *args, **kwargs: FakeConnection(b'\\Draft'),
+        ):
+            verified = mail_assistant.fetch_staged_draft_imap(account, context)
+        self.assertEqual('Body', verified.get_content().strip())
+
+        with mock.patch.object(
+            mail_assistant,
+            '_default_imap_factory',
+            side_effect=lambda *args, **kwargs: FakeConnection(b''),
+        ):
+            with self.assertRaises(AssistantError):
+                mail_assistant.fetch_staged_draft_imap(account, context)
 
     def test_build_draft_message_sets_headers(self) -> None:
         message = build_draft_message('me@example.com', 'you@example.com', '主题', '正文')

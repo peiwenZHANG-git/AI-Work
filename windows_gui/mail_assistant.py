@@ -449,7 +449,7 @@ def verify_master_staged_draft(
     response = requests.get(
         (
             f'{GRAPH_MESSAGES_URL}/{quote(draft_id, safe="")}'
-            '?$select=subject,toRecipients,body'
+            '?$select=subject,toRecipients,body,isDraft'
         ),
         headers={'Authorization': f'Bearer {access_token}'},
         timeout=30,
@@ -457,6 +457,8 @@ def verify_master_staged_draft(
     if response.status_code != 200:
         raise AssistantError(f'无法读取待发送草稿：HTTP {response.status_code}')
     payload = response.json()
+    if payload.get('isDraft') is not True:
+        raise AssistantError('待发送消息不再是草稿')
     recipients = [
         str(
             ((item or {}).get('emailAddress') or {}).get('address') or ''
@@ -505,18 +507,24 @@ def fetch_staged_draft_imap(
         ):
             raise AssistantError('草稿文件夹状态已变化，请重新保存')
         status, data = connection.uid(
-            'FETCH', str(context.get('uid')).encode('ascii'), '(BODY.PEEK[])'
+            'FETCH',
+            str(context.get('uid')).encode('ascii'),
+            '(FLAGS BODY.PEEK[])',
         )
         if status != 'OK':
             raise AssistantError('无法读取待发送草稿')
         raw = b''
+        metadata = b''
         for item in data or []:
             if isinstance(item, tuple) and len(item) >= 2 and isinstance(item[1], bytes):
+                metadata += item[0] if isinstance(item[0], bytes) else str(item[0]).encode()
                 raw += item[1]
         if hashlib.sha256(raw).hexdigest() != context.get('message_sha256'):
             raise AssistantError('待发送草稿内容校验失败')
         message = BytesParser(policy=policy.default).parsebytes(raw)
         _validate_staged_message(message, to, subject, body)
+        if b'\\draft' not in metadata.lower().replace(b'"', b''):
+            raise AssistantError('待发送消息不再是草稿')
         return message
     finally:
         try:
