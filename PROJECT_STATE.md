@@ -49,12 +49,13 @@
 - 待发送引用 TTL/容量已提交：15 分钟过期、进程内最多 16 项；过期、重复使用或字段修改会显式失败。
 - 摘要诊断已提交：每次运行在开始、读取邮箱、artifact 写入、完成或异常阶段记录 `last-attempt.json`；内容仅含阶段、状态、计数和错误类型。Windows `os.replace` 增加重试和完整临时文件回退。
 - 健康检查已提交：`last_mail_digest` 可附加 `last-attempt.json` 的阶段/错误类型，便于区分状态未更新与实际失败阶段。
+- 计划任务电源策略校验已提交：`--check` 覆盖 `DisallowStartIfOnBatteries` 和 `StopIfGoingOnBatteries`。
+- 助手错误边界已提交：未预期 500 响应只返回 `internal_server_error`，不向页面泄漏原始异常细节。
 
 ## 4. 当前工作（待提交）
 
-- 计划任务电源策略校验（待提交）：`--check` 增加 `DisallowStartIfOnBatteries` 和 `StopIfGoingOnBatteries`；助手 500 响应改为通用 `internal_server_error`，不再返回原始异常细节。
 - `.vscode/mcp.json`：本机 GitHub MCP 配置，按既定决定保持本地修改，不提交、不还原。
-- 当前工作树验证基线（2026-09-01 实测）：`python -m compileall -q windows_gui_mcp.py windows_gui tests scripts` 通过；`python -m unittest discover -s tests -t . -v` 共 272 项全部通过；`mcp.list_tools()` 确认 28 个工具；`git diff --check` 通过。
+- 当前工作树验证基线（2026-09-01 实测）：`python -m compileall -q windows_gui_mcp.py windows_gui tests scripts` 通过；`python -m unittest discover -s tests -t . -v` 共 273 项全部通过；`mcp.list_tools()` 确认 28 个工具；`git diff --check` 通过。
 
 ## 5. 已知问题与阻塞
 
