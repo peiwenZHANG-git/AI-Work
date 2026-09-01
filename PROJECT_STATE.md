@@ -46,12 +46,14 @@
 - 助手服务输入边界已提交：变异 POST 的 JSON 主体限制为 256 KiB；无效、负数或超限 `Content-Length` 在读取请求体前拒绝。
 - 助手字段校验已提交：收件人必须是单个普通邮箱地址并限制长度；主题去除换行、正文拒绝 NUL，AI 指令与生成字段也有上限。无效收件人会在访问凭据、IMAP、SMTP 或 Graph 前失败。
 - 两阶段草稿发送已提交：先保存/校验草稿并返回一次性引用；用户再次确认后只发送该已存在草稿。IMAP 校验 folder/UID/UIDVALIDITY/哈希与收件人、主题、正文、发件人；Graph 校验身份和草稿元数据。
+- 待发送引用 TTL/容量已提交：15 分钟过期、进程内最多 16 项；过期、重复使用或字段修改会显式失败。
 - 摘要诊断已提交：每次运行在开始、读取邮箱、artifact 写入、完成或异常阶段记录 `last-attempt.json`；内容仅含阶段、状态、计数和错误类型。Windows `os.replace` 增加重试和完整临时文件回退。
+- 健康检查已提交：`last_mail_digest` 可附加 `last-attempt.json` 的阶段/错误类型，便于区分状态未更新与实际失败阶段。
 
 ## 4. 当前工作（待提交）
 
 - `.vscode/mcp.json`：本机 GitHub MCP 配置，按既定决定保持本地修改，不提交、不还原。
-- 无待提交源码。当前提交前验证基线（2026-09-01 实测）：`python -m compileall -q windows_gui_mcp.py windows_gui tests scripts` 通过；`python -m unittest discover -s tests -t . -v` 共 268 项全部通过；`mcp.list_tools()` 确认 28 个工具；`git diff --check` 通过。
+- 当前工作树验证基线（2026-09-01 实测）：`python -m compileall -q windows_gui_mcp.py windows_gui tests scripts` 通过；`python -m unittest discover -s tests -t . -v` 共 272 项全部通过；`mcp.list_tools()` 确认 28 个工具；`git diff --check` 通过。
 
 ## 5. 已知问题与阻塞
 
