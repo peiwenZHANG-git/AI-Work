@@ -390,6 +390,104 @@ class MailAssistantTest(unittest.TestCase):
             with self.assertRaises(AssistantError):
                 mail_assistant.fetch_staged_draft_imap(account, context)
 
+    def test_imap_staging_returns_stable_reference_and_requires_draft(self):
+        message = build_draft_message(
+            'me@example.edu', 'teacher@example.edu', 'Subject', 'Body'
+        )
+        raw = message.as_bytes()
+        account = {
+            'host': 'imap.example.com',
+            'port': '993',
+            'username': 'me@example.edu',
+            'password': 'runtime-secret',
+        }
+
+        class FakeStagingConnection:
+            def __init__(self, append_response, flags):
+                self.append_response = append_response
+                self.flags = flags
+                self.appended = None
+                self.readonly = None
+
+            def login(self, username, password):
+                return 'OK', [b'authenticated']
+
+            def list(self):
+                return 'OK', [b'(\\HasNoChildren \\Drafts) "/" Drafts']
+
+            def append(self, mailbox, flags, date, data):
+                self.appended = (mailbox, flags, data)
+                return 'OK', self.append_response
+
+            def select(self, mailbox, readonly=False):
+                self.readonly = readonly
+                return 'OK', [b'Flags 1 UIDVALIDITY 99']
+
+            def uid(self, command, uid, *args):
+                metadata = (
+                    b'11 (UID 11 FLAGS (' + self.flags + b') BODY[] {'
+                    + str(len(raw)).encode()
+                    + b'}'
+                )
+                return 'OK', [(metadata, raw), b')']
+
+            def logout(self):
+                return 'BYE', [b'logout']
+
+        good = FakeStagingConnection(
+            [b'[APPENDUID 99 11] Draft appended'], b'\\Draft'
+        )
+        with mock.patch.object(
+            mail_assistant,
+            '_default_imap_factory',
+            side_effect=lambda *args, **kwargs: good,
+        ):
+            reference = mail_assistant.stage_draft_imap(
+                account['host'],
+                account['port'],
+                account['username'],
+                account['password'],
+                'me@example.edu',
+                'teacher@example.edu',
+                'Subject',
+                'Body',
+            )
+
+        self.assertEqual('Drafts', reference['folder'])
+        self.assertEqual('99', reference['uidvalidity'])
+        self.assertEqual('11', reference['uid'])
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), reference['message_sha256'])
+        self.assertEqual(('Drafts', '(\\Draft)', raw), good.appended)
+        self.assertTrue(good.readonly)
+
+        missing_uid = FakeStagingConnection([b'Draft appended'], b'\\Draft')
+        with mock.patch.object(
+            mail_assistant,
+            '_default_imap_factory',
+            side_effect=lambda *args, **kwargs: missing_uid,
+        ):
+            with self.assertRaises(AssistantError):
+                mail_assistant.stage_draft_imap(
+                    account['host'], account['port'], account['username'],
+                    account['password'], 'me@example.edu', 'teacher@example.edu',
+                    'Subject', 'Body',
+                )
+
+        not_draft = FakeStagingConnection(
+            [b'[APPENDUID 99 11] Draft appended'], b''
+        )
+        with mock.patch.object(
+            mail_assistant,
+            '_default_imap_factory',
+            side_effect=lambda *args, **kwargs: not_draft,
+        ):
+            with self.assertRaises(AssistantError):
+                mail_assistant.stage_draft_imap(
+                    account['host'], account['port'], account['username'],
+                    account['password'], 'me@example.edu', 'teacher@example.edu',
+                    'Subject', 'Body',
+                )
+
     def test_build_draft_message_sets_headers(self) -> None:
         message = build_draft_message('me@example.com', 'you@example.com', '主题', '正文')
         self.assertEqual(message['To'], 'you@example.com')

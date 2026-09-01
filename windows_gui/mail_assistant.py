@@ -218,7 +218,7 @@ def stage_draft_imap(
     body: str,
     *,
     imap_factory: Any = None,
-) -> str:
+) -> dict[str, str]:
     """Append one draft and return its stable staging reference."""
     message = build_draft_message(from_addr, to, subject, body)
     context = ssl.create_default_context()
@@ -248,23 +248,26 @@ def stage_draft_imap(
         status, _ = connection.select(imap_folder, readonly=True)
         if status != 'OK':
             raise AssistantError('无法只读校验刚保存的草稿')
-        status, data = connection.uid('FETCH', uid, '(BODY.PEEK[])')
+        status, data = connection.uid('FETCH', uid, '(FLAGS BODY.PEEK[])')
         if status != 'OK':
             raise AssistantError('无法读取刚保存的草稿')
         raw = b''
+        metadata = b''
         for item in data or []:
             if isinstance(item, tuple) and len(item) >= 2 and isinstance(item[1], bytes):
+                metadata += item[0] if isinstance(item[0], bytes) else str(item[0]).encode()
                 raw += item[1]
         if not raw:
             raise AssistantError('刚保存的草稿内容为空')
         parsed = BytesParser(policy=policy.default).parsebytes(raw)
         _validate_staged_message(parsed, to, subject, body)
+        if b'\\draft' not in metadata.lower().replace(b'"', b''):
+            raise AssistantError('刚保存的消息未保持草稿状态')
         return {
             'folder': folder,
             'uidvalidity': uidvalidity.decode('ascii'),
             'uid': uid.decode('ascii'),
             'message_sha256': _message_sha256(raw),
-            'message_bytes': raw,
         }
     finally:
         try:
