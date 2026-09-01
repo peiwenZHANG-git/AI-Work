@@ -82,6 +82,8 @@ MAX_INSTRUCTION_CHARS = 8_000
 MAX_RECIPIENT_CHARS = 320
 MAX_SUBJECT_CHARS = 200
 MAX_BODY_CHARS = 50_000
+PENDING_DRAFT_TTL_SECONDS = 15 * 60
+MAX_PENDING_DRAFTS = 16
 PENDING_DRAFTS: dict[str, dict[str, Any]] = {}
 _PENDING_LOCK = threading.Lock()
 
@@ -331,17 +333,41 @@ def _message_sha256(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def _store_pending_draft(context: dict[str, Any]) -> str:
-    while True:
-        pending_id = secrets.token_urlsafe(32)
-        with _PENDING_LOCK:
+def _purge_pending_drafts_locked(now: float | None = None) -> None:
+    now = time.monotonic() if now is None else now
+    expired = [
+        pending_id
+        for pending_id, context in PENDING_DRAFTS.items()
+        if context.get('_expires_at_mono', 0) <= now
+    ]
+    for pending_id in expired:
+        PENDING_DRAFTS.pop(pending_id, None)
+
+
+def _store_pending_draft(
+    context: dict[str, Any],
+    *,
+    now: float | None = None,
+    ttl_seconds: int = PENDING_DRAFT_TTL_SECONDS,
+    max_items: int = MAX_PENDING_DRAFTS,
+) -> str:
+    now = time.monotonic() if now is None else now
+    with _PENDING_LOCK:
+        _purge_pending_drafts_locked(now)
+        while len(PENDING_DRAFTS) >= max_items:
+            PENDING_DRAFTS.pop(next(iter(PENDING_DRAFTS)))
+        while True:
+            pending_id = secrets.token_urlsafe(32)
             if pending_id not in PENDING_DRAFTS:
-                PENDING_DRAFTS[pending_id] = context
+                staged_context = dict(context)
+                staged_context['_expires_at_mono'] = now + ttl_seconds
+                PENDING_DRAFTS[pending_id] = staged_context
                 return pending_id
 
 
 def _take_pending_draft(pending_id: str) -> dict[str, Any]:
     with _PENDING_LOCK:
+        _purge_pending_drafts_locked()
         try:
             return PENDING_DRAFTS.pop(str(pending_id))
         except KeyError as error:

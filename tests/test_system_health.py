@@ -165,6 +165,49 @@ class SystemHealthTests(unittest.TestCase):
         self.assertTrue(summary['all_mailboxes_ok'])
         self.assertNotIn('private mail sentence', repr(summary))
 
+    def test_last_attempt_summary_contains_status_not_message_content(self):
+        summary = self.health.summarize_last_attempt({
+            'generated_at': '2026-09-01T10:00:00+02:00',
+            'stage': 'exception',
+            'ok': False,
+            'skipped': False,
+            'error_type': 'RuntimeError',
+            'detail': 'private failure sentence',
+            'mailboxes': [
+                {'mailbox_id': 'qq_mail', 'status': 'READY', 'count': 1},
+            ],
+        })
+        self.assertEqual('exception', summary['stage'])
+        self.assertFalse(summary['ok'])
+        self.assertEqual('RuntimeError', summary['error_type'])
+        self.assertNotIn('private failure sentence', repr(summary))
+
+    def test_stale_last_run_reports_attempt_stage(self):
+        now = datetime(2026, 9, 1, 10, 0, tzinfo=timezone(timedelta(hours=2)))
+        with tempfile.TemporaryDirectory() as directory:
+            run_path = Path(directory) / 'last-run.json'
+            attempt_path = Path(directory) / 'last-attempt.json'
+            run_path.write_text(json.dumps({
+                'generated_at': '2026-09-01T10:00:00+02:00',
+                'toast_shown': True,
+                'mailboxes': [],
+            }), encoding='utf-8')
+            attempt_path.write_text(json.dumps({
+                'stage': 'artifact_write',
+                'ok': False,
+                'error_type': 'PermissionError',
+                'detail': 'private failure sentence',
+            }), encoding='utf-8')
+            result = self.health.check_last_digest(
+                run_path,
+                now_factory=lambda: now,
+                attempt_path=attempt_path,
+            )
+
+        self.assertFalse(result['ok'])
+        self.assertIn('attempt_stage:artifact_write', result['detail'])
+        self.assertIn('attempt_error:PermissionError', result['detail'])
+
     def test_mail_digest_is_healthy_even_if_toast_was_not_shown(self):
         now = datetime(2026, 8, 31, 11, 0, tzinfo=timezone(timedelta(hours=2)))
         data = {

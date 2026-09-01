@@ -24,6 +24,9 @@ class FakeConnection:
 
 
 class MailAssistantTest(unittest.TestCase):
+    def tearDown(self):
+        mail_assistant.PENDING_DRAFTS.clear()
+
     def test_extract_recipient_finds_email(self) -> None:
         self.assertEqual(
             extract_recipient('给 teacher@cuc.edu.cn 写邮件问好'),
@@ -203,8 +206,34 @@ class MailAssistantTest(unittest.TestCase):
         })
         with self.assertRaises(AssistantError):
             mail_assistant.send_staged_draft(pending_id)
+
+    def test_pending_draft_expires_before_send(self):
+        pending_id = mail_assistant._store_pending_draft(
+            {'mailbox_id': 'master_mail'},
+            now=100,
+            ttl_seconds=60,
+        )
+        mail_assistant.PENDING_DRAFTS[pending_id]['_expires_at_mono'] = 99
+
         with self.assertRaises(AssistantError):
             mail_assistant.send_staged_draft(pending_id)
+
+        self.assertNotIn(pending_id, mail_assistant.PENDING_DRAFTS)
+
+    def test_pending_draft_capacity_evicts_oldest(self):
+        first = mail_assistant._store_pending_draft(
+            {'mailbox_id': 'master_mail'}, now=100, max_items=2
+        )
+        second = mail_assistant._store_pending_draft(
+            {'mailbox_id': 'master_mail'}, now=101, max_items=2
+        )
+        third = mail_assistant._store_pending_draft(
+            {'mailbox_id': 'master_mail'}, now=102, max_items=2
+        )
+
+        self.assertNotIn(first, mail_assistant.PENDING_DRAFTS)
+        self.assertIn(second, mail_assistant.PENDING_DRAFTS)
+        self.assertIn(third, mail_assistant.PENDING_DRAFTS)
 
     def test_bachelor_confirm_sends_existing_staged_draft(self):
         account = {

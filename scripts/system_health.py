@@ -272,11 +272,39 @@ def summarize_last_run(
     }
 
 
+def summarize_last_attempt(data: dict[str, Any]) -> dict[str, Any]:
+    mailboxes = []
+    for item in data.get('mailboxes') or []:
+        mailboxes.append({
+            'id': str(item.get('mailbox_id') or 'unknown'),
+            'status': str(item.get('status') or 'UNKNOWN'),
+            'count': int(item.get('count') or 0),
+        })
+    return {
+        'generated_at': data.get('generated_at'),
+        'stage': str(data.get('stage') or 'UNKNOWN'),
+        'ok': data.get('ok') is True,
+        'skipped': data.get('skipped') is True,
+        'reason': data.get('reason'),
+        'error_type': data.get('error_type'),
+        'mailboxes': mailboxes,
+    }
+
+
+def read_last_attempt(attempt_path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(attempt_path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    return summarize_last_attempt(payload) if isinstance(payload, dict) else None
+
+
 def check_last_digest(
     stats_path: Path | None = None,
     *,
     now_factory: Callable[[], datetime] = _local_now,
     max_age_hours: float = 13.0,
+    attempt_path: Path | None = None,
 ) -> dict[str, Any]:
     path = stats_path or (DIGEST_DIR / 'last-run.json')
     try:
@@ -300,10 +328,19 @@ def check_last_digest(
         age = summary['age_hours']
         failures.append('stale:unknown' if age is None else f'stale:{age:.1f}h')
     detail = 'ok' if ok else ';'.join(failures)
+    attempt = read_last_attempt(
+        attempt_path or (DIGEST_DIR / 'last-attempt.json')
+    )
+    if not ok and attempt and not attempt['ok']:
+        failures = [f"attempt_stage:{attempt['stage']}"]
+        if attempt['error_type']:
+            failures.append(f"attempt_error:{attempt['error_type']}")
+        detail += ';' + ';'.join(failures)
     return {
         'ok': ok,
         'detail': detail,
         'last_run': summary,
+        'last_attempt': attempt,
     }
 
 
