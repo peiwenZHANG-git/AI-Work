@@ -37,6 +37,45 @@ class MailAssistantServerSecurityTests(unittest.TestCase):
         self.assertTrue(self.server.is_json_request('application/json; charset=utf-8'))
         self.assertFalse(self.server.is_json_request('text/plain'))
 
+    def test_refresh_start_is_single_flight(self):
+        created = []
+
+        class FakeThread:
+            def __init__(self, target=None, daemon=None):
+                created.append((target, daemon))
+
+            def start(self):
+                return None
+
+        self.server.REFRESH_STATE['running'] = False
+        with mock.patch.object(
+            self.server.threading, 'Thread', FakeThread
+        ):
+            self.assertTrue(self.server.start_refresh())
+            self.assertFalse(self.server.start_refresh())
+
+        self.assertEqual(1, len(created))
+        self.assertTrue(self.server.REFRESH_STATE['running'])
+        self.server.REFRESH_STATE['running'] = False
+
+    def test_html_response_has_security_headers(self):
+        handler = object.__new__(self.server.MailAssistantHandler)
+        handler.wfile = io.BytesIO()
+        emitted = []
+        handler.send_response = lambda code: emitted.append(('status', code))
+        handler.send_header = lambda name, value: emitted.append((name, value))
+        handler.end_headers = lambda: None
+
+        handler._send_html('<html></html>', 200)
+
+        headers = dict(emitted)
+        self.assertEqual(200, headers['status'])
+        self.assertEqual('nosniff', headers['X-Content-Type-Options'])
+        self.assertEqual('no-referrer', headers['Referrer-Policy'])
+        self.assertEqual('SAMEORIGIN', headers['X-Frame-Options'])
+        self.assertIn("default-src 'self'", headers['Content-Security-Policy'])
+        self.assertIn("frame-ancestors 'self'", headers['Content-Security-Policy'])
+
     def test_content_length_is_validated_and_bounded(self):
         parse = self.server.parse_content_length
         self.assertEqual((0, None), parse(None))

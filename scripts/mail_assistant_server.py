@@ -27,6 +27,7 @@ from windows_gui.mail_digest import run_digest_update
 PORT = 8931
 MAX_JSON_BODY_BYTES = 256 * 1024
 REFRESH_STATE = {'running': False, 'last_finished': None, 'last_ok': None}
+_REFRESH_LOCK = threading.Lock()
 
 
 def is_local_request(host: str | None, origin: str | None = None) -> bool:
@@ -76,11 +77,13 @@ def _refresh_worker() -> None:
         REFRESH_STATE['running'] = False
 
 
-def start_refresh() -> None:
-    if REFRESH_STATE['running']:
-        return
-    REFRESH_STATE['running'] = True
+def start_refresh() -> bool:
+    with _REFRESH_LOCK:
+        if REFRESH_STATE['running']:
+            return False
+        REFRESH_STATE['running'] = True
     threading.Thread(target=_refresh_worker, daemon=True).start()
+    return True
 
 
 class MailAssistantHandler(BaseHTTPRequestHandler):
@@ -90,6 +93,16 @@ class MailAssistantHandler(BaseHTTPRequestHandler):
         data = html.encode('utf-8')
         self.send_response(code)
         self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.send_header('Referrer-Policy', 'no-referrer')
+        self.send_header('X-Frame-Options', 'SAMEORIGIN')
+        self.send_header(
+            'Content-Security-Policy',
+            "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+            "connect-src 'self'; frame-ancestors 'self'; base-uri 'self'; "
+            "form-action 'self'",
+        )
         self.send_header('Content-Length', str(len(data)))
         self.end_headers()
         self.wfile.write(data)
@@ -98,6 +111,8 @@ class MailAssistantHandler(BaseHTTPRequestHandler):
         data = json.dumps(payload, ensure_ascii=False).encode('utf-8')
         self.send_response(code)
         self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.send_header('Referrer-Policy', 'no-referrer')
         self.send_header('Content-Length', str(len(data)))
         self.end_headers()
         self.wfile.write(data)
@@ -198,8 +213,11 @@ class MailAssistantHandler(BaseHTTPRequestHandler):
         self._send_json(draft)
 
     def _handle_refresh(self, payload: dict) -> None:
-        start_refresh()
-        self._send_json({'started': True, 'running': REFRESH_STATE['running']})
+        started = start_refresh()
+        self._send_json({
+            'started': started,
+            'running': REFRESH_STATE['running'],
+        })
 
     def _handle_save_draft(self, payload: dict) -> None:
         detail = save_draft_for_mailbox(
