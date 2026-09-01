@@ -56,8 +56,9 @@
 
 ## 4. 当前工作（待提交）
 
+- SMTP 旁路清理（待提交）：移除助手 `send_mail_smtp()` 的“新字段即时构建并发送”路径，只保留 `send_existing_email_smtp()` 发送已取回并校验的 `EmailMessage`。
 - `.vscode/mcp.json`：本机 GitHub MCP 配置，按既定决定保持本地修改，不提交、不还原。
-- 无待提交源码。当前提交前验证基线（2026-09-01 实测）：`python -m compileall -q windows_gui_mcp.py windows_gui tests scripts` 通过；`python -m unittest discover -s tests -t . -v` 共 276 项全部通过；`mcp.list_tools()` 确认 28 个工具；`git diff --check` 通过。
+- 无待提交源码。当前提交前验证基线（2026-09-01 实测）：`python -m compileall -q windows_gui_mcp.py windows_gui tests scripts` 通过；`python -m unittest discover -s tests -t . -v` 共 277 项全部通过；`mcp.list_tools()` 确认 28 个工具；`git diff --check` 通过。
 
 ## 5. 已知问题与阻塞
 
