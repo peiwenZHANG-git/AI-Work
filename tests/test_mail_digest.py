@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import requests
 import unittest
 from pathlib import Path
@@ -257,13 +258,14 @@ class RunArtifactTest(unittest.TestCase):
 
 class RunDigestLockTest(unittest.TestCase):
     def test_lock_busy_is_reported_as_failed_skip(self):
-        with mock.patch.object(
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
             mail_digest, '_acquire_run_lock', return_value=False
         ), mock.patch.object(
             mail_digest, '_release_run_lock'
         ) as release:
-            result = mail_digest.run_digest_update()
-
+            attempt_path = Path(directory) / 'last-attempt.json'
+            result = mail_digest.run_digest_update(attempt_path=attempt_path)
+            payload = json.loads(attempt_path.read_text(encoding='utf-8'))
         self.assertFalse(result['ok'])
         self.assertTrue(result['skipped'])
         self.assertEqual('lock_busy', result['reason'])
@@ -271,6 +273,32 @@ class RunDigestLockTest(unittest.TestCase):
         self.assertTrue(result['generated_at'])
         self.assertEqual('', result['digest_path'])
         release.assert_not_called()
+        self.assertEqual('lock_busy', payload['stage'])
+        self.assertFalse(payload['ok'])
+        self.assertEqual([], payload['mailboxes'])
+
+
+class AtomicWriteTests(unittest.TestCase):
+    def test_atomic_write_retries_windows_replace(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'status.json'
+            real_replace = os.replace
+
+            def replace_twice(source, destination):
+                if not AtomicWriteTests.replace_calls:
+                    AtomicWriteTests.replace_calls.append(True)
+                    raise OSError(17, 'transient Windows replace failure')
+                return real_replace(source, destination)
+
+            AtomicWriteTests.replace_calls = []
+            with mock.patch.object(
+                os, 'replace', side_effect=replace_twice
+            ):
+                mail_digest._atomic_write_text(path, '{"ok":true}')
+
+            self.assertEqual(1, len(AtomicWriteTests.replace_calls))
+            self.assertEqual('{"ok":true}', path.read_text(encoding='utf-8'))
+            self.assertEqual([], list(Path(directory).glob('*.tmp')))
 
 
 class MailBodyTextTest(unittest.TestCase):

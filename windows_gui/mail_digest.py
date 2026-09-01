@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import ssl
 import subprocess
 import tempfile
@@ -1342,7 +1343,18 @@ def _atomic_write_text(path: Path, text: str) -> None:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary_path, path)
+        # Windows can transiently reject an atomic replace when another local
+        # reader holds the destination. A fully-written temp file still allows
+        # a non-atomic fallback so diagnostics/status are not silently lost.
+        for replace_attempt in range(3):
+            try:
+                os.replace(temporary_path, path)
+                break
+            except OSError:
+                if replace_attempt == 2:
+                    shutil.copyfile(temporary_path, path)
+                else:
+                    time.sleep(0.02 * (replace_attempt + 1))
     finally:
         try:
             temporary_path.unlink()
@@ -1350,13 +1362,75 @@ def _atomic_write_text(path: Path, text: str) -> None:
             pass
 
 
+def write_attempt_artifact(
+    stage: str,
+    *,
+    ok: bool,
+    generated_at: datetime,
+    skipped: bool = False,
+    reason: str | None = None,
+    mailboxes: list[MailboxDigest] | None = None,
+    mailbox_count: int | None = None,
+    total_mails: int | None = None,
+    artifact_written: bool | None = None,
+    artifact_error: str | None = None,
+    error_type: str | None = None,
+    attempt_path: Path | None = None,
+) -> bool:
+    """Persist non-sensitive run diagnostics without relying on last-run."""
+    mailbox_status = [
+        {
+            'mailbox_id': box.mailbox_id,
+            'status': box.status,
+            'count': len(box.emails),
+        }
+        for box in (mailboxes or [])
+    ]
+    payload: dict[str, Any] = {
+        'generated_at': generated_at.isoformat(),
+        'stage': stage,
+        'ok': ok,
+        'skipped': skipped,
+        'mailbox_count': mailbox_count if mailbox_count is not None else len(mailbox_status),
+        'total_mails': total_mails or 0,
+        'mailboxes': mailbox_status,
+    }
+    if reason is not None:
+        payload['reason'] = reason
+    if artifact_written is not None:
+        payload['artifact_written'] = artifact_written
+    if artifact_error is not None:
+        payload['artifact_error'] = artifact_error
+    if error_type is not None:
+        payload['error_type'] = error_type
+    try:
+        _atomic_write_text(
+            attempt_path or (DIGEST_DIR / 'last-attempt.json'),
+            json.dumps(payload, ensure_ascii=False, indent=2),
+        )
+        return True
+    except OSError:
+        _LOGGER.exception('could not persist digest attempt diagnostics')
+        return False
+
+
 def run_digest_update(
     *,
     open_html: bool = False,
     with_toasts: bool = True,
     start_notice: bool = False,
+    attempt_path: Path | None = None,
 ) -> dict[str, Any]:
     if not _acquire_run_lock():
+        generated_at = datetime.now().astimezone()
+        write_attempt_artifact(
+            'lock_busy',
+            ok=False,
+            generated_at=generated_at,
+            skipped=True,
+            reason='lock_busy',
+            attempt_path=attempt_path,
+        )
         return {
             'ok': False,
             'skipped': True,
@@ -1378,6 +1452,15 @@ def run_digest_update(
             collect_bachelor_digest(),
             collect_master_digest(),
         ]
+        mailboxes_ok = all(box.ok for box in mailboxes)
+        write_attempt_artifact(
+            'mailboxes_read',
+            ok=mailboxes_ok,
+            generated_at=generated_at,
+            mailboxes=mailboxes,
+            total_mails=sum(len(box.emails) for box in mailboxes),
+            attempt_path=attempt_path,
+        )
         api_key = load_summary_api_key()
         enrich_digests(mailboxes, api_key)
         digest_text = format_digest(mailboxes, generated_at)
@@ -1402,6 +1485,16 @@ def run_digest_update(
             )
         except OSError as error:
             _LOGGER.exception('could not persist digest artifacts')
+            write_attempt_artifact(
+                'artifact_write',
+                ok=False,
+                generated_at=generated_at,
+                mailboxes=mailboxes,
+                total_mails=sum(len(box.emails) for box in mailboxes),
+                artifact_written=False,
+                artifact_error=type(error).__name__,
+                attempt_path=attempt_path,
+            )
             return {
                 'ok': False,
                 'artifact_written': False,
@@ -1421,6 +1514,15 @@ def run_digest_update(
             except OSError:
                 _LOGGER.warning('could not open digest file', exc_info=True)
         all_ok = all(box.ok for box in mailboxes)
+        write_attempt_artifact(
+            'complete',
+            ok=all_ok and toast_shown,
+            generated_at=generated_at,
+            mailboxes=mailboxes,
+            total_mails=sum(len(box.emails) for box in mailboxes),
+            artifact_written=True,
+            attempt_path=attempt_path,
+        )
         return {
             'ok': all_ok and toast_shown,
             'artifact_written': True,
@@ -1431,6 +1533,15 @@ def run_digest_update(
             'total_mails': sum(len(box.emails) for box in mailboxes),
             'text': digest_text,
         }
+    except Exception as error:
+        write_attempt_artifact(
+            'exception',
+            ok=False,
+            generated_at=datetime.now().astimezone(),
+            error_type=type(error).__name__,
+            attempt_path=attempt_path,
+        )
+        raise
     finally:
         _release_run_lock()
 

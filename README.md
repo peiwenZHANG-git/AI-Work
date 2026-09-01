@@ -155,6 +155,7 @@ Smoke test 只使用唯一命名的专用记事本文件，测试结果写入 `t
 - `scripts/daily_mail_digest.py` 生成三邮箱摘要；`scripts/mail_assistant_server.py` 只绑定 `127.0.0.1:8931`，并校验 Host、Origin 和 JSON Content-Type。
 - 助手变异请求的 JSON 主体上限为 256 KiB；无效或负数 `Content-Length` 会在读取请求体前拒绝。
 - AI 指令、收件人、主题和正文都有长度上限；收件人必须是单个普通邮箱地址，主题会去除换行以阻止 SMTP/Graph 头注入。
+- 发送采用两阶段确认：第一次点击只保存待发送草稿并生成一次性引用；必须再次点击“确认发送已保存草稿”。后端会校验已保存草稿的收件人、主题、正文和位置后才发送；修改草稿字段会使待发送引用失效。
 - AI 中文摘要/翻译调用 Zhipu GLM；QQ 助手只能保存草稿，本科 SMTP 发送前先保存草稿，页面发送按钮仍需显式确认。
 - 助手 QQ/本科草稿和本科 SMTP 使用独立的 Credential Manager 授权码条目；缺失时明确失败，绝不回退只读摘要凭据。
 - 运行 `python scripts/configure_mail_credentials.py --missing-assistant` 配置三个助手专用授权码；每个密钥需隐藏输入两次。只能用 `--key`/`--all-configurable` 选择白名单目标，不能用参数传递密钥值；覆盖已有条目需显式 `--force`。
@@ -165,6 +166,7 @@ Smoke test 只使用唯一命名的专用记事本文件，测试结果写入 `t
 - 检查范围限于本机配置和运行状态：环境变量名存在性、Credential Manager 条目存在性、28 个 MCP 工具注册、计划任务、最近 `last-run.json` 状态和助手服务状态。
 - 摘要健康检查要求邮箱状态全部为 `READY`/`EMPTY_TODAY`，且报告不超过 13 小时（覆盖每日 10:00/22:00 两次调度）；Toast 是否显示单独作为可选 INFO，不与邮件读取健康混在一起。
 - 摘要 HTML 和 `last-run.json` 使用临时文件加原子替换写入；状态包含 `ok`、邮箱读取结果、计数和 Toast 状态。状态写入失败会让任务显式失败，不会留下“任务成功但报告过期”的假信号。
+- `last-attempt.json` 记录运行阶段、邮箱状态/计数和错误类型；它不包含发件人、主题、正文、URL 或凭据，用于在任务失败但 `last-run.json` 未更新时定位阶段。
 - 如果运行锁被并发刷新占用，本次摘要跳过时返回失败；这避免计划任务在 `last-run.json` 仍过期时误报成功。
 
 ### 计划任务恢复
