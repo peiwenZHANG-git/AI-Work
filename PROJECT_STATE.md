@@ -57,13 +57,13 @@
 - SMTP 旁路清理已提交：移除助手 `send_mail_smtp()` 的“新字段即时构建并发送”路径，只保留 `send_existing_email_smtp()` 发送已取回并校验的 `EmailMessage`。
 - 助手服务并发与响应头加固已提交：后台刷新启动由互斥锁保护；HTML 响应增加 `nosniff`、`no-referrer`、`SAMEORIGIN` 和 CSP。
 - 通用浏览器/下载已实现并注册 8 个 MCP 工具：公共网页打开和无登录态原子下载，以及使用独立 Agent Profile 的持久 Playwright Edge 会话启动、导航、页面检查、确认式点击、登录态原子下载和停止。URL 输出去除查询串/片段，检查不返回 Cookie 或密码框值，下载默认不覆盖并返回 SHA-256；服务器现固定注册 36 个工具，原有 28 个接口保持兼容。
-- 邮件摘要与助手已支持单邮件本地隐藏（不修改邮箱服务器状态）、30 天/5000 项清理、`/api/dismiss`、本地搜索与邮箱/重要程度/日期筛选，以及附件名称、MIME 类型和大小展示；IMAP 不解码附件，Graph 不请求 `contentBytes` 并过滤内嵌附件。
+- 邮件摘要与助手已支持单邮件本地隐藏（不修改邮箱服务器状态）、30 天/5000 项清理、`/api/dismiss`、本地搜索与邮箱/重要程度/日期筛选，以及附件名称、MIME 类型和大小展示；IMAP 不解码附件，Graph 不请求 `contentBytes` 并过滤内嵌附件。每封卡片有独立“已读”按钮，按钮仅在持久化成功后隐藏；IMAP UID / Graph message ID 的本地哈希作为稳定隐藏标识，正文变化后不会重新出现，同时兼容旧内容哈希记录；并发写入使用进程锁避免丢失。
 - 摘要读取与 AI enrichment 已并发化并保持固定邮箱显示顺序；AI 缓存改为整批落盘，重要程度政策升级到版本 2，高重要性检查不再进行无用翻译。助手启动器仅识别精确脚本进程，并提供 `--restart` / `--no-refresh` 安全选项。
 
 ## 4. 当前工作（待提交）
 
 - `.vscode/mcp.json`：本机 GitHub MCP 配置，按既定决定保持本地修改，不提交、不还原。
-- 当前提交前验证基线（2026-09-02 实测）：`python -m compileall -q windows_gui_mcp.py windows_gui tests` 通过；`python -m unittest discover -s tests -t . -v` 共 305 项全部通过；FastMCP 实际列出 36 个工具；`git diff --check` 通过。Playwright 1.62.0 已安装到规定 Python 解释器；浏览器单元测试使用替身，未启动真实 Edge。
+- 当前提交前验证基线（2026-09-02 实测）：`python -m compileall -q windows_gui_mcp.py windows_gui tests` 通过；`python -m unittest discover -s tests -t . -v` 共 305 项全部通过；FastMCP 实际列出 36 个工具；单邮件隐藏相关定向测试 47 项全部通过；`git diff --check` 通过。Playwright 1.62.0 已安装到规定 Python 解释器；浏览器单元测试使用替身，未启动真实 Edge。
 
 ## 5. 已知问题与阻塞
 
@@ -72,7 +72,7 @@
 - 本科网易暂不支持经 Edge 发送已有草稿（draft hash 无法稳定定位并校验）；QQ 发送为设计性禁止。
 - Edge 摘要/搜索回退只解析当前已验证页面的可见列表，不代表完整邮箱索引，也不打开正文。
 - 本次会话未运行真实桌面 smoke test（按仓库规则需用户明确授权）。
-- 2026-09-02 健康检查时助手服务未运行；启动或安全重启后才会加载单邮件隐藏与安全重启实现。
+- 2026-09-02 助手服务已用 `--restart --no-refresh` 安全重启并加载稳定单邮件隐藏修复；重启过程未读取邮箱。
 - 工作区存在已忽略的运行时文件/目录（例如 `screen.png`、`__pycache__/`），未清理。
 
 ## 6. 重要技术决策
