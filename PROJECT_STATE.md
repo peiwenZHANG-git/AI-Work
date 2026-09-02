@@ -57,22 +57,26 @@
 - SMTP 旁路清理已提交：移除助手 `send_mail_smtp()` 的“新字段即时构建并发送”路径，只保留 `send_existing_email_smtp()` 发送已取回并校验的 `EmailMessage`。
 - 助手服务并发与响应头加固已提交：后台刷新启动由互斥锁保护；HTML 响应增加 `nosniff`、`no-referrer`、`SAMEORIGIN` 和 CSP。
 - 通用浏览器/下载已实现并注册 8 个 MCP 工具：公共网页打开和无登录态原子下载，以及使用独立 Agent Profile 的持久 Playwright Edge 会话启动、导航、页面检查、确认式点击、登录态原子下载和停止。URL 输出去除查询串/片段，检查不返回 Cookie 或密码框值，下载默认不覆盖并返回 SHA-256；服务器现固定注册 36 个工具，原有 28 个接口保持兼容。
-- 邮件摘要与助手已支持单邮件本地隐藏（不修改邮箱服务器状态）、30 天/5000 项清理、`/api/dismiss`、本地搜索与邮箱/重要程度/日期筛选，以及附件名称、MIME 类型和大小展示；IMAP 不解码附件，Graph 不请求 `contentBytes` 并过滤内嵌附件。每封卡片有独立“已读”按钮，按钮仅在持久化成功后隐藏；IMAP UID / Graph message ID 的本地哈希作为稳定隐藏标识，正文变化后不会重新出现，同时兼容旧内容哈希记录；并发写入使用进程锁避免丢失。
+- 邮件摘要与助手已支持单邮件本地隐藏（不修改邮箱服务器状态）、30 天/5000 项清理、`/api/dismiss`、本地搜索与邮箱/重要程度/日期筛选，以及附件名称、MIME 类型和大小展示；IMAP 不解码附件，Graph 不请求 `contentBytes` 并过滤内嵌附件。每封卡片有独立“已读”按钮，按钮仅在持久化成功后隐藏；IMAP UID / Graph message ID 的本地哈希作为稳定隐藏标识，正文变化后不会重新出现，同时兼容旧内容哈希记录；并发写入使用进程锁避免丢失。为关闭长刷新竞态，AI enrichment 完成后、写 HTML 前会再次过滤；点击后原子更新当前 HTML，`/digest` 返回旧 artifact 前也会即时过滤。
 - 摘要读取与 AI enrichment 已并发化并保持固定邮箱显示顺序；AI 缓存改为整批落盘，重要程度政策升级到版本 2，高重要性检查不再进行无用翻译。助手启动器仅识别精确脚本进程，并提供 `--restart` / `--no-refresh` 安全选项。
+- AI 写信的草稿生成已与摘要请求参数解耦：默认使用快速 `glm-4-flash`，可由 `AI_WORK_DRAFT_MODEL` 单独覆盖；每次只发起一次请求，10 秒硬超时，最大输出 1200 tokens，网络失败不再自动重试导致长时间卡住。助手 HTML/JSON 响应现强制 `no-store`，页面 AI 请求有 22 秒客户端截止和明确超时错误，避免旧页面缓存或前端无限等待。远程 AI 超时、网络失败或响应格式无效时，服务端会自动返回可编辑的本地基础草稿并在页面标明兜底，不再出现无草稿的终态。2026-09-02 本机经同一 `/api/ai-draft` 真实接口多次验证成功，最新一次约 3.6 秒返回 AI 草稿，未保存或发送邮件。
+- AI 写信页面的无法生成根因已修复：脚本调用 `setStatus()` 时依赖 `#status`，但 HTML 曾缺少该 DOM 元素，导致点击后立即抛出 JavaScript 异常，`/api/ai-draft` 请求根本没有发出。现已增加带 `role=status`/`aria-live=polite` 的状态节点和防回归测试；用无界面 Edge 按真实流程验证“切换 AI 标签→输入→点击生成→填入主题/正文”成功，HTTP 200，约 4.59 秒，未保存或发送邮件。
+- 本地健康事件已接入摘要运行与 AI 草稿关键结果：事件采用固定组件、结果、代码和摘要白名单，不接收调用方详情或异常原文，并以 512 KiB、最多 3 个轮转文件限制磁盘占用；读写由线程锁与有界 Windows 跨进程 mutex 串行化，任何日志锁、文件或解码故障都只安全降级，不会中断摘要或写信主流程。共享只读健康模型覆盖 MCP 稳定接口、凭据存在性、摘要、助手服务、浏览器/CDP 和 Remote 六类状态；无法可靠解析本地化计划任务输出时返回 `UNKNOWN` 而非误报 `FAIL`。助手页新增“系统状态”面板及脱敏的最近错误，CLI 与页面共用四态模型，不新增 MCP 工具，也不主动启动服务、浏览器或网络探测。
+- 助手重启可靠性已修复：端口等待现在正确区分“等待关闭”和“等待监听”，并会在有界时间内重试精确脚本 PID 的 WMI 查询；仍只终止命令行明确运行 `mail_assistant_server.py` 的进程。真实 `--restart --no-refresh --no-open` 验证一次成功，未刷新邮箱，随后 `/api/status` 与 `/api/health` 均返回 HTTP 200。
 
-## 4. 当前工作（待提交）
+## 4. 当前工作
 
 - `.vscode/mcp.json`：本机 GitHub MCP 配置，按既定决定保持本地修改，不提交、不还原。
-- 当前提交前验证基线（2026-09-02 实测）：`python -m compileall -q windows_gui_mcp.py windows_gui tests` 通过；`python -m unittest discover -s tests -t . -v` 共 305 项全部通过；FastMCP 实际列出 36 个工具；单邮件隐藏相关定向测试 47 项全部通过；`git diff --check` 通过。Playwright 1.62.0 已安装到规定 Python 解释器；浏览器单元测试使用替身，未启动真实 Edge。
+- 最新已提交验证基线（2026-09-02 实测）：`python -m compileall -q windows_gui_mcp.py windows_gui tests` 通过；`python -m unittest discover -s tests -t . -v` 共 334 项全部通过；FastMCP 工具注册防回归测试及共享健康模型检查均确认 36 个工具唯一注册；`git diff --check` 通过。只读 `python scripts/system_health.py --json` 实测整体通过：环境、7 个凭据条目、计划任务、任务定义、最近摘要及助手服务均健康。助手 `/api/health` 只读验证返回 HTTP 200：MCP/凭据/摘要/助手为 PASS，正常未启动的 Browser/CDP 与无可靠探测器的 Remote 为 UNKNOWN。未运行真实桌面或邮箱 smoke test。
 
 ## 5. 已知问题与阻塞
 
 - Outlook 一次性登录命令已具备，但本会话未执行真实 Microsoft 登录或用真实租户验证端到端授权。已有 refresh token 时，摘要/助手会安全刷新并轮换。摘要/搜索需要 `Mail.Read` 凭据，草稿需要 `Mail.ReadWrite`，发送还需要 `Mail.Send`。
-- 2026-09-02 检查确认：3 个助手专用授权码条目仍缺失，需要用户提供授权码，不能自动输入或猜测；但只读邮件摘要链路已恢复，最近运行三邮箱均为 `READY`，计划任务最近返回 `0`，`last-run.json` 与 `last-attempt.json` 均正常更新。
+- 2026-09-02 最新只读健康检查确认：三个助手专用授权码、两个摘要授权码、GLM API key 与 Outlook refresh token 共 7 个凭据条目均已配置；计划任务最近返回 `0` 且定义匹配；最近摘要三邮箱均为健康状态，`last-run.json` 与 `last-attempt.json` 正常更新。
 - 本科网易暂不支持经 Edge 发送已有草稿（draft hash 无法稳定定位并校验）；QQ 发送为设计性禁止。
 - Edge 摘要/搜索回退只解析当前已验证页面的可见列表，不代表完整邮箱索引，也不打开正文。
 - 本次会话未运行真实桌面 smoke test（按仓库规则需用户明确授权）。
-- 2026-09-02 助手服务已用 `--restart --no-refresh` 安全重启并加载稳定单邮件隐藏修复；重启过程未读取邮箱。
+- 2026-09-02 助手服务已用 `--restart --no-refresh --no-open` 安全重启并加载最新系统状态面板与重启修复；重启过程未读取邮箱或打开浏览器。
 - 工作区存在已忽略的运行时文件/目录（例如 `screen.png`、`__pycache__/`），未清理。
 
 ## 6. 重要技术决策
@@ -87,10 +91,10 @@
 
 ## 7. 下一步
 
-1. 用户配置 3 个助手专用授权码后重新运行健康检查，再用显式授权执行一次真实 Outlook 登录。
+1. 在用户显式授权的交互会话中执行一次真实 Outlook 登录并验证租户端到端授权；当前所需 7 个凭据条目均已存在，无需重复配置助手授权码。
 2. 每次提交前运行规定验证：compileall、完整单元测试、36 工具注册检查、`git diff --check`。
 3. 真实桌面验证仅在用户明确授权后运行 `python tests/smoke_test.py`；邮箱只读 smoke 仅在另行授权时使用 `--mailbox-readonly`。
-4. 后续增强：在用户授权的交互会话中执行一次真实 Outlook 登录；本科网易 Edge 发送仅在能稳定定位并校验既有草稿后再实现。
+4. 本科网易 Edge 发送仅在能稳定定位并校验既有草稿后再实现，不以模糊 draft hash 换取表面可用性。
 5. 在用户授权真实桌面测试后，验证专用持久 Edge Profile 的启动、手工登录、DOM 检查和登录态下载；真实测试不得提交表单或覆盖文件。
 
 ## 8. 最近一次更新

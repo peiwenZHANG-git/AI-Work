@@ -364,6 +364,36 @@ class AtomicWriteTests(unittest.TestCase):
 
 
 class DismissedMailTests(unittest.TestCase):
+    def test_filter_dismissed_html_removes_only_matching_card(self):
+        key_a = 'a' * 40
+        key_b = 'b' * 40
+        html = (
+            f'<article class="mail" data-key="{key_a}">one</article>'
+            f'<article class="mail" data-key="{key_b}">two</article>'
+        )
+
+        filtered = mail_digest.filter_dismissed_html(html, {key_a})
+
+        self.assertNotIn('>one</article>', filtered)
+        self.assertIn('>two</article>', filtered)
+
+    def test_latest_digest_is_atomically_updated_after_dismiss(self):
+        with tempfile.TemporaryDirectory() as directory:
+            digest_dir = Path(directory)
+            key = 'c' * 40
+            path = digest_dir / '2026-09-02.html'
+            path.write_text(
+                f'<article class="mail" data-key="{key}">mail</article>',
+                encoding='utf-8',
+            )
+
+            removed = mail_digest.remove_dismissed_from_latest_digest(
+                {key}, digest_dir
+            )
+
+            self.assertEqual(1, removed)
+            self.assertNotIn('class="mail"', path.read_text(encoding='utf-8'))
+
     def test_dismiss_store_is_deduplicated_and_atomic(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'dismissed-mail.json'

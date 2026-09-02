@@ -75,9 +75,53 @@ class MailAssistantServerSecurityTests(unittest.TestCase):
         self.assertEqual(200, headers['status'])
         self.assertEqual('nosniff', headers['X-Content-Type-Options'])
         self.assertEqual('no-referrer', headers['Referrer-Policy'])
+        self.assertEqual('no-store', headers['Cache-Control'])
         self.assertEqual('SAMEORIGIN', headers['X-Frame-Options'])
         self.assertIn("default-src 'self'", headers['Content-Security-Policy'])
         self.assertIn("frame-ancestors 'self'", headers['Content-Security-Policy'])
+
+    def test_assistant_page_contains_status_target_used_by_script(self):
+        html = mail_assistant.build_assistant_page()
+        self.assertIn('id="status"', html)
+        self.assertIn("function setStatus(text) { $('status').textContent = text; }", html)
+
+    def test_assistant_page_contains_health_dashboard(self):
+        html = mail_assistant.build_assistant_page()
+        self.assertIn('data-tab="health"', html)
+        self.assertIn('id="health-grid"', html)
+        self.assertIn("fetch('/api/health'", html)
+        for status in ('PASS', 'WARN', 'FAIL', 'UNKNOWN'):
+            self.assertIn(f'.health-badge.{status}', html)
+
+    def test_health_endpoint_uses_shared_read_only_collector(self):
+        handler = object.__new__(self.server.MailAssistantHandler)
+        handler.path = '/api/health'
+        handler.headers = {'Host': '127.0.0.1:8931'}
+        responses = []
+        handler._send_json = lambda payload, code=200: responses.append((payload, code))
+        report = {
+            'overall_status': 'UNKNOWN', 'components': [],
+            'recent_errors': [], 'side_effect_free': True,
+        }
+        with mock.patch.object(
+            self.server, 'collect_dashboard_health', return_value=report
+        ) as collect:
+            handler.do_GET()
+        collect.assert_called_once_with(assistant_running=True)
+        self.assertEqual([(report, 200)], responses)
+
+    def test_health_endpoint_hides_unexpected_failure_details(self):
+        handler = object.__new__(self.server.MailAssistantHandler)
+        handler.path = '/api/health'
+        handler.headers = {'Host': '127.0.0.1:8931'}
+        responses = []
+        handler._send_json = lambda payload, code=200: responses.append((payload, code))
+        with mock.patch.object(
+            self.server, 'collect_dashboard_health',
+            side_effect=RuntimeError('secret token and private path'),
+        ):
+            handler.do_GET()
+        self.assertEqual([({'error': 'health_unavailable'}, 500)], responses)
 
     def test_content_length_is_validated_and_bounded(self):
         parse = self.server.parse_content_length
@@ -134,10 +178,15 @@ class MailAssistantServerSecurityTests(unittest.TestCase):
             self.server,
             'ai_generate_draft',
             side_effect=RuntimeError('private C:\\path and session detail'),
-        ):
+        ), mock.patch.object(
+            self.server, 'record_health_event'
+        ) as record_event:
             handler.do_POST()
 
         self.assertEqual([({'error': 'internal_server_error'}, 500)], responses)
+        record_event.assert_called_once_with(
+            'mail_assistant', 'error', 'assistant_request_failed'
+        )
 
     def test_dismiss_endpoint_accepts_only_a_json_key_list(self):
         handler = object.__new__(self.server.MailAssistantHandler)
@@ -157,11 +206,14 @@ class MailAssistantServerSecurityTests(unittest.TestCase):
             self.server,
             'dismiss_mail_keys',
             return_value=1,
-        ) as dismiss:
+        ) as dismiss, mock.patch.object(
+            self.server, 'remove_dismissed_from_latest_digest'
+        ) as update_digest:
             handler.do_POST()
 
         self.assertEqual([({'dismissed': 1}, 200)], responses)
         dismiss.assert_called_once_with(['safe-hash'])
+        update_digest.assert_called_once_with({'safe-hash'})
 
     def test_foreign_browser_origin_is_rejected(self):
         self.assertTrue(self.server.is_local_request('127.0.0.1:8931'))
@@ -274,7 +326,8 @@ class AssistantRestartTests(unittest.TestCase):
         self.assertEqual([101, 103], pids)
 
     def test_restart_stops_exact_pids_and_starts_without_refresh(self):
-        port_states = iter([True, True, False, False])
+        # Initial listener, one bounded wait for closure, then one for startup.
+        port_states = iter([True, True, False, False, True])
         launched = []
         stopped = []
         opened = []
@@ -283,7 +336,7 @@ class AssistantRestartTests(unittest.TestCase):
             self.startup, 'port_in_use', side_effect=lambda: next(port_states)
         ), mock.patch.object(
             self.startup,
-            'find_assistant_pids',
+            'wait_assistant_pids',
             return_value=[123, 456],
         ) as find_pids, mock.patch.object(
             self.startup,
@@ -306,6 +359,33 @@ class AssistantRestartTests(unittest.TestCase):
         self.assertEqual([], refreshed)
         self.assertEqual([], opened)
         find_pids.assert_called_once()
+
+    def test_wait_assistant_pids_tolerates_transient_wmi_lag(self):
+        with mock.patch.object(
+            self.startup,
+            'find_assistant_pids',
+            side_effect=[[], [321]],
+        ) as find, mock.patch.object(self.startup.time, 'sleep'):
+            pids = self.startup.wait_assistant_pids(
+                self.startup.SERVER_SCRIPT, timeout_seconds=1
+            )
+
+        self.assertEqual([321], pids)
+        self.assertEqual(2, find.call_count)
+
+    def test_wait_port_uses_requested_open_or_closed_state(self):
+        with mock.patch.object(
+            self.startup, 'port_in_use', side_effect=[True, False]
+        ), mock.patch.object(self.startup.time, 'sleep'):
+            self.assertTrue(
+                self.startup.wait_port(closed=True, timeout_seconds=1)
+            )
+        with mock.patch.object(
+            self.startup, 'port_in_use', side_effect=[False, True]
+        ), mock.patch.object(self.startup.time, 'sleep'):
+            self.assertTrue(
+                self.startup.wait_port(closed=False, timeout_seconds=1)
+            )
 
 
 if __name__ == '__main__':

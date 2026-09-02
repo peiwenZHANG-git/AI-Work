@@ -70,7 +70,12 @@ class MailAssistantTest(unittest.TestCase):
             mail_assistant.validate_body('bad\x00body')
 
     def test_generate_draft_via_ai_parses_json(self) -> None:
+        captured = {}
+
         def fake_post(url, headers=None, json=None, timeout=None):
+            captured['timeout'] = timeout
+            captured['max_tokens'] = json['max_tokens']
+            captured['model'] = json['model']
             return SimpleNamespace(
                 status_code=200,
                 json=lambda: {'choices': [{'message': {
@@ -81,6 +86,51 @@ class MailAssistantTest(unittest.TestCase):
         draft = generate_draft_via_ai('写一封会议提醒', 'key', transport=fake_post)
         self.assertEqual(draft['subject'], '会议提醒')
         self.assertEqual(draft['body'], '内容')
+        self.assertEqual(
+            mail_assistant.DRAFT_REQUEST_TIMEOUT_SECONDS,
+            captured['timeout'],
+        )
+        self.assertEqual(
+            mail_assistant.DRAFT_MAX_OUTPUT_TOKENS,
+            captured['max_tokens'],
+        )
+        self.assertEqual(mail_assistant.DEFAULT_SUMMARY_MODEL, captured['model'])
+
+    def test_generate_draft_network_failure_does_not_retry(self) -> None:
+        calls = []
+
+        def failing_post(url, headers=None, json=None, timeout=None):
+            calls.append(timeout)
+            raise mail_assistant.requests.ConnectionError('slow network')
+
+        with self.assertRaises(Exception):
+            generate_draft_via_ai('写一封简短邮件', 'key', transport=failing_post)
+
+        self.assertEqual(
+            [mail_assistant.DRAFT_REQUEST_TIMEOUT_SECONDS], calls
+        )
+
+    def test_ai_generate_draft_uses_local_fallback_on_api_failure(self) -> None:
+        with mock.patch.object(
+            mail_assistant, 'ensure_environment'
+        ), mock.patch.object(
+            mail_assistant, 'load_summary_api_key', return_value='key'
+        ), mock.patch.object(
+            mail_assistant,
+            'generate_draft_via_ai',
+            side_effect=mail_assistant.SummaryAPIError('network failed'),
+        ), mock.patch.object(
+            mail_assistant, 'record_health_event'
+        ) as record_event:
+            draft = mail_assistant.ai_generate_draft('写一封会议改期通知')
+
+        self.assertTrue(draft['fallback'])
+        self.assertIn('会议改期通知', draft['subject'])
+        self.assertIn('会议改期通知', draft['body'])
+        self.assertEqual([
+            mock.call('mail_assistant', 'error', 'draft_remote_failed'),
+            mock.call('mail_assistant', 'warning', 'draft_fallback'),
+        ], record_event.call_args_list)
 
     def test_generate_draft_via_ai_rejects_invalid_response(self) -> None:
         def bad_post(url, headers=None, json=None, timeout=None):

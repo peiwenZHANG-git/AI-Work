@@ -7,8 +7,10 @@ These instructions apply to the whole repository. This project is a Windows-only
 ## Project state maintenance
 
 - Before starting a significant development task, read `PROJECT_STATE.md` to restore current project context.
-- After completing work that changes goals, architecture, features, backend behavior, known issues, or the verification baseline, update `PROJECT_STATE.md` so it reflects the real repository state.
-- Verify `PROJECT_STATE.md` claims against the working tree, Git history, and required verification output before recording them; do not rely on conversation memory alone.
+- Before finishing any development task that changes the current implementation, project architecture, completed features, public interfaces, MCP tool count or tool list, dependencies or runtime environment, safety boundaries, known issues or blockers, test or verification baseline, current development focus, or next-step plan, re-check and update `PROJECT_STATE.md`. The task is not complete until this synchronization is done.
+- Base every `PROJECT_STATE.md` update on the actual repository state, current Git state and history, and the latest verification results; never infer it from an old chat, Project Memory, or stale state description.
+- If the task does not change any fact recorded in `PROJECT_STATE.md`, do not edit the file merely for formality.
+- Do not persist dynamic Git facts that can immediately become stale, such as the current HEAD hash, current branch, dirty/clean status, or unpushed commits; query them when needed instead.
 - Record only what a future AI/Codex session needs to resume work; do not log every minor edit.
 - Keep the project name and repository path at the top of `PROJECT_STATE.md`, and update its last-updated date whenever its content changes.
 
@@ -37,6 +39,7 @@ These instructions apply to the whole repository. This project is a Windows-only
 - Put confirmed sending of existing mailbox drafts in `windows_gui/mail_send.py`.
 - Put shared digest collection, Outlook refresh rotation, GLM enrichment, and digest rendering in `windows_gui/mail_digest.py`.
 - Scheduled digest runs must persist non-sensitive stage diagnostics (for example `last-attempt.json`) containing only status, counts, stage, and error type; never put sender, subject, body, URL, or credential material into diagnostics.
+- Shared health events must use fixed component/outcome/code allowlists and fixed summaries. Never accept or persist caller-provided detail, exception text, sender, recipient, subject, body, URL, or credential material in the event log.
 - Put one-time Outlook authorization-code login, PKCE, and loopback callback validation in `windows_gui/master_oauth.py`; expose it through `scripts/authenticate_master_mail.py`, not a FastMCP tool.
 - Put natural-language draft generation and local assistant draft/SMTP actions in `windows_gui/mail_assistant.py`; put the loopback HTTP UI in `scripts/mail_assistant_server.py`.
 - The local assistant HTTP server must guard background refresh startup with a lock, return generic details for unexpected failures, and send `nosniff`, `no-referrer`, frame protection, and CSP headers for HTML responses.

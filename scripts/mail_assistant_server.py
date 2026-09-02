@@ -23,7 +23,12 @@ from windows_gui.mail_assistant import (
 )
 from windows_gui.mail_digest import DIGEST_DIR
 from windows_gui.mail_digest import dismiss_mail_keys
+from windows_gui.mail_digest import dismissed_keys
+from windows_gui.mail_digest import filter_dismissed_html
+from windows_gui.mail_digest import remove_dismissed_from_latest_digest
 from windows_gui.mail_digest import run_digest_update
+from windows_gui.health_events import record_health_event
+from windows_gui.system_health import collect_dashboard_health
 
 
 PORT = 8931
@@ -97,6 +102,7 @@ class MailAssistantHandler(BaseHTTPRequestHandler):
         self.send_header('Content-Type', 'text/html; charset=utf-8')
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('Referrer-Policy', 'no-referrer')
+        self.send_header('Cache-Control', 'no-store')
         self.send_header('X-Frame-Options', 'SAMEORIGIN')
         self.send_header(
             'Content-Security-Policy',
@@ -115,6 +121,7 @@ class MailAssistantHandler(BaseHTTPRequestHandler):
         self.send_header('Content-Type', 'application/json; charset=utf-8')
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('Referrer-Policy', 'no-referrer')
+        self.send_header('Cache-Control', 'no-store')
         self.send_header('Content-Length', str(len(data)))
         self.end_headers()
         self.wfile.write(data)
@@ -132,10 +139,19 @@ class MailAssistantHandler(BaseHTTPRequestHandler):
             if not files:
                 self._send_html('<h1>还没有摘要，请先运行一次更新</h1>', 404)
                 return
-            self._send_html(files[-1].read_text(encoding='utf-8'))
+            html = files[-1].read_text(encoding='utf-8')
+            self._send_html(filter_dismissed_html(html, dismissed_keys()))
             return
         if path == '/api/status':
             self._send_json({'status': 'ok'})
+            return
+        if path == '/api/health':
+            try:
+                report = collect_dashboard_health(assistant_running=True)
+            except Exception:
+                self._send_json({'error': 'health_unavailable'}, 500)
+                return
+            self._send_json(report)
             return
         if path == '/api/refresh-status':
             self._send_json({
@@ -209,6 +225,9 @@ class MailAssistantHandler(BaseHTTPRequestHandler):
             self._send_json({'error': str(error)}, 400)
         except Exception as error:  # keep the server alive on surprises
             print(f'request failed: {type(error).__name__}', file=sys.stderr)
+            record_health_event(
+                'mail_assistant', 'error', 'assistant_request_failed'
+            )
             self._send_json({'error': 'internal_server_error'}, 500)
 
     def _handle_ai_draft(self, payload: dict) -> None:
@@ -245,7 +264,9 @@ class MailAssistantHandler(BaseHTTPRequestHandler):
         if not isinstance(keys, list):
             self._send_json({'error': 'keys must be a list'}, 400)
             return
-        dismissed = dismiss_mail_keys([str(key) for key in keys])
+        clean_keys = [str(key) for key in keys]
+        dismissed = dismiss_mail_keys(clean_keys)
+        remove_dismissed_from_latest_digest(set(clean_keys))
         self._send_json({'dismissed': dismissed})
 
     def _handle_send_mail(self, payload: dict) -> None:

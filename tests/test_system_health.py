@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
+from contextlib import redirect_stdout
 from pathlib import Path
 import subprocess
 from types import SimpleNamespace
@@ -297,7 +299,11 @@ class SystemHealthTests(unittest.TestCase):
             report = self.health.collect_health(task_runner=lambda *args, **kwargs: None)
 
         self.assertTrue(report['ok'])
-        self.assertFalse(report['checks'][-1]['ok'])
+        assistant = next(
+            check for check in report['checks']
+            if check['name'] == 'assistant_server'
+        )
+        self.assertFalse(assistant['ok'])
 
     def test_render_report_preserves_info_and_manual_check(self):
         report = {
@@ -312,6 +318,41 @@ class SystemHealthTests(unittest.TestCase):
         self.assertIn('[INFO] optional', rendered)
         self.assertIn('Overall: PASS', rendered)
         self.assertIn('MANUAL CHECK:', rendered)
+
+    def test_main_preserves_strict_legacy_health_gate(self):
+        failed = {'ok': False, 'checks': [
+            {'name': 'scheduled_task_definition', 'ok': False, 'required': True}
+        ]}
+        with mock.patch.object(
+            self.health, 'ensure_environment'
+        ), mock.patch.object(
+            self.health, 'collect_health', return_value=failed
+        ) as collect, mock.patch.object(
+            self.health, 'collect_dashboard_health'
+        ) as dashboard, redirect_stdout(io.StringIO()):
+            exit_code = self.health.main([])
+
+        self.assertEqual(1, exit_code)
+        collect.assert_called_once_with()
+        dashboard.assert_not_called()
+
+    def test_dashboard_flag_uses_shared_model(self):
+        report = {
+            'overall_status': 'UNKNOWN', 'components': [],
+            'recent_errors': [], 'side_effect_free': True,
+        }
+        with mock.patch.object(
+            self.health, 'ensure_environment'
+        ), mock.patch.object(
+            self.health, 'collect_health'
+        ) as legacy, mock.patch.object(
+            self.health, 'collect_dashboard_health', return_value=report
+        ) as dashboard, redirect_stdout(io.StringIO()):
+            exit_code = self.health.main(['--dashboard', '--json'])
+
+        self.assertEqual(0, exit_code)
+        dashboard.assert_called_once_with()
+        legacy.assert_not_called()
 
 
 if __name__ == '__main__':

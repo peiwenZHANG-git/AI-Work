@@ -39,6 +39,8 @@ from xml.sax.saxutils import escape
 import keyring
 import requests
 
+from windows_gui.health_events import record_health_event
+
 from windows_gui.imap_mail import (
     BACHELOR_IMAP_CREDENTIAL_SERVICE,
     BACHELOR_IMAP_CREDENTIAL_USERNAME,
@@ -438,11 +440,14 @@ def _chat_once(
     system_prompt: str,
     user_content: str,
     timeout: int = 45,
+    max_tokens: int = 2000,
+    attempts: int = 2,
+    retry_delay: float = 2.0,
 ) -> str:
     last_error: SummaryAPIError | None = None
-    for attempt in range(2):
+    for attempt in range(attempts):
         if attempt:
-            time.sleep(2)
+            time.sleep(retry_delay)
         try:
             response = post(
                 ZHIPU_CHAT_ENDPOINT,
@@ -457,7 +462,7 @@ def _chat_once(
                         {'role': 'user', 'content': user_content},
                     ],
                     'temperature': 0.2,
-                    'max_tokens': 2000,
+                    'max_tokens': max_tokens,
                 },
                 timeout=timeout,
             )
@@ -738,6 +743,42 @@ def _apply_dismissed_filter(mailboxes: list[MailboxDigest]) -> int:
                 continue
             kept.append(mail)
         box.emails = kept
+    return removed
+
+
+_MAIL_CARD_PATTERN = re.compile(
+    r'<article class="mail"\s+data-key="([0-9a-f]{40})".*?</article>',
+    re.DOTALL,
+)
+
+
+def filter_dismissed_html(html_text: str, keys: set[str]) -> str:
+    """Remove generated mail cards whose opaque keys are already dismissed."""
+    if not keys:
+        return html_text
+    return _MAIL_CARD_PATTERN.sub(
+        lambda match: '' if match.group(1) in keys else match.group(0),
+        html_text,
+    )
+
+
+def remove_dismissed_from_latest_digest(
+    keys: set[str], digest_dir: Path | None = None
+) -> int:
+    """Atomically remove newly dismissed cards from the current HTML artifact."""
+    directory = digest_dir or DIGEST_DIR
+    files = sorted(directory.glob('*.html'))
+    if not files or not keys:
+        return 0
+    path = files[-1]
+    original = path.read_text(encoding='utf-8')
+    filtered = filter_dismissed_html(original, keys)
+    if filtered == original:
+        return 0
+    removed = len(_MAIL_CARD_PATTERN.findall(original)) - len(
+        _MAIL_CARD_PATTERN.findall(filtered)
+    )
+    _atomic_write_text(path, filtered)
     return removed
 
 
@@ -1872,6 +1913,9 @@ def run_digest_update(
         )
         api_key = load_summary_api_key()
         enrich_digests(mailboxes, api_key)
+        # A user can dismiss a card while AI enrichment is still running.
+        # Re-read the store immediately before rendering to close that race.
+        _apply_dismissed_filter(mailboxes)
         digest_text = format_digest(mailboxes, generated_at)
         notes = '' if api_key else 'AI 摘要与全文翻译未启用（未配置 GLM 密钥，当前显示正文预览）'
         html_text = format_digest_html(mailboxes, generated_at, notes=notes)
@@ -1904,6 +1948,7 @@ def run_digest_update(
                 artifact_error=type(error).__name__,
                 attempt_path=attempt_path,
             )
+            record_health_event('mail_digest', 'error', 'digest_failed')
             return {
                 'ok': False,
                 'artifact_written': False,
@@ -1932,6 +1977,14 @@ def run_digest_update(
             artifact_written=True,
             attempt_path=attempt_path,
         )
+        if all_ok and toast_shown:
+            record_health_event('mail_digest', 'success', 'digest_completed')
+        elif not all_ok:
+            record_health_event('mail_digest', 'error', 'digest_failed')
+        else:
+            record_health_event(
+                'mail_digest', 'warning', 'digest_notification_warning'
+            )
         return {
             'ok': all_ok and toast_shown,
             'artifact_written': True,
@@ -1950,6 +2003,7 @@ def run_digest_update(
             error_type=type(error).__name__,
             attempt_path=attempt_path,
         )
+        record_health_event('mail_digest', 'error', 'digest_failed')
         raise
     finally:
         _release_run_lock()

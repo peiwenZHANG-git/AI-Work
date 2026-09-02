@@ -59,7 +59,22 @@ button.act.send:hover { background: #166534; }
 button:disabled { opacity: 0.55; cursor: wait; }
 #status { max-width: 1080px; margin: 0 auto 30px; padding: 0 16px; font-size: 13px; color: #52606d; min-height: 18px; }
 .mailbox-block { margin-top: 16px; }
+.health-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.health-card { background: #fff; border: 1px solid #e2e6ea; border-radius: 8px; padding: 15px 16px; }
+.health-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.health-name { font-weight: 600; }
+.health-badge { border-radius: 999px; padding: 3px 9px; font-size: 11px; font-weight: 700; }
+.health-badge.PASS { color: #166534; background: #dcfce7; }
+.health-badge.WARN { color: #92400e; background: #fef3c7; }
+.health-badge.FAIL { color: #991b1b; background: #fee2e2; }
+.health-badge.UNKNOWN { color: #475569; background: #e2e8f0; }
+.health-summary { margin: 9px 0 5px; color: #334155; font-size: 13px; }
+.health-time { color: #64748b; font-size: 12px; overflow-wrap: anywhere; }
+.health-errors { margin-top: 16px; }
+.health-error { padding: 9px 0; border-bottom: 1px solid #edf0f3; font-size: 13px; }
+.health-empty { color: #64748b; font-size: 13px; }
 @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } .tiles { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 700px) { .health-grid { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
@@ -68,6 +83,7 @@ button:disabled { opacity: 0.55; cursor: wait; }
   <nav class="tabs">
     <button class="tab active" data-tab="digest">今日摘要</button>
     <button class="tab" data-tab="ai">AI 写邮件</button>
+    <button class="tab" data-tab="health">系统状态</button>
   </nav>
   <div class="actions">
     <span class="update-hint" id="refresh-status"></span>
@@ -124,6 +140,18 @@ button:disabled { opacity: 0.55; cursor: wait; }
       </section>
     </div>
   </section>
+  <section id="tab-health" class="tab-panel">
+    <div class="digest-bar">
+      <span id="health-overall">系统状态尚未加载</span>
+      <button class="act" id="health-refresh">重新检测</button>
+    </div>
+    <div class="health-grid" id="health-grid"></div>
+    <section class="card health-errors">
+      <h2>最近错误</h2>
+      <div id="health-errors" class="health-empty">暂无已记录的脱敏错误。</div>
+    </section>
+  </section>
+  <div id="status" role="status" aria-live="polite"></div>
 </div>
 <script>
 const $ = (id) => document.getElementById(id);
@@ -134,27 +162,87 @@ document.querySelectorAll('.tab').forEach((tab) => {
     document.querySelectorAll('.tab-panel').forEach((p) => p.classList.remove('active'));
     tab.classList.add('active');
     document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
+    if (tab.dataset.tab === 'health') { loadHealth(); }
   });
 });
-async function api(path, payload) {
-  const response = await fetch(path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload || {}),
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok || data.error) { throw new Error(data.error || ('HTTP ' + response.status)); }
-  return data;
+async function api(path, payload, timeoutMs = 30000) {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(path, {
+      method: 'POST',
+      cache: 'no-store',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload || {}),
+      signal: controller.signal,
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.error) { throw new Error(data.error || ('HTTP ' + response.status)); }
+    return data;
+  } catch (error) {
+    if (error && error.name === 'AbortError') { throw new Error('请求超时，请检查网络后重试'); }
+    throw error;
+  } finally {
+    window.clearTimeout(timer);
+  }
 }
+const healthNames = {
+  mcp: 'MCP', mail_credentials: '邮箱凭据', mail_digest: '每日邮件摘要',
+  mail_assistant: 'AI 邮件助手', browser_cdp: '浏览器 / CDP', remote: 'Remote'
+};
+function appendText(parent, tag, className, text) {
+  const element = document.createElement(tag);
+  element.className = className;
+  element.textContent = text;
+  parent.appendChild(element);
+  return element;
+}
+async function loadHealth() {
+  const refresh = $('health-refresh');
+  refresh.disabled = true;
+  $('health-overall').textContent = '正在执行无副作用检测…';
+  try {
+    const response = await fetch('/api/health', { cache: 'no-store' });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) { throw new Error(data.error || ('HTTP ' + response.status)); }
+    $('health-overall').textContent = '总体状态：' + data.overall_status + ' · 检测时间：' + data.checked_at;
+    const grid = $('health-grid'); grid.replaceChildren();
+    (data.components || []).forEach((item) => {
+      const card = document.createElement('article'); card.className = 'health-card';
+      const head = document.createElement('div'); head.className = 'health-head'; card.appendChild(head);
+      appendText(head, 'span', 'health-name', healthNames[item.component] || item.component);
+      appendText(head, 'span', 'health-badge ' + item.status, item.status);
+      appendText(card, 'p', 'health-summary', item.summary || '');
+      appendText(card, 'div', 'health-time', '最近成功：' + (item.last_success_at || 'Unknown'));
+      appendText(card, 'div', 'health-time', '本次检测：' + (item.checked_at || data.checked_at));
+      grid.appendChild(card);
+    });
+    const errors = $('health-errors'); errors.replaceChildren();
+    if (!(data.recent_errors || []).length) {
+      errors.className = 'health-empty'; errors.textContent = '暂无已记录的脱敏错误。';
+    } else {
+      errors.className = '';
+      data.recent_errors.forEach((item) => appendText(
+        errors, 'div', 'health-error',
+        (healthNames[item.component] || item.component) + ' · ' + item.time + ' · ' + item.summary
+      ));
+    }
+  } catch (error) {
+    $('health-overall').textContent = '系统状态加载失败：' + error.message;
+  } finally { refresh.disabled = false; }
+}
+$('health-refresh').addEventListener('click', loadHealth);
 document.getElementById('generate').addEventListener('click', async () => {
   const button = $('generate');
   button.disabled = true; setStatus('AI 正在写草稿…');
   try {
-    const data = await api('/api/ai-draft', { instruction: $('instruction').value });
+    const data = await api('/api/ai-draft', { instruction: $('instruction').value }, 22000);
     $('to').value = data.to || '';
     $('subject').value = data.subject || '';
     $('draft-body').value = data.body || '';
-    setStatus('草稿已生成，可直接修改后保存或发送。');
+    setStatus(data.fallback
+      ? 'AI 服务暂时不可用，已生成可编辑的基础草稿。'
+      : '草稿已生成，可直接修改后保存或发送。');
   } catch (error) { setStatus('生成失败：' + error.message); }
   button.disabled = false;
 });

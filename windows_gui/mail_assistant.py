@@ -37,15 +37,16 @@ from windows_gui.imap_mail import (
     _default_imap_factory,
 )
 from windows_gui.mail_digest import (
+    DEFAULT_SUMMARY_MODEL,
     MailboxFlowError,
     MASTER_GRAPH_SCOPE,
     SummaryAPIError,
     _chat_once,
-    _resolve_model,
     ensure_environment,
     load_summary_api_key,
     refresh_master_graph_token,
 )
+from windows_gui.health_events import record_health_event
 
 
 ASSISTANT_SAVE_GRAPH_SCOPE = (
@@ -84,6 +85,9 @@ MAX_SUBJECT_CHARS = 200
 MAX_BODY_CHARS = 50_000
 PENDING_DRAFT_TTL_SECONDS = 15 * 60
 MAX_PENDING_DRAFTS = 16
+DRAFT_MODEL_ENVIRONMENT = 'AI_WORK_DRAFT_MODEL'
+DRAFT_REQUEST_TIMEOUT_SECONDS = 10
+DRAFT_MAX_OUTPUT_TOKENS = 1200
 PENDING_DRAFTS: dict[str, dict[str, Any]] = {}
 _PENDING_LOCK = threading.Lock()
 
@@ -141,7 +145,11 @@ def generate_draft_via_ai(
     model: str | None = None,
     transport: Any = None,
 ) -> dict[str, str]:
-    model_name = _resolve_model(model)
+    model_name = (
+        model
+        or os.environ.get(DRAFT_MODEL_ENVIRONMENT, '').strip()
+        or DEFAULT_SUMMARY_MODEL
+    )
     instruction = str(instruction or '').strip()
     if not instruction:
         raise AssistantError('请先输入写邮件的指令')
@@ -154,6 +162,9 @@ def generate_draft_via_ai(
         model_name,
         DRAFT_SYSTEM_PROMPT,
         str(instruction or '').strip(),
+        timeout=DRAFT_REQUEST_TIMEOUT_SECONDS,
+        max_tokens=DRAFT_MAX_OUTPUT_TOKENS,
+        attempts=1,
     )
     match = re.search(r'\{.*\}', content, re.DOTALL)
     parsed = None
@@ -169,6 +180,28 @@ def generate_draft_via_ai(
     return {
         'subject': validate_subject(parsed.get('subject')),
         'body': validate_body(parsed.get('body')),
+    }
+
+
+def build_local_fallback_draft(instruction: str) -> dict[str, str]:
+    """Return an editable draft when the remote writer is temporarily unavailable."""
+    clean = re.sub(r'\s+', ' ', str(instruction or '')).strip()
+    if not clean:
+        raise AssistantError('请先输入写邮件的指令')
+    subject_source = re.sub(
+        r'^(?:请)?(?:帮我)?写一封(?:关于)?', '', clean
+    ).strip('：: 。')
+    subject = subject_source[:60].strip(' ，,。；;') or '邮件通知'
+    body = (
+        '您好：\n\n'
+        f'{clean}\n\n'
+        '请您查收，如有疑问欢迎随时联系。\n\n'
+        '祝好'
+    )
+    return {
+        'subject': validate_subject(subject),
+        'body': validate_body(body),
+        'fallback': True,
     }
 
 
@@ -557,7 +590,15 @@ def ai_generate_draft(instruction: str) -> dict[str, str]:
         raise AssistantError('未配置 GLM 密钥，无法使用 AI 写邮件')
     if not str(instruction or '').strip():
         raise AssistantError('请先输入写邮件的指令')
-    return generate_draft_via_ai(instruction, api_key)
+    try:
+        draft = generate_draft_via_ai(instruction, api_key)
+        record_health_event('mail_assistant', 'success', 'draft_generated')
+        return draft
+    except SummaryAPIError:
+        record_health_event('mail_assistant', 'error', 'draft_remote_failed')
+        draft = build_local_fallback_draft(instruction)
+        record_health_event('mail_assistant', 'warning', 'draft_fallback')
+        return draft
 
 
 def _assistant_account(mailbox_id: str, credential_username: str) -> dict[str, str]:

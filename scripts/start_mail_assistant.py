@@ -103,6 +103,19 @@ def stop_assistant_pids(pids: list[int], *, runner=subprocess.run) -> None:
             raise RuntimeError(f'could not stop assistant process {pid}')
 
 
+def wait_assistant_pids(
+    script_path: Path, *, timeout_seconds: float = 3.0
+) -> list[int]:
+    """Boundedly wait for WMI to expose the exact process command line."""
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        pids = find_assistant_pids(script_path)
+        if pids:
+            return pids
+        time.sleep(0.1)
+    return find_assistant_pids(script_path)
+
+
 def server_python_executable() -> Path:
     current = Path(sys.executable)
     pythonw = current.with_name('pythonw.exe')
@@ -112,10 +125,10 @@ def server_python_executable() -> Path:
 def wait_port(closed: bool, *, timeout_seconds: float = 8.0) -> bool:
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
-        if port_in_use() == closed:
+        if port_in_use() != closed:
             return True
         time.sleep(0.1)
-    return port_in_use() == closed
+    return port_in_use() != closed
 
 
 def launch_server(no_refresh: bool = False) -> None:
@@ -139,7 +152,7 @@ def main(argv: list[str] | None = None) -> int:
     no_refresh = args.no_refresh
     if restart_requested:
         if port_in_use():
-            pids = find_assistant_pids(SERVER_SCRIPT)
+            pids = wait_assistant_pids(SERVER_SCRIPT)
             if not pids:
                 print('could not identify the exact assistant process', file=sys.stderr)
                 return 1

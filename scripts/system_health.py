@@ -39,7 +39,9 @@ from windows_gui.imap_mail import (
     QQ_IMAP_CREDENTIAL_SERVICE,
     QQ_IMAP_CREDENTIAL_USERNAME,
 )
+from windows_gui.health_events import read_health_events
 from windows_gui_mcp import mcp
+from windows_gui.system_health import collect_dashboard_health
 
 
 ASSISTANT_SERVER_PORT = 8931
@@ -400,6 +402,12 @@ def collect_health(
             'required': False,
             **check_assistant_server(timeout=assistant_timeout),
         },
+        {
+            'name': 'recent_health_events',
+            'required': False,
+            'ok': True,
+            **read_health_events(),
+        },
     ]
     return {
         'ok': all(check['ok'] for check in checks if check['required']),
@@ -408,6 +416,18 @@ def collect_health(
 
 
 def render_report(report: dict[str, Any]) -> str:
+    if 'components' in report:
+        lines = ['AI-Work system health']
+        for component in report['components']:
+            lines.append(
+                f"[{component['status']}] {component['component']}: "
+                f"{component['summary']}"
+            )
+        lines.append(f"Overall: {report['overall_status']}")
+        lines.append(
+            'MANUAL CHECK: real desktop GUI and live mailbox authorization require explicit user authorization.'
+        )
+        return '\n'.join(lines)
     lines = ['AI-Work system health']
     for check in report['checks']:
         marker = 'PASS' if check['ok'] else ('INFO' if not check['required'] else 'FAIL')
@@ -422,13 +442,19 @@ def render_report(report: dict[str, Any]) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--json', action='store_true', help='print the JSON report')
+    parser.add_argument(
+        '--dashboard', action='store_true',
+        help='use the shared PASS/WARN/FAIL/UNKNOWN dashboard model',
+    )
     args = parser.parse_args(argv)
     ensure_environment()
-    report = collect_health()
+    report = collect_dashboard_health() if args.dashboard else collect_health()
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:
         print(render_report(report))
+    if args.dashboard:
+        return 1 if report['overall_status'] == 'FAIL' else 0
     return 0 if report['ok'] else 1
 
 

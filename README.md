@@ -20,6 +20,7 @@
 - `mail_digest.py`：计划任务摘要、Outlook refresh 轮换、GLM 摘要/翻译和本地 HTML 渲染。
 - `master_oauth.py` / `scripts/authenticate_master_mail.py`：一次性 Outlook OAuth 登录和 refresh token 安全写入。
 - `mail_assistant.py` / `scripts/mail_assistant_server.py`：本机 AI 草稿助手和 `127.0.0.1:8931` 页面。
+- `health_events.py` / `system_health.py`：有界脱敏健康事件和助手页面共享的四态只读健康模型。
 - `scripts/configure_mail_credentials.py`：交互式写入白名单凭据；输入不回显，密钥不从命令行或日志传递。
 - `scripts/system_health.py`：本机只读健康检查，验证配置/凭据存在性、MCP 注册、计划任务、助手服务和最近摘要运行状态。
 - `scripts/install_scheduled_tasks.py`：幂等恢复每日摘要计划任务；只注册任务，不自动触发邮件读取。
@@ -163,8 +164,8 @@ Smoke test 只使用唯一命名的专用记事本文件，测试结果写入 `t
 - 草稿创建工具只保存，不发送；返回包含邮箱、状态、draft reference、收件人和主题，不返回正文。
 - 硕士 Outlook 在 Graph 可用时先调用 `/me` 校验登录账号，再用 `/me/messages` 创建草稿；Graph 未配置、未认证、token 失效或请求失败时回退已验证 Edge Profile。
 - 本科网易和 QQ 邮箱复用现有 Edge Profile / 服务域名校验，再通过 UIA 查找显式的新建邮件、收件人、主题、正文和存草稿控件；找不到必需控件时失败，不会改用发送或关闭窗口动作。
-- QQ 邮箱权限更新为 READ + DRAFT，但仍不允许 SEND。所有邮箱都未实现 Reply、Forward 或 Attachment；Send 只能通过 `send_mail_draft` 发送已有草稿。
-- Graph 草稿路径需要委托 token 具备 `Mail.ReadWrite`；当前未实现 OAuth 登录流程，也不会在源码或配置中保存授权码、密码、cookie、sid 或 token。
+- QQ 邮箱权限更新为 READ + DRAFT，但仍不允许 SEND。当前未实现 Reply、Forward 或带附件的草稿/发送；摘要只显示附件名称、MIME 类型和大小，不下载或解码附件。Send 只能通过 `send_mail_draft` 发送已有草稿。
+- Graph 草稿路径需要委托 token 具备 `Mail.ReadWrite`；项目已提供一次性 authorization code + PKCE 登录命令。源码和普通配置不会保存授权码、密码、cookie、sid 或 token，refresh token 只写入 Windows Credential Manager。
 
 ### 统一发送已有草稿
 
@@ -192,11 +193,13 @@ Smoke test 只使用唯一命名的专用记事本文件，测试结果写入 `t
 ### 本机健康检查
 
 - 运行 `python scripts/system_health.py` 查看文本报告，或加 `--json` 供自动化消费；必需检查失败时退出码为 1。
+- 使用 `--dashboard` 可输出与助手页“系统状态”一致的 `PASS` / `WARN` / `FAIL` / `UNKNOWN` 四态模型；默认模式继续保留严格的环境、计划任务定义和摘要新鲜度门禁。
 - 检查范围限于本机配置和运行状态：环境变量名存在性、Credential Manager 条目存在性、36 个 MCP 工具注册、计划任务、最近 `last-run.json` 状态和助手服务状态。
 - 摘要健康检查要求邮箱状态全部为 `READY`/`EMPTY_TODAY`，且报告不超过 13 小时（覆盖每日 10:00/22:00 两次调度）；Toast 是否显示单独作为可选 INFO，不与邮件读取健康混在一起。
 - 摘要 HTML 和 `last-run.json` 使用临时文件加原子替换写入；状态包含 `ok`、邮箱读取结果、计数和 Toast 状态。状态写入失败会让任务显式失败，不会留下“任务成功但报告过期”的假信号。
 - `last-attempt.json` 记录运行阶段、邮箱状态/计数和错误类型；它不包含发件人、主题、正文、URL 或凭据，用于在任务失败但 `last-run.json` 未更新时定位阶段。
 - 如果运行锁被并发刷新占用，本次摘要跳过时返回失败；这避免计划任务在 `last-run.json` 仍过期时误报成功。
+- 助手页 `/api/health` 只执行本机只读检查，不启动浏览器、邮件读取或远程探测；最近错误来自固定代码/摘要白名单的有界日志，不包含邮件字段、URL、异常原文或凭据。
 
 ### 计划任务恢复
 
@@ -216,7 +219,7 @@ Smoke test 只使用唯一命名的专用记事本文件，测试结果写入 `t
 ### Outlook Graph 后端
 
 - 摘要和搜索路径保持 READ-only，仅需委托 token 具备 `Mail.Read`。
-- 草稿创建路径需要委托 token 具备 `Mail.ReadWrite`；当前未实现 OAuth 登录流程。
+- 草稿创建路径需要委托 token 具备 `Mail.ReadWrite`；一次性 OAuth 登录流程由 `scripts/authenticate_master_mail.py` 提供。
 - 发送已有草稿路径需要既有委托 token 额外具备 `Mail.Send`；未配置或不具备权限时返回不可发送错误，不会回退到 Edge 发送。
 - Graph 请求只读取 `sender`、`subject`、`receivedDateTime` 和最多 10 条列表元数据，不读取正文，不改变已读状态。
 - 非秘密配置来自环境变量：`AI_WORK_OUTLOOK_TENANT_ID`、`AI_WORK_OUTLOOK_CLIENT_ID`、`AI_WORK_OUTLOOK_MAILBOX`。
