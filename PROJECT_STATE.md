@@ -12,7 +12,9 @@
 
 兼容性基线：保留 `windows_gui_mcp.py` stdio 入口、服务器名 `windows-gui` 和导出的 `mcp` 对象；经用户于 2026-09-02 明确批准扩展后，36 个 MCP 工具恰好注册一次；原有 28 个工具的签名和返回结构保持不变；PyAutoGUI `FAILSAFE` 开启；ASCII 文本走 PyAutoGUI，非 ASCII 文本走原生 `SendInput`。
 
-邮箱目标：在固定 Edge Profile 与最小权限边界内提供 READ、DRAFT、SEND 流程；所有发送必须先创建草稿并获得显式确认；QQ 邮箱永不发送；身份或服务域名无法确认时立即停止处理。
+当前开发重点：邮箱能力已达用户可接受的成熟度，进入 maintenance mode；后续只接受 bug 修复、安全修复和真实使用反馈驱动的维护，不再作为主要功能扩展方向。下一阶段优先考虑 Remote、Browser Agent 和统一任务/确认中心，同时保持既有 MCP 公共接口、身份边界与显式确认安全模型。
+
+邮箱稳定边界：继续保留固定 Edge Profile、READ/DRAFT/SEND 最小权限流程；所有发送必须先创建草稿并获得显式确认，QQ 邮箱永不发送，身份或服务域名无法确认时立即停止处理。
 
 ## 2. 架构
 
@@ -70,7 +72,9 @@
 ## 4. 当前工作
 
 - `.vscode/mcp.json`：本机 GitHub MCP 配置，按既定决定保持本地修改，不提交、不还原。
-- 最新完整验证基线（2026-09-02 邮箱工作流收尾实测）：`python -m compileall -q windows_gui_mcp.py windows_gui tests` 通过；`python -m unittest discover -s tests -t . -v` 共 354 项全部通过；独立 MCP 检查确认 36 个工具唯一注册；`git diff --check` 通过（仅 LF/CRLF 转换提示）。全部单测继续 mock 网络、邮箱、AI、桌面和发送副作用，未读取真实邮箱、未调用真实 AI、未运行真实桌面 smoke。
+- 邮箱能力已进入 maintenance mode：没有进行中的邮箱功能扩展；后续变更仅由 bug、安全问题和真实使用反馈触发，并且必须继续满足既有邮箱安全边界。
+- 当前进行中工作是下一阶段方向准备：优先评估 Remote、Browser Agent 和统一任务/确认中心的现有能力、安全边界、交互模型与兼容性约束；尚未开始新的实现，也未批准公共接口变更。
+- 最新完整验证基线（2026-09-02 收尾实测）：`python -m compileall -q windows_gui_mcp.py windows_gui tests` 通过；`python -m unittest discover -s tests -t . -v` 共 354 项全部通过；独立 MCP 检查确认 36 个工具唯一注册；`git diff --check` 通过（仅 LF/CRLF 转换提示）。全部单测继续 mock 网络、邮箱、AI、桌面和发送副作用，未读取真实邮箱、未调用真实 AI、未运行真实桌面 smoke。
 
 ## 5. 已知问题与阻塞
 
@@ -100,10 +104,10 @@
 
 ## 7. 下一步
 
-1. 在用户显式授权的交互会话中执行一次真实 Outlook 登录并验证租户端到端授权；当前所需 7 个凭据条目均已存在，无需重复配置助手授权码。
-2. 每次提交前运行规定验证：compileall、完整单元测试、36 工具注册检查、`git diff --check`。
-3. 真实桌面验证仅在用户明确授权后运行 `python tests/smoke_test.py`；邮箱只读 smoke 仅在另行授权时使用 `--mailbox-readonly`。
-4. 本科网易 Edge 发送仅在能稳定定位并校验既有草稿后再实现，不以模糊 draft hash 换取表面可用性。
+1. 下一阶段优先开展 Remote、Browser Agent 和统一任务/确认中心的能力审计与方案设计：明确复用范围、安全边界、确认流、健康状态和公共接口兼容性；实现前需先获得用户批准。
+2. 邮箱只进入 maintenance mode：遇到 bug、安全问题或真实使用反馈时先做影响评估；保持 QQ 永不发送、两阶段确认、只读约束和身份/域名校验不变。
+3. 每次提交前运行规定验证：compileall、完整单元测试、36 工具注册检查、`git diff --check`。
+4. 真实桌面验证仅在用户明确授权后运行 `python tests/smoke_test.py`；邮箱只读 smoke 仅在另行授权时使用 `--mailbox-readonly`。
 5. 在用户授权真实桌面测试后，验证专用持久 Edge Profile 的启动、手工登录、DOM 检查和登录态下载；真实测试不得提交表单或覆盖文件。
 
 ## 8. 最近一次更新
