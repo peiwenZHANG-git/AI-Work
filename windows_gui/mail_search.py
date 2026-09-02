@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
+import re
 
 from .mail_backends import (
     BackendStatus,
@@ -40,6 +41,190 @@ _STATUS_MAP = {
     BackendStatus.REQUEST_FAILED: 'ERROR',
     BackendStatus.FALLBACK_REQUIRED: 'NOT_READY',
 }
+_MAX_NL_QUERY_CHARS = 300
+_MAX_NL_KEYWORD_CHARS = 100
+_NUMBER_WORDS = {'一': 1, '两': 2, '二': 2, '三': 3, '四': 4, '五': 5}
+_RELATIVE_TIME_RE = re.compile(
+    r'(?:最近|近|过去)\s*(\d+|[一二两三四五])?\s*'
+    r'(天|日|周|星期|个?月)'
+)
+
+
+def parse_natural_mail_query(
+    query: str,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Convert a small Chinese query into READ-only backend query fields."""
+    original = ' '.join(str(query or '').split())
+    if not original:
+        raise ValueError('query cannot be empty')
+    if len(original) > _MAX_NL_QUERY_CHARS:
+        raise ValueError(f'query must be at most {_MAX_NL_QUERY_CHARS} characters')
+    reference = now or datetime.now().astimezone()
+    local_tz = reference.tzinfo
+    start_time: datetime | None = None
+    end_time: datetime | None = None
+    working = original
+
+    day_match = re.search(r'(\d{4})-(\d{1,2})-(\d{1,2})', working)
+    if day_match:
+        try:
+            start_day = datetime(
+                int(day_match.group(1)), int(day_match.group(2)),
+                int(day_match.group(3)), tzinfo=local_tz,
+            )
+        except ValueError as error:
+            raise ValueError('query contains an invalid date') from error
+        working = working.replace(day_match.group(0), '', 1)
+        later = re.search(
+            r'(?:到|至|to)\s*(\d{4})-(\d{1,2})-(\d{1,2})',
+            working,
+            re.IGNORECASE,
+        )
+        if later:
+            try:
+                end_day = datetime(
+                    int(later.group(1)), int(later.group(2)),
+                    int(later.group(3)), 23, 59, 59, tzinfo=local_tz,
+                )
+            except ValueError as error:
+                raise ValueError('query contains an invalid date') from error
+            working = working.replace(later.group(0), '', 1)
+            end_time = end_day
+        else:
+            end_time = start_day + timedelta(days=1) - timedelta(seconds=1)
+        start_time = start_day
+    else:
+        relative = _RELATIVE_TIME_RE.search(working)
+        if relative:
+            raw_number = relative.group(1) or '1'
+            try:
+                amount = int(raw_number)
+            except ValueError:
+                amount = _NUMBER_WORDS.get(raw_number, 1)
+            unit = relative.group(2)
+            amount = max(1, amount)
+            if unit in ('周', '星期'):
+                delta = timedelta(weeks=amount)
+            elif '月' in unit:
+                delta = timedelta(days=30 * amount)
+            else:
+                delta = timedelta(days=amount)
+            start_time = reference - delta
+            end_time = reference
+            working = working.replace(relative.group(0), '', 1)
+        elif re.search(r'今天|今日', working):
+            start_time = reference.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_time = start_time + timedelta(days=1) - timedelta(seconds=1)
+            working = re.sub(r'今天|今日', '', working, count=1)
+        elif re.search(r'昨天|昨日', working):
+            start_day = (reference - timedelta(days=1)).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+            start_time = start_day
+            end_time = start_day + timedelta(days=1) - timedelta(seconds=1)
+            working = re.sub(r'昨天|昨日', '', working, count=1)
+
+    specific = None
+    for pattern in (
+        r'(?:关于|有关|包含)\s*(.+?)\s*(?:的)?邮件$',
+        r'(?:学校|大学|学院)(?:发送?的?|发来的?)\s*(.+?)\s*(?:的)?邮件$',
+    ):
+        match = re.search(pattern, working)
+        if match:
+            specific = match.group(1)
+            working = ''
+            break
+    if specific is None:
+        working = re.sub(
+            r'^(?:请|帮我|帮忙)?(?:找|查找|搜索|搜一下|看看)',
+            '',
+            working,
+        )
+        working = re.sub(r'(?:的)?邮件$', '', working)
+        working = re.sub(
+            r'(?:学校|大学|学院)(?:发送?的?|发来的?)',
+            '',
+            working,
+        )
+        working = re.sub(r'关于|有关|包含|最近|近', '', working)
+        specific = working.strip(' 的，。,.；;')
+
+    keyword = str(specific or '').strip()
+    sender = None
+    if not keyword:
+        if original != working and re.search(r'学校|大学|学院', original):
+            sender = '学校'
+        else:
+            raise ValueError('query must contain a keyword or sender')
+    if len(keyword) > _MAX_NL_KEYWORD_CHARS:
+        raise ValueError(
+            f'keyword must be at most {_MAX_NL_KEYWORD_CHARS} characters'
+        )
+    return {
+        'keyword': keyword or None,
+        'sender': sender,
+        'start_time': start_time,
+        'end_time': end_time,
+    }
+
+
+def natural_language_mail_search(
+    query: str,
+    *,
+    max_results: int = 20,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Run existing READ-only search and return a concise safe summary."""
+    if not 1 <= max_results <= _MAX_SEARCH_RESULTS:
+        raise ValueError(
+            f'max_results must be between 1 and {_MAX_SEARCH_RESULTS}'
+        )
+    parsed = parse_natural_mail_query(query, now=now)
+    result = search_mailboxes(
+        keyword=parsed['keyword'],
+        sender=parsed['sender'],
+        start_time=(
+            parsed['start_time'].isoformat() if parsed['start_time'] else None
+        ),
+        end_time=parsed['end_time'].isoformat() if parsed['end_time'] else None,
+        max_results=max_results,
+    )
+    results = [
+        {
+            'mailbox_id': email['mailbox_id'],
+            'sender': email['sender'],
+            'subject': email['subject'],
+            'received_time': email['received_time'],
+            'reference_kind': email['reference_kind'],
+        }
+        for group in result['mailboxes']
+        for email in group.get('results', [])
+    ]
+    failed_mailboxes = [
+        {'mailbox_id': group['mailbox_id'], 'status': group['status']}
+        for group in result['mailboxes']
+        if group.get('status') != 'READY'
+    ]
+    return {
+        'query': {
+            'text': ' '.join(str(query or '').split()),
+            'keyword': parsed['keyword'],
+            'sender': parsed['sender'],
+            'start_time': (
+                parsed['start_time'].isoformat() if parsed['start_time'] else None
+            ),
+            'end_time': (
+                parsed['end_time'].isoformat() if parsed['end_time'] else None
+            ),
+        },
+        'result_count': len(results),
+        'results': results,
+        'failed_mailboxes': failed_mailboxes,
+        'read_state_change': 'NONE',
+        'search_scope': 'READ_ONLY_METADATA',
+    }
 
 
 def _parse_time_boundary(value: str) -> datetime:
@@ -296,4 +481,4 @@ def search_mailboxes(
     }
 
 
-__all__ = ['search_mailboxes']
+__all__ = ['search_mailboxes', 'natural_language_mail_search']

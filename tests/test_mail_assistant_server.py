@@ -93,6 +93,16 @@ class MailAssistantServerSecurityTests(unittest.TestCase):
         for status in ('PASS', 'WARN', 'FAIL', 'UNKNOWN'):
             self.assertIn(f'.health-badge.{status}', html)
 
+    def test_assistant_page_contains_new_local_workflows(self):
+        html = mail_assistant.build_assistant_page()
+        self.assertIn('data-tab="todo"', html)
+        self.assertIn('data-tab="search"', html)
+        self.assertIn('id="generate-reply"', html)
+        self.assertIn("fetch('/api/today-todos?limit=12'", html)
+        self.assertIn("api('/api/mail-search'", html)
+        self.assertIn("api('/api/ai-reply-draft'", html)
+        self.assertIn("sessionStorage.getItem('ai-reply')", html)
+
     def test_health_endpoint_uses_shared_read_only_collector(self):
         handler = object.__new__(self.server.MailAssistantHandler)
         handler.path = '/api/health'
@@ -290,6 +300,118 @@ class MailAssistantSendFlowTests(unittest.TestCase):
             'Body',
         )
         send.assert_called_once_with('pending-token')
+
+    def _post(self, path: str, body: bytes):
+        handler = object.__new__(self.server.MailAssistantHandler)
+        handler.path = path
+        handler.headers = {
+            'Host': '127.0.0.1:8931',
+            'Content-Type': 'application/json',
+            'Content-Length': str(len(body)),
+        }
+        handler.rfile = io.BytesIO(body)
+        responses = []
+        handler._send_json = lambda payload, code=200: responses.append(
+            (payload, code)
+        )
+        handler.do_POST()
+        return responses
+
+    def test_mail_search_query_errors_are_client_errors(self):
+        responses = self._post(
+            '/api/mail-search',
+            b'{"query":"x","limit":"bad"}',
+        )
+        self.assertEqual(
+            [({'error': '搜索数量必须是 1 到 50 的整数'}, 400)],
+            responses,
+        )
+
+    def test_ai_reply_endpoint_only_generates_a_draft(self):
+        replies = []
+
+        def generate(key, instruction):
+            replies.append((key, instruction))
+            return {
+                'to': 'teacher@example.edu',
+                'subject': 'Re: Meeting',
+                'body': 'Draft body',
+                'fallback': False,
+                'source': {'key': key},
+            }
+
+        responses = []
+        with mock.patch.object(
+            self.server, 'generate_reply_draft', side_effect=generate
+        ) as generate_mock:
+            handler = object.__new__(self.server.MailAssistantHandler)
+            handler.path = '/api/ai-reply-draft'
+            handler.headers = {
+                'Host': '127.0.0.1:8931',
+                'Content-Type': 'application/json',
+                'Content-Length': '66',
+            }
+            body = (
+                '{"key":"' + 'a' * 40 + '","instruction":"reply",'
+                '"mailbox_id":"bachelor_mail"}'
+            ).encode()
+            handler.headers['Content-Length'] = str(len(body))
+            handler.rfile = io.BytesIO(body)
+            handler._send_json = lambda payload, code=200: responses.append(
+                (payload, code)
+            )
+            handler.do_POST()
+
+        self.assertEqual([('a' * 40, 'reply')], replies)
+        self.assertEqual('bachelor_mail', responses[0][0]['mailbox_id'])
+        generate_mock.assert_called_once()
+
+    def test_mail_search_endpoint_uses_readonly_natural_language(self):
+        result = {
+            'query': {'keyword': 'internship'},
+            'result_count': 0,
+            'results': [],
+            'failed_mailboxes': [],
+            'read_state_change': 'NONE',
+        }
+        with mock.patch.object(
+            self.server,
+            'natural_language_mail_search',
+            return_value=result,
+        ) as search:
+            responses = self._post(
+                '/api/mail-search',
+                b'{"query":"find internship mail","limit":7}',
+            )
+
+        self.assertEqual([result], [payload for payload, code in responses])
+        search.assert_called_once_with(
+            'find internship mail', max_results=7
+        )
+
+    def test_today_todos_endpoint_reads_only_latest_digest(self):
+        report = {'item_count': 0, 'items': [], 'read_state_change': 'NONE'}
+        handler = object.__new__(self.server.MailAssistantHandler)
+        handler.path = '/api/today-todos?limit=5'
+        handler.headers = {'Host': '127.0.0.1:8931'}
+        responses = []
+        handler._send_json = lambda payload, code=200: responses.append(
+            (payload, code)
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, 'older.html').write_text('<html></html>')
+            Path(directory, 'latest.html').write_text('<html>latest</html>')
+            with mock.patch.object(
+                self.server, 'DIGEST_DIR', Path(directory)
+            ), mock.patch.object(
+                self.server,
+                'build_today_action_items',
+                return_value=report,
+            ) as build:
+                handler.do_GET()
+
+        self.assertEqual([(report, 200)], responses)
+        build.assert_called_once()
 
 
 class AssistantRestartTests(unittest.TestCase):

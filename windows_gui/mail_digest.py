@@ -28,8 +28,9 @@ import winreg
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from email.utils import parseaddr, parsedate_to_datetime
+from html.parser import HTMLParser
 from html import unescape
 from pathlib import Path
 from typing import Any
@@ -178,6 +179,7 @@ class DigestMail:
     importance: str = '低'
     attachments: list[AttachmentInfo] = field(default_factory=list)
     source_reference: str = ''
+    sender_address: str = ''
 
 
 @dataclass
@@ -990,6 +992,7 @@ def _imap_message_to_mail(item: Any) -> DigestMail:
     sender = display_name or address or str(message.get('From') or '')
     return DigestMail(
         sender=sender,
+        sender_address=address,
         subject=str(message.get('Subject') or ''),
         time=time_text,
         body_text=extract_body_text(message),
@@ -1244,6 +1247,7 @@ def collect_master_digest() -> MailboxDigest:
         sender_info = (item.get('sender') or {}).get('emailAddress') or {}
         mail = DigestMail(
             sender=str(sender_info.get('name') or sender_info.get('address') or ''),
+            sender_address=str(sender_info.get('address') or ''),
             subject=str(item.get('subject') or ''),
             time=received_raw,
             body_text=graph_body_text(item.get('body')),
@@ -1386,6 +1390,9 @@ def _render_mail_list_item(mail: Any, mailbox_id: str) -> str:
     return (
         f'<article class="mail" data-key="{_escape_attr(_mail_dismiss_key(mailbox_id, mail))}" '
         f'data-mailbox="{_escape_attr(mailbox_id)}" '
+        f'data-sender="{_escape_attr(mail.sender)}" '
+        f'data-sender-address="{_escape_attr(getattr(mail, "sender_address", ""))}" '
+        f'data-subject="{_escape_attr(mail.subject)}" '
         f'data-importance="{_escape_attr(importance)}" '
         f'data-date="{_escape_attr(date_text)}" '
         f'data-search="{_escape_attr(search_text)}">'
@@ -1399,6 +1406,9 @@ def _render_mail_list_item(mail: Any, mailbox_id: str) -> str:
         'stroke-linecap="round" stroke-linejoin="round"/></svg>'
         '</button>'
         '<span class="mail-dismiss-wrap">'
+        '<button class="mail-reply" type="button" '
+        f'data-reply-key="{_escape_attr(_mail_dismiss_key(mailbox_id, mail))}" '
+        'title="用 AI 生成回复草稿；不会发送邮件">AI 回复</button>'
         '<button class="mail-dismiss" type="button" '
         'title="标记为已处理：从摘要中隐藏，不影响邮箱里的已读状态">已读</button>'
         '</span>'
@@ -1406,6 +1416,233 @@ def _render_mail_list_item(mail: Any, mailbox_id: str) -> str:
         f'<div class="mail-detail">{attachment_html}{translation_html}{original_html}</div>'
         '</article>'
     )
+
+
+class _DigestCardParser(HTMLParser):
+    """Extract the bounded, already-rendered cards from a digest artifact."""
+
+    _TEXT_CLASSES = {
+        'time', 'sender', 'subject', 'mail-summary', 'translation',
+        'original-body', 'attachment-name',
+    }
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.cards: list[dict[str, Any]] = []
+        self._card_depth = 0
+        self._current: dict[str, Any] | None = None
+        self._text_class: str | None = None
+        self._text_depth = 0
+        self._text_parts: list[str] = []
+
+    @staticmethod
+    def _classes(attrs: list[tuple[str, str | None]]) -> set[str]:
+        values = dict(attrs).get('class') or ''
+        return set(values.split())
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        classes = self._classes(attrs)
+        if tag == 'article' and 'mail' in classes and self._current is None:
+            self._card_depth = 1
+            raw = dict(attrs)
+            self._current = {
+                'key': str(raw.get('data-key') or ''),
+                'mailbox_id': str(raw.get('data-mailbox') or ''),
+                'sender': str(raw.get('data-sender') or ''),
+                'sender_address': str(raw.get('data-sender-address') or ''),
+                'subject': str(raw.get('data-subject') or ''),
+                'importance': str(raw.get('data-importance') or '低'),
+                'date': str(raw.get('data-date') or ''),
+                'time': '',
+                'summary': '',
+                'translation': '',
+                'body': '',
+                'attachments': [],
+            }
+            return
+        if self._current and classes.intersection(self._TEXT_CLASSES):
+            self._text_class = next(
+                name for name in classes if name in self._TEXT_CLASSES
+            )
+            self._text_depth = 1
+            self._text_parts = []
+        elif self._text_depth:
+            if tag not in {
+                'br', 'img', 'input', 'meta', 'link', 'hr',
+            }:
+                self._text_depth += 1
+
+    def handle_data(self, data: str) -> None:
+        if self._text_class is not None:
+            self._text_parts.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if self._text_class is not None:
+            self._text_depth -= 1
+            if self._text_depth <= 0:
+                text = ' '.join(''.join(self._text_parts).split())
+                assert self._current is not None
+                if self._text_class == 'mail-summary':
+                    self._current['summary'] = text
+                elif self._text_class == 'time':
+                    self._current['time'] = text
+                elif self._text_class == 'attachment-name':
+                    if text:
+                        self._current['attachments'].append(text)
+                elif self._text_class == 'translation':
+                    self._current['translation'] = text
+                elif self._text_class == 'original-body':
+                    self._current['body'] = text
+                elif self._text_class == 'subject':
+                    for importance in VALID_IMPORTANCE:
+                        if text.startswith(importance):
+                            text = text[len(importance):].strip()
+                            break
+                    self._current['_visible_subject'] = text
+                self._text_class = None
+                self._text_depth = 0
+                self._text_parts = []
+        if self._card_depth:
+            if tag == 'article' and self._current is not None:
+                self._card_depth -= 1
+                if self._card_depth == 0 and self._current is not None:
+                    # Older artifacts do not carry machine-readable sender and
+                    # subject attributes; fall back to their visible text only.
+                    if not self._current.get('subject'):
+                        visible_subject = self._current.get('_visible_subject', '')
+                        self._current['subject'] = visible_subject
+                    self.cards.append(self._current)
+                    self._current = None
+
+
+def extract_digest_mail_cards(html_text: str) -> list[dict[str, Any]]:
+    """Read mail cards from a generated digest without contacting a mailbox."""
+    parser = _DigestCardParser()
+    parser.feed(str(html_text or ''))
+    parser.close()
+    cards = []
+    for item in parser.cards:
+        item.pop('_visible_subject', None)
+        cards.append(item)
+    return cards
+
+
+def _digest_card_due_date(card: dict[str, Any]) -> date | None:
+    text = ' '.join(str(card.get(key) or '') for key in (
+        'subject', 'summary', 'translation', 'body',
+    ))
+    today = date.today()
+    patterns = (
+        (r'(\d{4})-(\d{1,2})-(\d{1,2})', 'ymd'),
+        (r'(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日', 'ymd'),
+        (r'(\d{1,2})\s*月\s*(\d{1,2})\s*日', 'md'),
+        (r'\b(\d{1,2})/(\d{1,2})/(\d{4})\b', 'dmy'),
+    )
+    for pattern, kind in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if not match:
+            continue
+        try:
+            if kind == 'ymd':
+                return date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+            if kind == 'md':
+                return date(today.year, int(match.group(1)), int(match.group(2)))
+            return date(int(match.group(3)), int(match.group(2)), int(match.group(1)))
+        except ValueError:
+            continue
+    return None
+
+
+def _classify_digest_card(card: dict[str, Any]) -> dict[str, Any] | None:
+    subject = str(card.get('subject') or '')
+    summary = str(card.get('summary') or '')
+    content = ' '.join((
+        subject,
+        summary,
+        str(card.get('translation') or ''),
+        str(card.get('body') or ''),
+    ))
+    importance = str(card.get('importance') or '低')
+    action_terms = (
+        '回复', '答复', '确认', '提交', '填写', '缴费', '付款', '报名',
+        '申请', '预约', '参加', '上传', '签字', 'respond', 'reply',
+        'confirm', 'submit', 'register', 'pay',
+    )
+    deadline_terms = ('截止', '期限', 'deadline', 'before')
+    school_terms = (
+        '学校', '大学', '学院', '教务', '行政', '注册', '学费', '奖学金',
+        'campus', 'university', 'université', 'école', 'scolarité',
+    )
+    due_date = _digest_card_due_date(card)
+    is_deadline = (
+        due_date is not None
+        or any(term in content.casefold() for term in deadline_terms)
+    )
+    is_action = any(term in content.casefold() for term in action_terms)
+    is_school = any(term in content.casefold() for term in school_terms)
+    is_important = importance == '高'
+    if not any((is_deadline, is_action, is_school, is_important)):
+        return None
+    if is_deadline:
+        item_type = 'deadline'
+        reason = '存在截止日期或办理期限'
+    elif is_action:
+        item_type = 'action'
+        reason = '疑似需要回复或办理'
+    elif is_school:
+        item_type = 'school_admin'
+        reason = '学校或行政通知'
+    else:
+        item_type = 'important'
+        reason = 'AI 摘要判定为高重要度'
+    return {
+        'key': card.get('key'),
+        'mailbox_id': card.get('mailbox_id'),
+        'type': item_type,
+        'reason': reason,
+        'importance': importance,
+        'due_date': due_date.isoformat() if due_date else None,
+        'sender': str(card.get('sender') or ''),
+        'sender_address': str(card.get('sender_address') or ''),
+        'subject': subject,
+        'time': ' '.join(filter(None, (card.get('date'), card.get('time')))),
+        'summary': _single_line(summary or content, 240),
+    }
+
+
+def build_today_action_items(html_text: str, limit: int = 8) -> dict[str, Any]:
+    """Build a concise local worklist from the latest READ-only digest."""
+    if not 1 <= limit <= 20:
+        raise ValueError('limit must be between 1 and 20')
+    cards = extract_digest_mail_cards(html_text)
+    classified = [
+        item for item in (
+            _classify_digest_card(card) for card in cards
+        )
+        if item is not None
+    ]
+    today = date.today()
+
+    def sort_key(item: dict[str, Any]) -> tuple[int, int, str]:
+        due = item.get('due_date')
+        try:
+            due_key = date.fromisoformat(str(due)).toordinal() if due else 99999999
+        except ValueError:
+            due_key = 99999999
+        overdue = 0 if due and date.fromisoformat(str(due)) < today else 1
+        return (
+            overdue,
+            IMPORTANCE_RANK.get(item.get('importance'), 2),
+            str(item.get('time') or ''),
+        )
+
+    classified.sort(key=sort_key)
+    return {
+        'item_count': len(classified),
+        'items': classified[:limit],
+        'read_state_change': 'NONE',
+        'source': 'latest_local_digest',
+    }
 
 
 def format_digest(mailboxes: list[MailboxDigest], generated_at: datetime) -> str:
@@ -1493,9 +1730,11 @@ article.mail + article.mail { border-top: 1px solid #eef1f4; }
 .mail .subject { color: #1f2430; font-size: 14px; overflow-wrap: anywhere; }
 .chevron { width: 14px; height: 14px; margin-top: 3px; color: #829ab1; transition: transform 0.15s ease; }
 .mail.open .chevron { transform: rotate(180deg); }
-.mail-dismiss-wrap { position: absolute; top: 8px; right: 36px; }
-.mail-dismiss { font: inherit; font-size: 11px; padding: 2px 8px; border-radius: 4px; border: 1px solid #dbe1e8; background: #fff; color: #8792a2; cursor: pointer; }
+.mail-dismiss-wrap { position: absolute; top: 8px; right: 36px; display: flex; gap: 5px; }
+.mail-dismiss, .mail-reply { font: inherit; font-size: 11px; padding: 2px 8px; border-radius: 4px; border: 1px solid #dbe1e8; background: #fff; color: #8792a2; cursor: pointer; }
+.mail-reply { color: #1d4ed8; }
 .mail-dismiss:hover { color: #b3261e; border-color: #b3261e; background: #fdecea; }
+.mail-reply:hover { border-color: #1d4ed8; background: #eff6ff; }
 .mail-detail { display: none; padding: 4px 16px 16px 70px; background: #fbfcfd; border-top: 1px solid #eef1f4; }
 .mail.open .mail-detail { display: block; }
 .mail-summary { margin: 6px 14px 10px 70px; font-size: 13px; color: #243b53; background: #f0f6ff; border: 1px solid #d6e4ff; border-radius: 6px; padding: 6px 10px; }
@@ -1655,6 +1894,13 @@ def format_digest_html(
         'setTimeout(function(){card.remove();applyFilters();},250);'
         '}catch(error){b.disabled=false;b.textContent="重试";'
         'b.title="保存失败，请重试";}});});'
+        'document.querySelectorAll(".mail-reply").forEach(function(b){'
+        'b.addEventListener("click",function(e){e.stopPropagation();'
+        'var card=b.closest(".mail");if(!card)return;'
+        'var payload={type:"ai-reply",key:card.getAttribute("data-key")||"",'
+        'label:(card.querySelector(".sender")||{}).textContent||"已选择邮件"};'
+        'if(window.parent!==window){window.parent.postMessage(payload,window.location.origin);}'
+        'else{sessionStorage.setItem("ai-reply",JSON.stringify(payload));window.location.href="/";}});});'
         'function applyFilters(){'
         'var q=(document.getElementById("filter-search").value||"").toLowerCase().trim();'
         'var mailbox=document.getElementById("filter-mailbox").value;'

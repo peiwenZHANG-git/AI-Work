@@ -7,7 +7,7 @@ import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -17,16 +17,19 @@ from windows_gui.mail_assistant import (
     AssistantError,
     ai_generate_draft,
     build_assistant_page,
+    generate_reply_draft,
     save_draft_for_mailbox,
     send_staged_draft,
     stage_draft_for_mailbox,
 )
 from windows_gui.mail_digest import DIGEST_DIR
+from windows_gui.mail_digest import build_today_action_items
 from windows_gui.mail_digest import dismiss_mail_keys
 from windows_gui.mail_digest import dismissed_keys
 from windows_gui.mail_digest import filter_dismissed_html
 from windows_gui.mail_digest import remove_dismissed_from_latest_digest
 from windows_gui.mail_digest import run_digest_update
+from windows_gui.mail_search import natural_language_mail_search
 from windows_gui.health_events import record_health_event
 from windows_gui.system_health import collect_dashboard_health
 
@@ -160,6 +163,23 @@ class MailAssistantHandler(BaseHTTPRequestHandler):
                 'last_ok': REFRESH_STATE['last_ok'],
             })
             return
+        if path == '/api/today-todos':
+            files = sorted(DIGEST_DIR.glob('*.html'))
+            if not files:
+                self._send_json({'item_count': 0, 'items': []}, 404)
+                return
+            query = parse_qs(urlparse(self.path).query)
+            try:
+                limit = int(query.get('limit', ['8'])[0])
+                report = build_today_action_items(
+                    files[-1].read_text(encoding='utf-8'),
+                    limit=limit,
+                )
+            except (OSError, ValueError):
+                self._send_json({'error': 'todo_request_invalid'}, 400)
+                return
+            self._send_json(report)
+            return
         if path == '/api/stats':
             stats_file = DIGEST_DIR / 'last-run.json'
             try:
@@ -210,7 +230,9 @@ class MailAssistantHandler(BaseHTTPRequestHandler):
         handlers = {
             '/api/refresh': self._handle_refresh,
             '/api/ai-draft': self._handle_ai_draft,
+            '/api/ai-reply-draft': self._handle_ai_reply_draft,
             '/api/save-draft': self._handle_save_draft,
+            '/api/mail-search': self._handle_mail_search,
             '/api/stage-draft': self._handle_stage_draft,
             '/api/dismiss': self._handle_dismiss,
             '/api/send-mail': self._handle_send_mail,
@@ -233,6 +255,34 @@ class MailAssistantHandler(BaseHTTPRequestHandler):
     def _handle_ai_draft(self, payload: dict) -> None:
         draft = ai_generate_draft(str(payload.get('instruction') or ''))
         self._send_json(draft)
+
+    def _handle_ai_reply_draft(self, payload: dict) -> None:
+        requested_mailbox = str(payload.get('mailbox_id') or 'master_mail')
+        if requested_mailbox not in {
+            'master_mail', 'bachelor_mail', 'qq_mail',
+        }:
+            raise AssistantError('不支持的邮箱')
+        draft = generate_reply_draft(
+            str(payload.get('key') or ''),
+            str(payload.get('instruction') or ''),
+        )
+        draft['mailbox_id'] = requested_mailbox
+        self._send_json(draft)
+
+    def _handle_mail_search(self, payload: dict) -> None:
+        limit = payload.get('limit', 20)
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            raise AssistantError('搜索数量必须是 1 到 50 的整数')
+        try:
+            result = natural_language_mail_search(
+                str(payload.get('query') or ''),
+                max_results=limit,
+            )
+        except ValueError as error:
+            raise AssistantError(str(error))
+        self._send_json(result)
 
     def _handle_refresh(self, payload: dict) -> None:
         started = start_refresh()

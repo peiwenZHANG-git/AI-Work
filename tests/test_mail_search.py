@@ -166,6 +166,65 @@ class EdgeSearchTests(unittest.TestCase):
 
 
 class SearchDispatchTests(unittest.TestCase):
+    def test_natural_query_parses_relative_time_and_keyword(self):
+        now = datetime.fromisoformat('2026-09-02T12:00:00+02:00')
+        parsed = mail_search.parse_natural_mail_query(
+            '找最近两个月关于实习的邮件', now=now
+        )
+        self.assertEqual('实习', parsed['keyword'])
+        self.assertIsNone(parsed['sender'])
+        self.assertEqual(
+            datetime.fromisoformat('2026-07-04T12:00:00+02:00'),
+            parsed['start_time'],
+        )
+        self.assertEqual(now, parsed['end_time'])
+
+    def test_natural_query_parses_school_sender_and_topic(self):
+        now = datetime.fromisoformat('2026-09-02T12:00:00+02:00')
+        parsed = mail_search.parse_natural_mail_query(
+            '找学校发的学费证明邮件', now=now
+        )
+        self.assertEqual('学费证明', parsed['keyword'])
+        self.assertIsNone(parsed['sender'])
+
+    def test_natural_query_requires_topic(self):
+        with self.assertRaisesRegex(ValueError, 'keyword'):
+            mail_search.parse_natural_mail_query('找邮件')
+
+    def test_natural_search_reuses_readonly_search(self):
+        now = datetime.fromisoformat('2026-09-02T12:00:00+02:00')
+        raw = {
+            'mailboxes': [{
+                'mailbox_id': 'master_mail',
+                'status': 'READY',
+                'results': [{
+                    'mailbox_id': 'master_mail',
+                    'sender': 'Alice',
+                    'subject': 'Internship',
+                    'received_time': '2026-08-30T10:00:00+02:00',
+                    'message_reference': 'safe-id',
+                    'reference_kind': 'GRAPH_MESSAGE_ID',
+                }],
+            }],
+            'read_state_change': 'NONE',
+        }
+        with patch.object(
+            mail_search, 'search_mailboxes', return_value=raw
+        ) as search:
+            result = mail_search.natural_language_mail_search(
+                '找最近一周关于实习的邮件', max_results=10, now=now
+            )
+
+        self.assertEqual('实习', result['query']['keyword'])
+        self.assertEqual(1, result['result_count'])
+        self.assertEqual('GRAPH_MESSAGE_ID', result['results'][0]['reference_kind'])
+        self.assertNotIn('message_reference', result['results'][0])
+        self.assertEqual('READ_ONLY_METADATA', result['search_scope'])
+        self.assertEqual('NONE', result['read_state_change'])
+        kwargs = search.call_args.kwargs
+        self.assertEqual('实习', kwargs['keyword'])
+        self.assertEqual(10, kwargs['max_results'])
+
     def test_outlook_graph_ready_does_not_call_edge(self):
         email = MailSearchEmail(
             sender='Alice',

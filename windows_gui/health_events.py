@@ -25,8 +25,11 @@ EVENT_SUMMARIES = {
     'digest_completed': 'Daily mail digest completed.',
     'digest_failed': 'Daily mail digest failed.',
     'draft_generated': 'AI mail draft generated.',
+    'reply_draft_generated': 'AI reply draft generated.',
     'draft_fallback': 'Local fallback draft generated.',
+    'reply_draft_fallback': 'Local fallback reply draft generated.',
     'draft_remote_failed': 'Remote AI draft generation failed.',
+    'reply_draft_remote_failed': 'Remote AI reply draft generation failed.',
     'assistant_request_failed': 'Mail assistant request failed.',
     'digest_notification_warning': 'Digest completed but notification was not shown.',
 }

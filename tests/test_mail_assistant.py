@@ -4,6 +4,8 @@ import unittest
 from types import SimpleNamespace
 import unittest.mock as mock
 import hashlib
+import tempfile
+from pathlib import Path
 
 import windows_gui.mail_assistant as mail_assistant
 
@@ -109,6 +111,92 @@ class MailAssistantTest(unittest.TestCase):
         self.assertEqual(
             [mail_assistant.DRAFT_REQUEST_TIMEOUT_SECONDS], calls
         )
+
+    def test_reply_draft_generates_from_local_digest_card(self) -> None:
+        key = hashlib.sha256(b'stable').hexdigest()[:40]
+        html = (
+            '<article class="mail" data-key="' + key + '" '
+            'data-mailbox="master_mail" data-sender="Registrar" '
+            'data-sender-address="registrar@example.edu" '
+            'data-subject="Tuition certificate" data-importance="高">'
+            '<p class="mail-summary">Please send the certificate.</p>'
+            '<div class="original-body">Please send the certificate.</div>'
+            '</article>'
+        )
+        calls = []
+
+        def fake_post(url, headers=None, json=None, timeout=None):
+            calls.append(json['messages'][1]['content'])
+            return SimpleNamespace(
+                status_code=200,
+                json=lambda: {'choices': [{'message': {
+                    'content': '{"subject":"Re: Tuition certificate",'
+                    '"body":"Dear Registrar, attached is the certificate."}'
+                }}]},
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, '2026-09-02.html').write_text(html, encoding='utf-8')
+            with mock.patch.object(
+                mail_assistant, 'ensure_environment'
+            ), mock.patch.object(
+                mail_assistant, 'load_summary_api_key', return_value='key'
+            ), mock.patch.object(
+                mail_assistant, 'record_health_event'
+            ) as record_event:
+                result = mail_assistant.generate_reply_draft(
+                    key,
+                    '说明已附上证明',
+                    digest_dir=Path(directory),
+                    transport=fake_post,
+                )
+
+        self.assertEqual('registrar@example.edu', result['to'])
+        self.assertEqual('Re: Tuition certificate', result['subject'])
+        self.assertFalse(result['fallback'])
+        self.assertIn('说明已附上证明', calls[0])
+        self.assertIn('Please send the certificate', calls[0])
+        record_event.assert_called_once_with(
+            'mail_assistant', 'success', 'reply_draft_generated'
+        )
+
+    def test_reply_draft_uses_explicit_local_fallback_without_send(self) -> None:
+        key = hashlib.sha256(b'fallback').hexdigest()[:40]
+        html = (
+            '<article class="mail" data-key="' + key + '" '
+            'data-mailbox="bachelor_mail" data-sender="Teacher" '
+            'data-sender-address="teacher@example.edu" '
+            'data-subject="Meeting" data-importance="高">'
+            '<div class="original-body">Please confirm Monday.</div>'
+            '</article>'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, 'digest.html').write_text(html, encoding='utf-8')
+            with mock.patch.object(
+                mail_assistant, 'ensure_environment'
+            ), mock.patch.object(
+                mail_assistant, 'load_summary_api_key', return_value='key'
+            ), mock.patch.object(
+                mail_assistant,
+                'generate_draft_via_ai',
+                side_effect=mail_assistant.SummaryAPIError('network'),
+            ), mock.patch.object(
+                mail_assistant, 'record_health_event'
+            ), mock.patch.object(
+                mail_assistant, 'stage_draft_for_mailbox'
+            ) as stage, mock.patch.object(
+                mail_assistant, 'send_staged_draft'
+            ) as send:
+                result = mail_assistant.generate_reply_draft(
+                    key,
+                    digest_dir=Path(directory),
+                )
+
+        self.assertTrue(result['fallback'])
+        self.assertEqual('teacher@example.edu', result['to'])
+        self.assertIn('Please confirm Monday', result['body'])
+        stage.assert_not_called()
+        send.assert_not_called()
 
     def test_ai_generate_draft_uses_local_fallback_on_api_failure(self) -> None:
         with mock.patch.object(

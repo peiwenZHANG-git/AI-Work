@@ -34,6 +34,24 @@ body { margin: 0; font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-se
 .tile .count { font-size: 24px; font-weight: 600; margin-top: 2px; }
 .tile .sub { font-size: 12px; color: #8792a2; }
 .tile.off .count { color: #b3261e; font-size: 16px; }
+.tool-card { background: #fff; border: 1px solid #e2e6ea; border-radius: 8px; padding: 16px 18px; }
+.tool-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+.tool-head h2 { margin: 0; font-size: 16px; }
+.tool-meta { font-size: 12px; color: #64748b; }
+.todo-list, .result-list { display: grid; gap: 8px; }
+.todo-item, .result-item { border: 1px solid #e2e6ea; border-radius: 6px; padding: 10px 12px; background: #fbfcfd; }
+.todo-title, .result-title { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.todo-meta, .result-meta { margin-top: 3px; font-size: 12px; color: #64748b; overflow-wrap: anywhere; }
+.todo-summary { margin-top: 5px; font-size: 13px; color: #334155; }
+.tag { display: inline-block; border-radius: 4px; padding: 1px 6px; font-size: 11px; margin-right: 6px; }
+.tag.deadline, .tag.action { color: #b3261e; background: #fee2e2; }
+.tag.school_admin { color: #92400e; background: #fef3c7; }
+.tag.important { color: #166534; background: #dcfce7; }
+.mini-button { font: inherit; font-size: 12px; padding: 4px 9px; border: 1px solid #cfd6dd; border-radius: 5px; background: #fff; color: #1d4ed8; cursor: pointer; }
+.mini-button:hover { background: #eff6ff; }
+.empty-note { color: #64748b; font-size: 13px; }
+.search-grid { display: grid; grid-template-columns: minmax(220px, 1fr) 130px auto; gap: 8px; align-items: end; }
+.selected-mail { border: 1px dashed #bcd0f7; background: #f0f6ff; padding: 8px 10px; border-radius: 6px; font-size: 13px; color: #334e68; margin-top: 12px; display: flex; justify-content: space-between; gap: 8px; align-items: center; }
 .grid { display: grid; grid-template-columns: 5fr 7fr; gap: 16px; align-items: start; }
 .card { background: #fff; border: 1px solid #e2e6ea; border-radius: 8px; padding: 18px 20px; }
 .card h2 { margin: 0 0 4px; font-size: 16px; display: flex; align-items: center; gap: 8px; }
@@ -74,6 +92,7 @@ button:disabled { opacity: 0.55; cursor: wait; }
 .health-error { padding: 9px 0; border-bottom: 1px solid #edf0f3; font-size: 13px; }
 .health-empty { color: #64748b; font-size: 13px; }
 @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } .tiles { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 700px) { .search-grid { grid-template-columns: 1fr; } }
 @media (max-width: 700px) { .health-grid { grid-template-columns: 1fr; } }
 </style>
 </head>
@@ -82,7 +101,9 @@ button:disabled { opacity: 0.55; cursor: wait; }
   <div class="brand"><span class="dot"></span>邮件助手</div>
   <nav class="tabs">
     <button class="tab active" data-tab="digest">今日摘要</button>
+    <button class="tab" data-tab="todo">今日待办</button>
     <button class="tab" data-tab="ai">AI 写邮件</button>
+    <button class="tab" data-tab="search">跨箱搜索</button>
     <button class="tab" data-tab="health">系统状态</button>
   </nav>
   <div class="actions">
@@ -98,6 +119,14 @@ button:disabled { opacity: 0.55; cursor: wait; }
     </div>
     <iframe id="digest-frame" src="/digest" title="今日摘要"></iframe>
   </section>
+  <section id="tab-todo" class="tab-panel">
+    <div class="tool-head">
+      <h2>今天最需要处理</h2>
+      <span class="tool-meta" id="todo-meta">本地只读</span>
+      <button class="mini-button" id="todo-refresh">重新提取</button>
+    </div>
+    <div class="todo-list" id="todo-list"><div class="empty-note">尚未加载。</div></div>
+  </section>
   <section id="tab-ai" class="tab-panel">
     <div class="tiles" id="tiles"></div>
     <div class="grid">
@@ -112,6 +141,10 @@ button:disabled { opacity: 0.55; cursor: wait; }
           <span data-fill="写一封邮件预约学校图书馆讨论间，本周四下午两点，时长两小时">预约讨论间</span>
         </div>
         <button class="act primary" id="generate" style="margin-top: 14px; width: 100%;">生成草稿</button>
+        <div class="selected-mail">
+          <span id="reply-selection">未选择要回复的邮件</span>
+          <button class="mini-button" id="generate-reply" disabled>生成回复草稿</button>
+        </div>
         <div class="mailbox-block">
           <label>保存 / 发送使用的邮箱</label>
           <select id="mailbox">
@@ -140,6 +173,20 @@ button:disabled { opacity: 0.55; cursor: wait; }
       </section>
     </div>
   </section>
+  <section id="tab-search" class="tab-panel">
+    <div class="tool-card">
+      <div class="tool-head">
+        <h2>自然语言搜索</h2>
+        <span class="tool-meta">只读 · 元数据</span>
+      </div>
+      <form class="search-grid" id="search-form">
+        <input id="search-query" type="search" placeholder="例如：找最近两个月关于实习的邮件" required>
+        <input id="search-limit" type="number" min="1" max="50" value="20" aria-label="结果数量">
+        <button class="act primary" id="search-submit" type="submit">搜索</button>
+      </form>
+    </div>
+    <div class="result-list" id="search-results" style="margin-top: 12px;"></div>
+  </section>
   <section id="tab-health" class="tab-panel">
     <div class="digest-bar">
       <span id="health-overall">系统状态尚未加载</span>
@@ -163,6 +210,7 @@ document.querySelectorAll('.tab').forEach((tab) => {
     tab.classList.add('active');
     document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
     if (tab.dataset.tab === 'health') { loadHealth(); }
+    if (tab.dataset.tab === 'todo') { loadTodos(); }
   });
 });
 async function api(path, payload, timeoutMs = 30000) {
@@ -186,6 +234,41 @@ async function api(path, payload, timeoutMs = 30000) {
     window.clearTimeout(timer);
   }
 }
+function switchTab(name) {
+  const tab = document.querySelector('.tab[data-tab="' + name + '"]');
+  if (tab) tab.click();
+}
+function selectReplyMail(selection) {
+  replyMailKey = selection.key || '';
+  $('reply-selection').textContent = selection.label || '已选择邮件';
+  $('generate-reply').disabled = !replyMailKey;
+}
+$('generate-reply').addEventListener('click', async () => {
+  if (!replyMailKey) return;
+  const button = $('generate-reply');
+  button.disabled = true; setStatus('AI 正在生成回复草稿…');
+  try {
+    const data = await api('/api/ai-reply-draft', {
+      key: replyMailKey,
+      instruction: $('instruction').value,
+      mailbox_id: $('mailbox').value,
+    }, 22000);
+    if (data.mailbox_id) $('mailbox').value = data.mailbox_id;
+    refreshMailboxUi();
+    $('to').value = data.to || '';
+    $('subject').value = data.subject || '';
+    $('draft-body').value = data.body || '';
+    setStatus(data.fallback
+      ? 'AI 暂时不可用，已生成可编辑的基础回复草稿。'
+      : '回复草稿已生成，可修改后再保存。');
+  } catch (error) { setStatus('生成回复失败：' + error.message); }
+  button.disabled = false;
+});
+window.addEventListener('message', (event) => {
+  if (event.origin !== window.location.origin || !event.data || event.data.type !== 'ai-reply') return;
+  selectReplyMail(event.data);
+  switchTab('ai');
+});
 const healthNames = {
   mcp: 'MCP', mail_credentials: '邮箱凭据', mail_digest: '每日邮件摘要',
   mail_assistant: 'AI 邮件助手', browser_cdp: '浏览器 / CDP', remote: 'Remote'
@@ -231,6 +314,80 @@ async function loadHealth() {
     $('health-overall').textContent = '系统状态加载失败：' + error.message;
   } finally { refresh.disabled = false; }
 }
+async function loadTodos() {
+  const box = $('todo-list');
+  box.innerHTML = '<div class="empty-note">正在从最近本地摘要提取…</div>';
+  try {
+    const response = await fetch('/api/today-todos?limit=12', { cache: 'no-store' });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || ('HTTP ' + response.status));
+    $('todo-meta').textContent = data.item_count + ' 项 · 本地只读';
+    box.replaceChildren();
+    if (!data.items.length) {
+      const note = document.createElement('div');
+      note.className = 'empty-note';
+      note.textContent = '当前摘要中未发现待回复、截止或学校行政事项。';
+      box.appendChild(note);
+      return;
+    }
+    const typeNames = { deadline: '截止', action: '需办理', school_admin: '学校行政', important: '重要' };
+    data.items.forEach((item) => {
+      const element = document.createElement('article');
+      element.className = 'todo-item';
+      const head = document.createElement('div'); head.className = 'tool-head';
+      const title = document.createElement('div'); title.className = 'todo-title';
+      const tag = document.createElement('span'); tag.className = 'tag ' + item.type; tag.textContent = typeNames[item.type] || item.type;
+      title.appendChild(tag); title.appendChild(document.createTextNode(item.subject || '(无主题)'));
+      const reply = document.createElement('button'); reply.className = 'mini-button'; reply.textContent = 'AI 回复';
+      reply.addEventListener('click', () => selectReplyMail({
+        key: item.key,
+        label: item.subject || (item.sender || '已选择邮件'),
+      }));
+      head.append(title, reply); element.appendChild(head);
+      appendText(element, 'div', 'todo-meta', [
+        item.sender, item.time, item.due_date ? '截止：' + item.due_date : '', item.reason,
+      ].filter(Boolean).join(' · '));
+      if (item.summary) appendText(element, 'div', 'todo-summary', item.summary);
+      box.appendChild(element);
+    });
+  } catch (error) {
+    box.innerHTML = '';
+    appendText(box, 'div', 'empty-note', '待办加载失败：' + error.message);
+  }
+}
+$('todo-refresh').addEventListener('click', loadTodos);
+$('search-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const button = $('search-submit'); const box = $('search-results');
+  button.disabled = true; box.innerHTML = '<div class="empty-note">正在执行只读搜索…</div>';
+  try {
+    const data = await api('/api/mail-search', {
+      query: $('search-query').value,
+      limit: Number($('search-limit').value || 20),
+    }, 60000);
+    box.replaceChildren();
+    appendText(box, 'div', 'tool-meta', '找到 ' + data.result_count + ' 条结果；只读取列表元数据，未修改邮件。');
+    if (!data.results.length) {
+      appendText(box, 'div', 'empty-note', '没有匹配的邮件。');
+    }
+    data.results.forEach((item) => {
+      const element = document.createElement('article');
+      element.className = 'result-item';
+      appendText(element, 'div', 'result-title', item.subject || '(无主题)');
+      appendText(element, 'div', 'result-meta', [
+        item.mailbox_id, item.sender, item.received_time.replace('T', ' ').slice(0, 16),
+      ].filter(Boolean).join(' · '));
+      box.appendChild(element);
+    });
+    (data.failed_mailboxes || []).forEach((item) => {
+      appendText(box, 'div', 'empty-note', (item.mailbox_id || '') + ' 搜索状态：' + item.status);
+    });
+  } catch (error) {
+    box.innerHTML = '';
+    appendText(box, 'div', 'empty-note', '搜索失败：' + error.message);
+  }
+  button.disabled = false;
+});
 $('health-refresh').addEventListener('click', loadHealth);
 document.getElementById('generate').addEventListener('click', async () => {
   const button = $('generate');
@@ -261,6 +418,7 @@ document.getElementById('save').addEventListener('click', async () => {
 });
 let stagedPendingId = '';
 let stagedMailboxId = '';
+let replyMailKey = '';
 function resetStagedDraft(message) {
   stagedPendingId = '';
   stagedMailboxId = '';
@@ -325,6 +483,12 @@ document.getElementById('refresh').addEventListener('click', async () => {
   }, 2000);
 });
 window.addEventListener('load', async () => {
+  const storedReply = sessionStorage.getItem('ai-reply');
+  if (storedReply) {
+    sessionStorage.removeItem('ai-reply');
+    try { selectReplyMail(JSON.parse(storedReply)); switchTab('ai'); }
+    catch (error) { /* stale reply selection is optional */ }
+  }
   try {
     const state = await (await fetch('/api/refresh-status')).json();
     if (state.running) {

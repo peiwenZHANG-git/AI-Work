@@ -64,11 +64,13 @@
 - 本地健康事件已接入摘要运行与 AI 草稿关键结果：事件采用固定组件、结果、代码和摘要白名单，不接收调用方详情或异常原文，并以 512 KiB、最多 3 个轮转文件限制磁盘占用；读写由线程锁与有界 Windows 跨进程 mutex 串行化，任何日志锁、文件或解码故障都只安全降级，不会中断摘要或写信主流程。共享只读健康模型覆盖 MCP 稳定接口、凭据存在性、摘要、助手服务、浏览器/CDP 和 Remote 六类状态；无法可靠解析本地化计划任务输出时返回 `UNKNOWN` 而非误报 `FAIL`。助手页新增“系统状态”面板及脱敏的最近错误，CLI 与页面共用四态模型，不新增 MCP 工具，也不主动启动服务、浏览器或网络探测。
 - 助手重启可靠性已修复：端口等待现在正确区分“等待关闭”和“等待监听”，并会在有界时间内重试精确脚本 PID 的 WMI 查询；仍只终止命令行明确运行 `mail_assistant_server.py` 的进程。真实 `--restart --no-refresh --no-open` 验证一次成功，未刷新邮箱，随后 `/api/status` 与 `/api/health` 均返回 HTTP 200。
 - 通用浏览器真实验收已通过一次受控 smoke：使用专用 `browser-agent-profile` 启动非 headless Edge，访问 Selenium 公共 downloads 测试页，检查 URL/DOM 脱敏，点击普通只读链接，通过 `File 1` 完成登录态下载路径的 14 字节文件下载并核对 SHA-256，确认不覆盖已有文件；三个私网导航负例全部被拒绝，stop 后导航显式失败。未使用邮箱 Profile、未提交表单或执行生产副作用。
+- 邮箱工作流下一阶段已实现且不改变 36 工具 MCP 接口：摘要卡片携带本机渲染元数据和“AI 回复”入口，助手可根据最新本地摘要卡片生成可编辑回复草稿，但不会自动保存或发送；`/api/today-todos` 只解析最近一次本地摘要，提取截止、需办理、学校行政和高重要度事项，不访问或修改邮箱；`/api/mail-search` 把常见中文时间/关键词解析为参数后复用现有只读 `search_mailboxes()` 元数据搜索。QQ 发送仍然禁止，所有发送仍复用两阶段确认。
+2026-09-02 本机验收：助手已用 `--restart --no-refresh --no-open` 加载当前工作树，真实本地页面确认三个新入口存在，待办 API 返回 HTTP 200，AI 回复按钮默认禁用，搜索请求边界返回 400；未触发真实邮箱搜索、AI 生成、草稿保存、发送、删除、移动或标记。
 
 ## 4. 当前工作
 
 - `.vscode/mcp.json`：本机 GitHub MCP 配置，按既定决定保持本地修改，不提交、不还原。
-- 最新已提交验证基线（2026-09-02 实测）：`python -m compileall -q windows_gui_mcp.py windows_gui tests` 通过；`python -m unittest discover -s tests -t . -v` 共 334 项全部通过；FastMCP 工具注册防回归测试及共享健康模型检查均确认 36 个工具唯一注册；`git diff --check` 通过。只读 `python scripts/system_health.py --json` 实测整体通过：环境、7 个凭据条目、计划任务、任务定义、最近摘要及助手服务均健康。助手 `/api/health` 只读验证返回 HTTP 200：MCP/凭据/摘要/助手为 PASS，正常未启动的 Browser/CDP 与无可靠探测器的 Remote 为 UNKNOWN。未运行真实桌面或邮箱 smoke test。
+- 最新完整验证基线（2026-09-02 邮箱工作流收尾实测）：`python -m compileall -q windows_gui_mcp.py windows_gui tests` 通过；`python -m unittest discover -s tests -t . -v` 共 354 项全部通过；独立 MCP 检查确认 36 个工具唯一注册；`git diff --check` 通过（仅 LF/CRLF 转换提示）。全部单测继续 mock 网络、邮箱、AI、桌面和发送副作用，未读取真实邮箱、未调用真实 AI、未运行真实桌面 smoke。
 
 ## 5. 已知问题与阻塞
 
@@ -76,6 +78,8 @@
 - 2026-09-02 最新只读健康检查确认：三个助手专用授权码、两个摘要授权码、GLM API key 与 Outlook refresh token 共 7 个凭据条目均已配置；计划任务最近返回 `0` 且定义匹配；最近摘要三邮箱均为健康状态，`last-run.json` 与 `last-attempt.json` 正常更新。
 - 本科网易暂不支持经 Edge 发送已有草稿（draft hash 无法稳定定位并校验）；QQ 发送为设计性禁止。
 - Edge 摘要/搜索回退只解析当前已验证页面的可见列表，不代表完整邮箱索引，也不打开正文。
+- 助手回复选择依赖最新本地摘要 artifact；旧 artifact 没有机器可读发件人地址时，回复可基于可见正文/摘要生成，但收件人需要用户手工填写，先刷新摘要可获得稳定地址。
+- “今日待办”是从本地摘要 HTML 做的有界规则提取，能识别常见中文/学校事项和常见日期，但不是语义级完整任务抽取；AI 回复和搜索的远程结果仍需用户确认后再保存或发送。
 - URL/重定向防护会在每次请求前解析并校验主机地址，但尚未把连接固定到该次解析结果；理论上恶意权威 DNS 仍可在校验后的第二次解析中尝试 rebinding。真实浏览器验收只应使用受控公共测试 URL。
 - `open_webpage` 只校验用户提供的初始 URL；打开后的 HTTP 重定向由普通 Edge 跟随，不经过 Playwright context 路由逐跳防护。真实验收应使用固定公共 URL，不使用重定向链。
 - 登录态下载的 256 MiB 上限会限制复制到目标目录的临时文件并阻止发布，但 Playwright 浏览器自身临时文件没有下载进度取消钩子，极端响应仍可能在超限判定前占用临时磁盘。

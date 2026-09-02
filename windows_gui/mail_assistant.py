@@ -21,6 +21,7 @@ from email.parser import BytesParser
 from email import policy
 from email.message import EmailMessage
 from urllib.parse import quote
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -37,11 +38,13 @@ from windows_gui.imap_mail import (
     _default_imap_factory,
 )
 from windows_gui.mail_digest import (
+    DIGEST_DIR,
     DEFAULT_SUMMARY_MODEL,
     MailboxFlowError,
     MASTER_GRAPH_SCOPE,
     SummaryAPIError,
     _chat_once,
+    extract_digest_mail_cards,
     ensure_environment,
     load_summary_api_key,
     refresh_master_graph_token,
@@ -78,6 +81,8 @@ DRAFT_SYSTEM_PROMPT = (
     '语气礼貌得体，语言跟随指令（未指明时用简体中文），'
     '开头有合适的称呼、结尾有落款。不要输出 JSON 以外的任何文字。'
 )
+MAX_REPLY_INSTRUCTION_CHARS = 2_000
+MAX_REPLY_CONTEXT_CHARS = 7_000
 EMAIL_PATTERN = re.compile(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}')
 MAX_INSTRUCTION_CHARS = 8_000
 MAX_RECIPIENT_CHARS = 320
@@ -599,6 +604,116 @@ def ai_generate_draft(instruction: str) -> dict[str, str]:
         draft = build_local_fallback_draft(instruction)
         record_health_event('mail_assistant', 'warning', 'draft_fallback')
         return draft
+
+
+def find_digest_mail_card(
+    mail_key: str,
+    *,
+    digest_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Find one already-generated local digest card by its opaque key."""
+    key = str(mail_key or '').strip().casefold()
+    if not re.fullmatch(r'[0-9a-f]{40}', key):
+        raise AssistantError('邮件选择标识无效')
+    directory = digest_dir or DIGEST_DIR
+    files = sorted(directory.glob('*.html'))
+    if not files:
+        raise AssistantError('尚未生成邮件摘要')
+    for path in reversed(files):
+        try:
+            cards = extract_digest_mail_cards(path.read_text(encoding='utf-8'))
+        except OSError:
+            continue
+        for card in cards:
+            if str(card.get('key') or '').casefold() == key:
+                return card
+    raise AssistantError('所选邮件不在最新本地摘要中')
+
+
+def _reply_instruction(
+    card: dict[str, Any], instruction: str
+) -> str:
+    user_instruction = ' '.join(str(instruction or '').split())
+    if len(user_instruction) > MAX_REPLY_INSTRUCTION_CHARS:
+        raise AssistantError('回复要求长度超过限制')
+    context_body = (
+        str(card.get('translation') or '').strip()
+        or str(card.get('body') or '').strip()
+    )
+    context = ' '.join(filter(None, (
+        str(card.get('summary') or '').strip(),
+        context_body,
+    )))
+    if len(context) > MAX_REPLY_CONTEXT_CHARS:
+        context = context[:MAX_REPLY_CONTEXT_CHARS]
+    return (
+        '请针对下面这封已选邮件写一封回复草稿。'
+        '不要发送邮件，不要发明未提供的事实，'
+        '明确回应用来信件中的要点。\n'
+        f'原邮件发件人：{card.get("sender") or "未知"}\n'
+        f'原邮件主题：{card.get("subject") or "(无主题)"}\n'
+        f'用户补充要求：{user_instruction or "礼貌、简短并回应必要事项"}\n'
+        f'原邮件内容：\n{context}'
+    )
+
+
+def _reply_fallback_draft(
+    card: dict[str, Any], instruction: str
+) -> dict[str, str]:
+    user_instruction = ' '.join(str(instruction or '').split())
+    subject = str(card.get('subject') or '').strip()
+    subject = re.sub(r'^(?:re|回复)\s*[:：]\s*', '', subject, flags=re.IGNORECASE)
+    original_excerpt = _reply_instruction(card, instruction).rsplit(
+        '原邮件内容：\n', 1
+    )[-1]
+    body = (
+        '您好：\n\n'
+        '感谢您的邮件。'
+        f'关于《{subject or "您的来信"}》，'
+        f'{user_instruction or "我已收到并会尽快确认相关安排。"}\n\n'
+        f'来信要点：{original_excerpt[:800]}\n\n'
+        '祝好'
+    )
+    return {
+        'subject': validate_subject(f'Re: {subject}' if subject else '回复您的邮件'),
+        'body': validate_body(body),
+        'fallback': True,
+    }
+
+
+def generate_reply_draft(
+    mail_key: str,
+    instruction: str = '',
+    *,
+    digest_dir: Path | None = None,
+    transport: Any = None,
+) -> dict[str, Any]:
+    """Generate an editable reply draft; this function never sends mail."""
+    ensure_environment()
+    api_key = load_summary_api_key()
+    if not api_key:
+        raise AssistantError('未配置 GLM 密钥，无法生成 AI 回复草稿')
+    card = find_digest_mail_card(mail_key, digest_dir=digest_dir)
+    prompt = _reply_instruction(card, instruction)
+    try:
+        draft = generate_draft_via_ai(prompt, api_key, transport=transport)
+        record_health_event('mail_assistant', 'success', 'reply_draft_generated')
+    except SummaryAPIError:
+        record_health_event('mail_assistant', 'error', 'reply_draft_remote_failed')
+        draft = _reply_fallback_draft(card, instruction)
+        record_health_event('mail_assistant', 'warning', 'reply_draft_fallback')
+    return {
+        'to': str(card.get('sender_address') or ''),
+        'subject': draft['subject'],
+        'body': draft['body'],
+        'fallback': bool(draft.get('fallback')),
+        'source': {
+            'key': str(card.get('key') or ''),
+            'mailbox_id': str(card.get('mailbox_id') or ''),
+            'sender': str(card.get('sender') or ''),
+            'subject': str(card.get('subject') or ''),
+        },
+    }
 
 
 def _assistant_account(mailbox_id: str, credential_username: str) -> dict[str, str]:

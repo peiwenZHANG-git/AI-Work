@@ -18,14 +18,17 @@ from windows_gui.mail_digest import (
     MailboxDigest,
     DigestMail,
     _mail_cache_key,
+    _mail_dismiss_key,
     _prune_notified,
     select_new_high,
+    build_today_action_items,
     build_toast_lines,
     build_toast_powershell,
     build_full_ai_prompt,
     format_digest,
     write_run_artifacts,
     format_digest_html,
+    extract_digest_mail_cards,
     enrich_digests,
     call_mail_translation,
     SummaryAPIError,
@@ -63,6 +66,50 @@ class MailDigestTest(unittest.TestCase):
         self.assertIn('await fetch("/api/dismiss"', html)
         self.assertIn('b.textContent="保存中"', html)
         self.assertIn('if(!response.ok)throw', html)
+
+    def test_digest_cards_and_reply_actions_are_extracted_locally(self) -> None:
+        mails = [
+            DigestMail(
+                'Registration Office',
+                '请提交学费证明',
+                sender_address='registrar@example.edu',
+                time='2026-09-02T10:00:00+02:00',
+                body_text='请在 2026年9月20日 前提交学费证明。',
+                summary='学校要求在 2026-09-20 前提交学费证明。',
+                importance='高',
+                source_reference='imap:1',
+            ),
+            DigestMail(
+                'Newsletter',
+                '普通通知',
+                sender_address='news@example.com',
+                time='2026-09-02T11:00:00+02:00',
+                body_text='General news with no requested action.',
+                source_reference='imap:2',
+            ),
+        ]
+        box = MailboxDigest(
+            'bachelor_mail', '传媒大学本科邮箱', '本科', 'READY', '', mails
+        )
+        html = format_digest_html(
+            [box], datetime(2026, 9, 2, 12, 0, tzinfo=timezone.utc)
+        )
+
+        cards = extract_digest_mail_cards(html)
+        self.assertEqual(2, len(cards))
+        self.assertEqual(
+            _mail_dismiss_key('bachelor_mail', mails[0]), cards[0]['key']
+        )
+        self.assertEqual('registrar@example.edu', cards[0]['sender_address'])
+        self.assertEqual('请提交学费证明', cards[0]['subject'])
+        self.assertIn('2026年9月20日', cards[0]['body'])
+        self.assertEqual(2, html.count('class="mail-reply"'))
+
+        report = build_today_action_items(html, limit=10)
+        self.assertEqual(1, report['item_count'])
+        self.assertEqual('deadline', report['items'][0]['type'])
+        self.assertEqual('2026-09-20', report['items'][0]['due_date'])
+        self.assertEqual('NONE', report['read_state_change'])
 
     def test_mailbox_collection_is_concurrent_and_preserves_order(self) -> None:
         barrier = threading.Barrier(3)

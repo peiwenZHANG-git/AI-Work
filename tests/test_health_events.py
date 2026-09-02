@@ -14,6 +14,26 @@ from windows_gui.health_events import read_health_events, record_health_event
 
 
 class HealthEventTests(unittest.TestCase):
+    def test_reply_draft_events_are_allowlisted(self):
+        expected = {
+            'reply_draft_generated': ('success', 'AI reply draft generated.'),
+            'reply_draft_fallback': (
+                'warning', 'Local fallback reply draft generated.'
+            ),
+            'reply_draft_remote_failed': (
+                'error', 'Remote AI reply draft generation failed.'
+            ),
+        }
+        for code, (outcome, expected_summary) in expected.items():
+            with self.subTest(code=code):
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / 'events.jsonl'
+                    self.assertTrue(record_health_event(
+                        'mail_assistant', outcome, code, path=path
+                    ))
+                    item = json.loads(path.read_text(encoding='utf-8'))
+                self.assertEqual(expected_summary, item['summary'])
+
     def test_event_schema_is_allowlisted_and_timezone_aware(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'events.jsonl'
