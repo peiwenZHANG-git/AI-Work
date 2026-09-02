@@ -5,6 +5,7 @@ from datetime import date
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from windows_gui.mail_backends import BackendStatus, MailBackendResult
 from windows_gui.mail_summary import (
     _ensure_mailbox_page,
     _extract_today_emails,
@@ -46,9 +47,15 @@ class MailSummaryTests(unittest.TestCase):
         self.assertNotIn("SEND", MAILBOX_IDENTITIES["qq_mail"].permissions)
         self.assertTrue(MAILBOX_IDENTITIES["master_mail"].send_requires_confirmation)
 
+    @patch("windows_gui.mail_summary._backend_for_identity")
     @patch("windows_gui.mail_summary._ensure_mailbox_page")
-    def test_bachelor_not_ready_path(self, ensure):
-        ensure.return_value = (None, "PAGE_NOT_READY")
+    def test_bachelor_not_ready_path(self, ensure, backend_for_identity):
+        backend_for_identity.return_value.summarize_today.return_value = (
+            MailBackendResult(
+                status=BackendStatus.IMAP_NOT_CONFIGURED,
+                message="IMAP is not configured",
+            )
+        )
         result = _summarize_mailbox(MAILBOX_IDENTITIES["bachelor_mail"])
         self.assertEqual("IMAP_NOT_CONFIGURED", result["status"])
         self.assertEqual([], result["emails"])

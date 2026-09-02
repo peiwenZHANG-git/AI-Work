@@ -102,6 +102,9 @@ EXPECTED_TOOLS = {
     "set_save_dialog_filename", "type_text", "open_all_mailboxes",
     "summarize_all_mailboxes_today", "search_mailboxes", "create_mail_draft",
     "send_mail_draft",
+    "open_webpage", "download_web_file", "start_browser_session",
+    "navigate_browser", "inspect_browser", "click_browser_element",
+    "download_browser_element", "stop_browser_session",
 }
 
 

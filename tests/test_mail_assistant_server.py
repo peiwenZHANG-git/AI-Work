@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import json
 import unittest
 from pathlib import Path
+import subprocess
+import tempfile
 from unittest import mock
 
 import windows_gui.mail_assistant as mail_assistant
@@ -136,6 +139,30 @@ class MailAssistantServerSecurityTests(unittest.TestCase):
 
         self.assertEqual([({'error': 'internal_server_error'}, 500)], responses)
 
+    def test_dismiss_endpoint_accepts_only_a_json_key_list(self):
+        handler = object.__new__(self.server.MailAssistantHandler)
+        handler.path = '/api/dismiss'
+        handler.headers = {
+            'Host': '127.0.0.1:8931',
+            'Content-Type': 'application/json',
+            'Content-Length': str(len(b'{"keys":["safe-hash"]}')),
+        }
+        handler.rfile = io.BytesIO(b'{"keys":["safe-hash"]}')
+        responses = []
+        handler._send_json = lambda payload, code=200: responses.append(
+            (payload, code)
+        )
+
+        with mock.patch.object(
+            self.server,
+            'dismiss_mail_keys',
+            return_value=1,
+        ) as dismiss:
+            handler.do_POST()
+
+        self.assertEqual([({'dismissed': 1}, 200)], responses)
+        dismiss.assert_called_once_with(['safe-hash'])
+
     def test_foreign_browser_origin_is_rejected(self):
         self.assertTrue(self.server.is_local_request('127.0.0.1:8931'))
         self.assertTrue(
@@ -211,6 +238,74 @@ class MailAssistantSendFlowTests(unittest.TestCase):
             'Body',
         )
         send.assert_called_once_with('pending-token')
+
+
+class AssistantRestartTests(unittest.TestCase):
+    def setUp(self):
+        self.startup = _load_startup_module()
+
+    def test_find_assistant_pids_matches_only_exact_server_script(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / 'mail_assistant_server.py'
+            script.write_text('# server', encoding='utf-8')
+            expected = str(script.resolve())
+            payload = [
+                {
+                    'ProcessId': 101,
+                    'CommandLine': f'"C:\\Python\\pythonw.exe" "{expected}"',
+                },
+                {
+                    'ProcessId': 102,
+                    'CommandLine': '"C:\\Python\\python.exe" other.py',
+                },
+                {
+                    'ProcessId': 103,
+                    'CommandLine': f'"C:\\Python\\python.exe" "{expected}" --no-refresh',
+                },
+            ]
+
+            def runner(command, **kwargs):
+                return subprocess.CompletedProcess(
+                    command, 0, json.dumps(payload), ''
+                )
+
+            pids = self.startup.find_assistant_pids(script, runner=runner)
+
+        self.assertEqual([101, 103], pids)
+
+    def test_restart_stops_exact_pids_and_starts_without_refresh(self):
+        port_states = iter([True, True, False, False])
+        launched = []
+        stopped = []
+        opened = []
+        refreshed = []
+        with mock.patch.object(
+            self.startup, 'port_in_use', side_effect=lambda: next(port_states)
+        ), mock.patch.object(
+            self.startup,
+            'find_assistant_pids',
+            return_value=[123, 456],
+        ) as find_pids, mock.patch.object(
+            self.startup,
+            'stop_assistant_pids',
+            side_effect=lambda pids: stopped.extend(pids),
+        ), mock.patch.object(
+            self.startup,
+            'launch_server',
+            side_effect=lambda no_refresh: launched.append(no_refresh),
+        ), mock.patch.object(
+            self.startup, 'trigger_refresh', side_effect=refreshed.append
+        ), mock.patch.object(
+            self.startup.webbrowser, 'open', side_effect=opened.append
+        ):
+            exit_code = self.startup.main(['--restart', '--no-open'])
+
+        self.assertEqual(0, exit_code)
+        self.assertEqual([123, 456], stopped)
+        self.assertEqual([True], launched)
+        self.assertEqual([], refreshed)
+        self.assertEqual([], opened)
+        find_pids.assert_called_once()
 
 
 if __name__ == '__main__':

@@ -3,20 +3,21 @@
 - 项目名称：AI-Work — 仅面向 Windows 的 FastMCP 桌面自动化服务器
 - 仓库路径：`D:\21781\Documents\Codex\AI-Work`
 - 远程仓库：`https://github.com/peiwenZHANG-git/AI-Work.git`（origin）
-- 状态基线：本文档内容核实于 2026-08-31；Git 当前 HEAD 与分支指向请实时查询（如 `git rev-parse main origin/main`），本文档不记录会随提交立即过时的动态 hash。
+- 状态基线：本文档内容核实于 2026-09-02；Git 当前 HEAD 与分支指向请实时查询（如 `git rev-parse main origin/main`），本文档不记录会随提交立即过时的动态 hash。
 - 维护规则：开始新的重要开发任务前先阅读本文档；完成影响项目状态的重要工作后更新本文档。只记录恢复上下文所需信息，不记录微小修改；记录前须用仓库、Git 历史和验证输出核实。
 
 ## 1. 当前目标
 
 维护一个仅面向 Windows 的 FastMCP 桌面自动化服务器，在保持既有公共接口兼容的前提下，提供安全、可测试的鼠标、键盘、窗口、截图、UI Automation、菜单及邮箱操作能力。
 
-兼容性基线：保留 `windows_gui_mcp.py` stdio 入口、服务器名 `windows-gui` 和导出的 `mcp` 对象；28 个 MCP 工具恰好注册一次；PyAutoGUI `FAILSAFE` 开启；ASCII 文本走 PyAutoGUI，非 ASCII 文本走原生 `SendInput`。
+兼容性基线：保留 `windows_gui_mcp.py` stdio 入口、服务器名 `windows-gui` 和导出的 `mcp` 对象；经用户于 2026-09-02 明确批准扩展后，36 个 MCP 工具恰好注册一次；原有 28 个工具的签名和返回结构保持不变；PyAutoGUI `FAILSAFE` 开启；ASCII 文本走 PyAutoGUI，非 ASCII 文本走原生 `SendInput`。
 
 邮箱目标：在固定 Edge Profile 与最小权限边界内提供 READ、DRAFT、SEND 流程；所有发送必须先创建草稿并获得显式确认；QQ 邮箱永不发送；身份或服务域名无法确认时立即停止处理。
 
 ## 2. 架构
 
-- `windows_gui_mcp.py` 是向后兼容入口并重导出全部公共工具；FastMCP 实例与进程级设置在 `windows_gui/server.py`；28 个工具恰好注册一次（2026-08-31 重新确认）。
+- `windows_gui_mcp.py` 是向后兼容入口并重导出全部公共工具；FastMCP 实例与进程级设置在 `windows_gui/server.py`；当前 36 个工具恰好注册一次。
+- 通用网页能力分为 `browser_download.py`（公共 URL 校验、Edge 启动、无登录态原子下载）和 `browser_session.py`（专用工作线程持有 Playwright 持久 Edge 上下文、DOM 检查、确认式点击、登录态原子下载）；会话使用独立 Agent Profile，不复用邮箱 Profile。
 - 模块职责遵循 `AGENTS.md`：鼠标/截图 `mouse.py`、键盘 `keyboard.py`、窗口 `windows.py`、UIA/菜单/保存对话框 `uia.py`；邮箱链路为 `mailboxes.py`（固定身份与 Edge 启动）、`mail_summary.py`（只读摘要与就绪校验）、`imap_mail.py`（QQ/网易 IMAP 只读传输）、`browser_mail.py`（可选 CDP/DOM 传输）、`mail_backends.py`（后端分发）、`mail_search.py`、`mail_draft.py`、`mail_send.py`。
 - 邮件后端优先级：Outlook（master_mail）优先 Microsoft Graph，失败回退经验证的 Edge 页面；QQ 与本科网易摘要优先 IMAP 只读后端，可选启用回环 CDP 浏览器 DOM 后端。
 - 摘要与助手：`mail_digest.py` + `scripts/daily_mail_digest.py` 由计划任务触发；`mail_assistant.py` + `mail_assistant_page.py` + `scripts/mail_assistant_server.py` 提供本机 8931 网页。助手 Web 层校验 `Host`、`Origin` 和 JSON Content-Type；本科 SMTP 发送前先保存 IMAP 草稿。
@@ -37,7 +38,7 @@
 - Outlook 一次性 OAuth 登录已提交：authorization code + PKCE、精确回环回调、state 校验和专用 refresh token 写入。
 - OAuth 一次性登录与自动刷新共用跨进程锁；token 交换失败不会覆盖既有凭据。
 - 摘要 HTML 与状态 JSON 使用临时文件加原子替换；`last-run.json` 记录 `ok`、邮箱健康、计数和 Toast 状态。
-- 本机只读健康检查已提交：检查环境变量和凭据存在性、28 个 MCP 工具注册、计划任务、最近摘要状态和助手服务；凭据值读取后立即丢弃且不输出。
+- 本机只读健康检查已提交：检查环境变量和凭据存在性、36 个 MCP 工具注册、计划任务、最近摘要状态和助手服务；凭据值读取后立即丢弃且不输出。
 - 安全凭据配置 CLI 已提交：隐藏提示、白名单目标、双重输入确认，且不在 argv、日志或输出中保留密钥。
 - 计划任务恢复安装器已提交：幂等注册每日摘要任务，支持 10:00/22:00 双触发、禁止并发、1 小时超时和 `--dry-run`；安装本身不触发邮件读取。
 - 计划任务定义只读校验已提交：`--check` 比较动作、参数、工作目录、触发时间和执行限制；健康检查将其作为必需项。
@@ -55,25 +56,28 @@
 - 两阶段草稿状态校验已提交：发送前确认 Graph `isDraft=true` 或 IMAP `\Draft` 标记；非草稿消息会显式失败，不会误发。
 - SMTP 旁路清理已提交：移除助手 `send_mail_smtp()` 的“新字段即时构建并发送”路径，只保留 `send_existing_email_smtp()` 发送已取回并校验的 `EmailMessage`。
 - 助手服务并发与响应头加固已提交：后台刷新启动由互斥锁保护；HTML 响应增加 `nosniff`、`no-referrer`、`SAMEORIGIN` 和 CSP。
+- 通用浏览器/下载已实现并注册 8 个 MCP 工具：公共网页打开和无登录态原子下载，以及使用独立 Agent Profile 的持久 Playwright Edge 会话启动、导航、页面检查、确认式点击、登录态原子下载和停止。URL 输出去除查询串/片段，检查不返回 Cookie 或密码框值，下载默认不覆盖并返回 SHA-256；服务器现固定注册 36 个工具，原有 28 个接口保持兼容。
+- 邮件摘要与助手已支持单邮件本地隐藏（不修改邮箱服务器状态）、30 天/5000 项清理、`/api/dismiss`、本地搜索与邮箱/重要程度/日期筛选，以及附件名称、MIME 类型和大小展示；IMAP 不解码附件，Graph 不请求 `contentBytes` 并过滤内嵌附件。
+- 摘要读取与 AI enrichment 已并发化并保持固定邮箱显示顺序；AI 缓存改为整批落盘，重要程度政策升级到版本 2，高重要性检查不再进行无用翻译。助手启动器仅识别精确脚本进程，并提供 `--restart` / `--no-refresh` 安全选项。
 
 ## 4. 当前工作（待提交）
 
 - `.vscode/mcp.json`：本机 GitHub MCP 配置，按既定决定保持本地修改，不提交、不还原。
-- 无待提交源码。当前提交前验证基线（2026-09-01 实测）：`python -m compileall -q windows_gui_mcp.py windows_gui tests scripts` 通过；`python -m unittest discover -s tests -t . -v` 共 279 项全部通过；`mcp.list_tools()` 确认 28 个工具；`git diff --check` 通过。
+- 当前提交前验证基线（2026-09-02 实测）：`python -m compileall -q windows_gui_mcp.py windows_gui tests` 通过；`python -m unittest discover -s tests -t . -v` 共 305 项全部通过；FastMCP 实际列出 36 个工具；`git diff --check` 通过。Playwright 1.62.0 已安装到规定 Python 解释器；浏览器单元测试使用替身，未启动真实 Edge。
 
 ## 5. 已知问题与阻塞
 
 - Outlook 一次性登录命令已具备，但本会话未执行真实 Microsoft 登录或用真实租户验证端到端授权。已有 refresh token 时，摘要/助手会安全刷新并轮换。摘要/搜索需要 `Mail.Read` 凭据，草稿需要 `Mail.ReadWrite`，发送还需要 `Mail.Send`。
-- 2026-09-01 检查确认：3 个助手专用授权码条目缺失；计划任务 10:00 运行返回 `1`，`last-run.json` 仍未更新。诊断修复将在 22:00 运行时生效，用于记录失败阶段。缺失凭据需要用户提供授权码，不能自动输入或猜测。
+- 2026-09-02 检查确认：3 个助手专用授权码条目仍缺失，需要用户提供授权码，不能自动输入或猜测；但只读邮件摘要链路已恢复，最近运行三邮箱均为 `READY`，计划任务最近返回 `0`，`last-run.json` 与 `last-attempt.json` 均正常更新。
 - 本科网易暂不支持经 Edge 发送已有草稿（draft hash 无法稳定定位并校验）；QQ 发送为设计性禁止。
 - Edge 摘要/搜索回退只解析当前已验证页面的可见列表，不代表完整邮箱索引，也不打开正文。
 - 本次会话未运行真实桌面 smoke test（按仓库规则需用户明确授权）。
-- 当前运行的助手服务进程早于 JSON 主体上限、刷新并发锁和 HTTP 安全头修复；需要用户显式重启后才会加载这些修复。本会话不自动关闭或重启服务。
+- 2026-09-02 健康检查时助手服务未运行；启动或安全重启后才会加载单邮件隐藏与安全重启实现。
 - 工作区存在已忽略的运行时文件/目录（例如 `screen.png`、`__pycache__/`），未清理。
 
 ## 6. 重要技术决策
 
-- 公共接口冻结：服务器名 `windows-gui`、导出 `mcp`、28 个工具不得增删改名，不得修改签名或返回形状，除非用户明确批准。
+- 公共接口冻结：服务器名 `windows-gui`、导出 `mcp`、当前 36 个工具不得增删改名，不得修改签名或返回形状，除非用户明确批准；原有 28 个工具保持兼容。
 - 邮箱权限矩阵：`bachelor_mail`/`master_mail` = READ+DRAFT+SEND；`qq_mail` = READ+DRAFT（永不 SEND）；每次 SEND 必须先建草稿并获显式确认。
 - 身份绑定优先显式 `--profile-directory` 启动的运行时 HWND；进程重启后按 Edge PID 命令行找精确 Profile，必要时允许配置的 Profile 标题后缀回退；永不从页面 UIA 文本推断 Profile。
 - IMAP 只读约束：SSL、EXAMINE、UID、BODY.PEEK；禁止 STORE/MOVE/COPY/EXPUNGE。凭据只存 Windows Credential Manager `AI-Work/windows-gui/mailboxes`；本科 IMAP 用户名读 `AI_WORK_BACHELOR_IMAP_USERNAME`。
@@ -83,11 +87,12 @@
 
 ## 7. 下一步
 
-1. 22:00 计划任务运行后读取 `last-attempt.json` 和 `last-run.json` 判断失败阶段；用户配置 3 个助手专用授权码后重新运行健康检查，再用显式授权执行一次真实 Outlook 登录。
-2. 每次提交前运行规定验证：compileall、完整单元测试、28 工具注册检查、`git diff --check`。
+1. 用户配置 3 个助手专用授权码后重新运行健康检查，再用显式授权执行一次真实 Outlook 登录。
+2. 每次提交前运行规定验证：compileall、完整单元测试、36 工具注册检查、`git diff --check`。
 3. 真实桌面验证仅在用户明确授权后运行 `python tests/smoke_test.py`；邮箱只读 smoke 仅在另行授权时使用 `--mailbox-readonly`。
 4. 后续增强：在用户授权的交互会话中执行一次真实 Outlook 登录；本科网易 Edge 发送仅在能稳定定位并校验既有草稿后再实现。
+5. 在用户授权真实桌面测试后，验证专用持久 Edge Profile 的启动、手工登录、DOM 检查和登录态下载；真实测试不得提交表单或覆盖文件。
 
 ## 8. 最近一次更新
 
-2026-09-01（Europe/Paris）
+2026-09-02（Europe/Paris）

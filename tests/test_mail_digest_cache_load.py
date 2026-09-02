@@ -3,7 +3,12 @@
 import unittest
 from types import SimpleNamespace
 
-from windows_gui.mail_digest import DigestMail, MailboxDigest, enrich_digests
+from windows_gui.mail_digest import (
+    CLASSIFICATION_POLICY_VERSION,
+    DigestMail,
+    MailboxDigest,
+    enrich_digests,
+)
 
 
 class CacheLoadTest(unittest.TestCase):
@@ -19,11 +24,17 @@ class CacheLoadTest(unittest.TestCase):
         cache_key = __import__('hashlib').sha256(
             'qq_mail|s1|正文内容'.encode('utf-8')
         ).hexdigest()[:40]
-        seeded = {cache_key: {'summary': '缓存摘要', 'translation': '缓存翻译'}}
+        seeded = {cache_key: {
+            'summary': '缓存摘要',
+            'translation': '缓存翻译',
+            'classification_policy_version': CLASSIFICATION_POLICY_VERSION,
+        }}
         original_load = None
         import windows_gui.mail_digest as module
         original_load = module.load_translation_cache
         module.load_translation_cache = lambda: seeded
+        original_save = module.save_translation_cache
+        module.save_translation_cache = lambda cache: None
         try:
             def failing_post(url, headers=None, json=None, timeout=None):
                 raise AssertionError('API should not be called on cache hit')
@@ -31,6 +42,7 @@ class CacheLoadTest(unittest.TestCase):
             enrich_digests([box], 'test-key', transport=failing_post)
         finally:
             module.load_translation_cache = original_load
+            module.save_translation_cache = original_save
         self.assertEqual(box.emails[0].summary, '缓存摘要')
         self.assertEqual(box.emails[0].translation, '缓存翻译')
 

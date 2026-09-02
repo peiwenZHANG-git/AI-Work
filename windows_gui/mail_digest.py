@@ -21,17 +21,19 @@ import re
 import shutil
 import ssl
 import subprocess
+import threading
 import tempfile
 import time
 import winreg
 from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from email.utils import parseaddr, parsedate_to_datetime
 from html import unescape
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from xml.sax.saxutils import escape
 
 import keyring
@@ -69,9 +71,12 @@ CRED_MAX_BLOB_BYTES = 2560
 ERROR_NOT_FOUND = 1168
 MAX_EMAILS_PER_MAILBOX = 25
 MAX_FETCH_PER_MAILBOX = 50
+DISMISSED_MAX_AGE_DAYS = 30
+DISMISSED_MAX_KEYS = 5000
 MAX_IMAP_MESSAGE_BYTES = 400_000
 MAX_BODY_CHARS = 3500
 MAX_AI_MAILS_PER_RUN = 25
+CLASSIFICATION_POLICY_VERSION = 2
 GRAPH_MESSAGES_URL = 'https://graph.microsoft.com/v1.0/me/messages'
 GRAPH_REFRESH_MUTEX_NAME = 'Local\\AI-Work-MasterGraphRefresh'
 ZHIPU_CHAT_ENDPOINT = 'https://open.bigmodel.cn/api/paas/v4/chat/completions'
@@ -81,8 +86,10 @@ SUMMARY_SYSTEM_PROMPT = (
     '你是邮件整理助手。用户会提供一封邮件，请只输出一个 JSON 对象，'
     '格式为 {"summary": "...", "importance": "高|中|低"}。'
     'summary 是一到两句话的简体中文要点，保留关键日期、地点或行动项；'
-    'importance 是这封邮件对收件人的重要程度：需要行动、有截止日期、'
-    '与本人直接相关为"高"；常规通知为"中"；广告营销为"低"。'
+    'importance 必须严格按以下规则判断：明确要求收件人回复、提交、填写、'
+    '确认、缴费、参加或在截止日期前完成其他事项为"高"；与学校、大学、'
+    '课程、教师、考试、校园或校务相关但只需知悉、无需行动为"中"；'
+    '其余所有邮件一律为"低"。是否与本人直接相关不能单独提高等级。'
     '不要输出 JSON 以外的任何文字。'
 )
 TRANSLATION_SYSTEM_PROMPT = (
@@ -151,6 +158,13 @@ class SummaryAPIError(Exception):
     """Raised when the GLM summary API call cannot produce a summary."""
 
 
+@dataclass(frozen=True)
+class AttachmentInfo:
+    name: str
+    content_type: str
+    size_bytes: int | None = None
+
+
 @dataclass
 class DigestMail:
     sender: str
@@ -159,7 +173,9 @@ class DigestMail:
     body_text: str = ''
     summary: str = ''
     translation: str = ''
-    importance: str = '中'
+    importance: str = '低'
+    attachments: list[AttachmentInfo] = field(default_factory=list)
+    source_reference: str = ''
 
 
 @dataclass
@@ -385,7 +401,9 @@ def build_full_ai_prompt(mail: DigestMail) -> str:
         f'正文：\n{mail.body_text}\n\n'
         '请只输出一个 JSON 对象，格式为 '
         '{"summary": "...", "importance": "高|中|低"}，'
-        '用简体中文概括这封邮件的要点，'
+        '用简体中文概括这封邮件的要点。重要程度必须按以下规则：'
+        '需要收件人采取行动为高；学校相关但无需行动、只需知悉为中；'
+        '其他所有邮件为低。'
         '不要包含 JSON 以外的任何文字。'
     )
 
@@ -517,7 +535,7 @@ def call_mail_summary(
         raise SummaryAPIError('AI 未返回摘要')
     importance = str(parsed.get('importance') or '').strip()
     if importance not in VALID_IMPORTANCE:
-        importance = '中'
+        importance = '低'
     return summary, importance
 
 
@@ -565,6 +583,14 @@ def _contains_cjk(text: str) -> bool:
 
 def _mail_cache_key(mailbox_id: str, mail: Any) -> str:
     raw = f'{mailbox_id}|{mail.subject}|{getattr(mail, "body_text", "")}'
+    return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:40]
+
+
+def _mail_dismiss_key(mailbox_id: str, mail: Any) -> str:
+    source_reference = str(getattr(mail, 'source_reference', '') or '')
+    if not source_reference:
+        return _mail_cache_key(mailbox_id, mail)
+    raw = f'{mailbox_id}|message|{source_reference}'
     return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:40]
 
 
@@ -622,17 +648,123 @@ def _release_run_lock() -> None:
         pass
 
 
+_DISMISSED_LOCK = threading.Lock()
+
+
+def load_dismissed_store(store_path: Path | None = None) -> dict[str, str]:
+    path = store_path or (DIGEST_DIR / 'dismissed-mail.json')
+    try:
+        loaded = json.loads(
+            path.read_text(encoding='utf-8')
+        )
+    except (OSError, ValueError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def save_dismissed_store(
+    store: dict[str, str], store_path: Path | None = None
+) -> bool:
+    try:
+        DIGEST_DIR.mkdir(parents=True, exist_ok=True)
+        _atomic_write_text(
+            store_path or (DIGEST_DIR / 'dismissed-mail.json'),
+            json.dumps(store, ensure_ascii=False, indent=2),
+        )
+        return True
+    except OSError:
+        _LOGGER.warning('could not persist dismissed mails')
+        return False
+
+
+def _prune_dismissed(
+    store: dict[str, str], now: datetime, max_age_days: int = DISMISSED_MAX_AGE_DAYS
+) -> dict[str, str]:
+    reference = now if now.tzinfo else now.astimezone()
+    kept: dict[str, str] = {}
+    for key, date_text in store.items():
+        try:
+            marked = datetime.fromisoformat(str(date_text))
+        except ValueError:
+            continue
+        if marked.tzinfo is None:
+            marked = marked.astimezone()
+        if (reference - marked).total_seconds() <= max_age_days * 86400:
+            kept[key] = date_text
+    return kept
+
+
+def dismissed_keys() -> set[str]:
+    now = datetime.now().astimezone()
+    return set(_prune_dismissed(load_dismissed_store(), now).keys())
+
+
+def dismiss_mail_keys(
+    keys: list[str],
+    now: datetime | None = None,
+    *,
+    store_path: Path | None = None,
+) -> int:
+    reference = now or datetime.now().astimezone()
+    with _DISMISSED_LOCK:
+        store = _prune_dismissed(load_dismissed_store(store_path), reference)
+        while len(store) >= DISMISSED_MAX_KEYS:
+            store.pop(next(iter(store)))
+        added = 0
+        for key in keys or []:
+            clean = str(key).strip()
+            if clean and clean not in store:
+                store[clean] = reference.isoformat()
+                added += 1
+        if not save_dismissed_store(store, store_path):
+            raise OSError('could not persist dismissed mails')
+        return added
+
+
+def _apply_dismissed_filter(mailboxes: list[MailboxDigest]) -> int:
+    dismissed = dismissed_keys()
+    if not dismissed:
+        return 0
+    removed = 0
+    for box in mailboxes:
+        if not box.ok:
+            continue
+        kept = []
+        for mail in box.emails:
+            current_key = _mail_dismiss_key(box.mailbox_id, mail)
+            legacy_key = _mail_cache_key(box.mailbox_id, mail)
+            if current_key in dismissed or legacy_key in dismissed:
+                removed += 1
+                continue
+            kept.append(mail)
+        box.emails = kept
+    return removed
+
+
+def _collect_mailbox_digests(
+    collectors: tuple[Any, ...] | None = None,
+) -> list[MailboxDigest]:
+    """Read independent mailboxes concurrently while preserving display order."""
+    selected = collectors or (
+        collect_qq_digest,
+        collect_bachelor_digest,
+        collect_master_digest,
+    )
+    with ThreadPoolExecutor(max_workers=len(selected)) as pool:
+        return list(pool.map(lambda collect: collect(), selected))
+
+
 def enrich_digests(
     mailboxes: list[MailboxDigest],
     api_key: str,
     transport: Any = None,
     cache: dict[str, Any] | None = None,
+    include_translations: bool = True,
+    max_workers: int = 4,
 ) -> None:
     persistent = cache is None
     cache = load_translation_cache() if cache is None else cache
-    remaining = MAX_AI_MAILS_PER_RUN
-    active_key = api_key
-    consecutive_failures = 0
+    pending: list[tuple[MailboxDigest, Any, str, str, bool]] = []
     for box in mailboxes:
         if not box.ok:
             continue
@@ -641,72 +773,165 @@ def enrich_digests(
             if not body_text:
                 mail.summary = ''
                 mail.translation = ''
+                mail.importance = '低'
                 continue
             cache_key = _mail_cache_key(box.mailbox_id, mail)
             cached = cache.get(cache_key)
-            cached_valid = (
-                isinstance(cached, dict)
-                and 'summary' in cached
-                and _contains_cjk(str(cached.get('translation') or ''))
-            )
-            if cached_valid:
+            if _cache_entry_usable(cached, include_translations):
                 mail.summary = str(cached.get('summary') or '')
                 mail.translation = str(cached.get('translation') or '')
-                cached_importance = str(cached.get('importance') or '中')
-                mail.importance = (
-                    cached_importance
-                    if cached_importance in VALID_IMPORTANCE
-                    else '中'
-                )
+                mail.importance = _valid_importance(cached.get('importance'))
                 continue
-            if not (active_key and remaining > 0):
-                mail.summary = '正文预览：' + _single_line(body_text, 140)
-                mail.translation = ''
-                mail.importance = '中'
-                continue
-            try:
-                mail.summary, mail.importance = call_mail_summary(
-                    mail, active_key, transport=transport
-                )
-                consecutive_failures = 0
-            except SummaryAPIError as error:
-                _LOGGER.warning('AI 摘要失败：%s', error)
-                consecutive_failures += 1
-                if consecutive_failures >= 3:
-                    active_key = ''
-                mail.summary = '正文预览：' + _single_line(body_text, 140)
-                mail.translation = ''
-                mail.importance = '中'
-                continue
-            if not active_key:
-                mail.summary = '正文预览：' + _single_line(body_text, 140)
-                mail.translation = ''
-                mail.importance = '中'
-                continue
-            try:
-                mail.translation = call_mail_translation(
-                    body_text, active_key, transport=transport
-                )
-                consecutive_failures = 0
-            except SummaryAPIError as error:
-                _LOGGER.warning('AI 翻译失败：%s', error)
-                mail.translation = ''
-                consecutive_failures += 1
-                if consecutive_failures >= 3:
-                    active_key = ''
-            if _contains_cjk(mail.translation):
-                cache[cache_key] = {
-                    'summary': mail.summary,
-                    'translation': mail.translation,
-                    'importance': mail.importance,
-                }
-                if persistent:
-                    save_translation_cache(cache)
-            remaining -= 1
+            needs_translation = include_translations
+            if _cache_content_usable(cached, include_translations):
+                mail.summary = str(cached.get('summary') or '')
+                mail.translation = str(cached.get('translation') or '')
+                needs_translation = False
+            pending.append(
+                (box, mail, cache_key, body_text, needs_translation)
+            )
+    if pending:
+        _process_pending(
+            pending,
+            api_key,
+            cache,
+            transport,
+            include_translations,
+            max_workers,
+            persistent,
+        )
     for box in mailboxes:
         _sort_box_mails(box)
     if persistent:
         save_translation_cache(cache)
+
+
+def _cache_entry_usable(entry: Any, require_translation: bool) -> bool:
+    return (
+        _cache_content_usable(entry, require_translation)
+        and entry.get('classification_policy_version')
+        == CLASSIFICATION_POLICY_VERSION
+    )
+
+
+def _cache_content_usable(entry: Any, require_translation: bool) -> bool:
+    if not isinstance(entry, dict) or 'summary' not in entry:
+        return False
+    summary = str(entry.get('summary') or '')
+    if not _contains_cjk(summary):
+        return False
+    if require_translation:
+        return _contains_cjk(str(entry.get('translation') or ''))
+    return True
+
+
+def _valid_importance(value: Any) -> str:
+    text = str(value or '低')
+    return text if text in VALID_IMPORTANCE else '低'
+
+
+def _process_pending(
+    pending: list[tuple[MailboxDigest, Any, str, str, bool]],
+    api_key: str,
+    cache: dict[str, Any],
+    transport: Any,
+    include_translations: bool,
+    max_workers: int,
+    persistent: bool,
+) -> None:
+    remaining = [MAX_AI_MAILS_PER_RUN]
+    failure_count = [0]
+    cancel_event = threading.Event()
+    state_lock = threading.Lock()
+
+    def apply_preview(mail: Any, body_text: str) -> None:
+        if not getattr(mail, 'summary', ''):
+            mail.summary = '正文预览：' + _single_line(body_text, 140)
+            mail.translation = ''
+        mail.importance = '低'
+
+    def process_task(task: tuple[MailboxDigest, Any, str, str, bool]) -> None:
+        box, mail, cache_key, body_text, needs_translation = task
+        with state_lock:
+            if cancel_event.is_set() or remaining[0] <= 0:
+                apply_preview(mail, body_text)
+                return
+        try:
+            mail.summary, mail.importance = call_mail_summary(
+                mail, api_key, transport=transport
+            )
+            if needs_translation:
+                mail.translation = call_mail_translation(
+                    body_text, api_key, transport=transport
+                )
+            elif not include_translations:
+                mail.translation = ''
+        except SummaryAPIError as error:
+            with state_lock:
+                failure_count[0] += 1
+                if failure_count[0] >= 3:
+                    cancel_event.set()
+            _LOGGER.warning('AI 处理失败：%s', error)
+            apply_preview(mail, body_text)
+            return
+        cacheable = include_translations and _contains_cjk(
+            str(mail.translation or '')
+        )
+        with state_lock:
+            remaining[0] -= 1
+            if cacheable:
+                cache[cache_key] = {
+                    'summary': mail.summary,
+                    'translation': mail.translation,
+                    'importance': mail.importance,
+                    'classification_policy_version': (
+                        CLASSIFICATION_POLICY_VERSION
+                    ),
+                }
+
+    workers = min(max_workers, len(pending))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        list(pool.map(process_task, pending))
+
+
+def _encoded_attachment_size(part: Any) -> int | None:
+    raw_length = str(part.get('Content-Length') or '').strip()
+    if raw_length.isdigit():
+        return int(raw_length)
+    payload = part.get_payload(decode=False)
+    if isinstance(payload, bytes):
+        return len(payload)
+    if not isinstance(payload, str):
+        return None
+    encoding = str(part.get('Content-Transfer-Encoding') or '').casefold()
+    if encoding == 'base64':
+        compact = ''.join(payload.split())
+        if not compact:
+            return 0
+        return max(0, (len(compact) * 3 // 4) - compact[-2:].count('='))
+    return len(payload.encode('utf-8')) if payload else 0
+
+
+def extract_attachment_metadata(message: Any) -> list[AttachmentInfo]:
+    """Read MIME attachment headers without decoding or opening payloads."""
+    attachments = []
+    for part in message.walk():
+        disposition = str(part.get_content_disposition() or '').casefold()
+        filename = str(part.get_filename() or '').strip()
+        if disposition == 'inline' or not (
+            disposition == 'attachment' or filename
+        ):
+            continue
+        attachments.append(AttachmentInfo(
+            name=_single_line(filename or '未命名附件', 160),
+            content_type=_single_line(
+                str(part.get_content_type() or 'application/octet-stream'), 120
+            ),
+            size_bytes=_encoded_attachment_size(part),
+        ))
+        if len(attachments) >= 20:
+            break
+    return attachments
 
 
 def _imap_message_to_mail(item: Any) -> DigestMail:
@@ -727,6 +952,8 @@ def _imap_message_to_mail(item: Any) -> DigestMail:
         subject=str(message.get('Subject') or ''),
         time=time_text,
         body_text=extract_body_text(message),
+        attachments=extract_attachment_metadata(message),
+        source_reference=f'imap:{item.uid.decode("ascii", errors="ignore")}',
     )
 
 
@@ -852,6 +1079,49 @@ def collect_bachelor_digest() -> MailboxDigest:
     )
 
 
+def _graph_attachment_metadata(
+    message_id: str,
+    access_token: str,
+    *,
+    transport: Any = None,
+) -> list[AttachmentInfo]:
+    """Fetch Graph attachment metadata only; never request contentBytes."""
+    if not message_id:
+        return []
+    get = transport or requests.get
+    params = urlencode({'$select': 'name,contentType,size,isInline'})
+    try:
+        response = get(
+            f'{GRAPH_MESSAGES_URL}/{quote(message_id, safe="")}/attachments?{params}',
+            headers={'Authorization': f'Bearer {access_token}'},
+            timeout=20,
+        )
+    except requests.RequestException:
+        return []
+    if response.status_code != 200:
+        return []
+    try:
+        values = response.json().get('value', [])
+    except (AttributeError, ValueError):
+        return []
+    attachments = []
+    for item in values if isinstance(values, list) else []:
+        if not isinstance(item, dict) or item.get('isInline') is True:
+            continue
+        name = _single_line(str(item.get('name') or '未命名附件'), 160)
+        content_type = _single_line(
+            str(item.get('contentType') or 'application/octet-stream'), 120
+        )
+        try:
+            size_bytes = max(0, int(item.get('size')))
+        except (TypeError, ValueError):
+            size_bytes = None
+        attachments.append(AttachmentInfo(name, content_type, size_bytes))
+        if len(attachments) >= 20:
+            break
+    return attachments
+
+
 def collect_master_digest() -> MailboxDigest:
     window_start = datetime.now().astimezone() - timedelta(hours=24)
 
@@ -882,7 +1152,7 @@ def collect_master_digest() -> MailboxDigest:
 
     params = urlencode({
         '$top': MAX_FETCH_PER_MAILBOX,
-        '$select': 'subject,sender,receivedDateTime,body',
+        '$select': 'id,subject,sender,receivedDateTime,body,hasAttachments',
         '$orderby': 'receivedDateTime desc',
     })
     response = None
@@ -919,6 +1189,7 @@ def collect_master_digest() -> MailboxDigest:
         )
 
     mails: list[DigestMail] = []
+    attachment_jobs: list[tuple[DigestMail, str]] = []
     for item in value:
         received_raw = str(item.get('receivedDateTime') or '')
         try:
@@ -930,14 +1201,30 @@ def collect_master_digest() -> MailboxDigest:
         if received_local is None or received_local < window_start:
             continue
         sender_info = (item.get('sender') or {}).get('emailAddress') or {}
-        mails.append(
-            DigestMail(
-                sender=str(sender_info.get('name') or sender_info.get('address') or ''),
-                subject=str(item.get('subject') or ''),
-                time=received_raw,
-                body_text=graph_body_text(item.get('body')),
-            )
+        mail = DigestMail(
+            sender=str(sender_info.get('name') or sender_info.get('address') or ''),
+            subject=str(item.get('subject') or ''),
+            time=received_raw,
+            body_text=graph_body_text(item.get('body')),
+            source_reference=(
+                f'graph:{item["id"]}' if item.get('id') else ''
+            ),
         )
+        mails.append(mail)
+        if item.get('hasAttachments') is True and item.get('id'):
+            attachment_jobs.append((mail, str(item['id'])))
+
+    if attachment_jobs:
+        def fetch_attachments(job: tuple[DigestMail, str]) -> None:
+            mail, message_id = job
+            mail.attachments = _graph_attachment_metadata(
+                message_id, str(payload['access_token'])
+            )
+
+        with ThreadPoolExecutor(
+            max_workers=min(4, len(attachment_jobs))
+        ) as pool:
+            list(pool.map(fetch_attachments, attachment_jobs))
 
     return MailboxDigest(
         mailbox_id='master_mail',
@@ -954,6 +1241,20 @@ def _single_line(text: Any, limit: int) -> str:
     if len(collapsed) <= limit:
         return collapsed
     return collapsed[: limit - 1] + '…'
+
+
+def _escape_attr(value: Any) -> str:
+    return escape(str(value or ''), {'"': '&quot;', "'": '&#x27;'})
+
+
+def _format_attachment_size(size_bytes: int | None) -> str:
+    if size_bytes is None:
+        return '大小未知'
+    if size_bytes < 1024:
+        return f'{size_bytes} B'
+    if size_bytes < 1024 * 1024:
+        return f'{size_bytes / 1024:.1f} KB'
+    return f'{size_bytes / (1024 * 1024):.1f} MB'
 
 
 def _mail_time(value: Any) -> str:
@@ -982,7 +1283,7 @@ def _mail_sort_key(mail: Any):
     epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
     parsed = _mail_dt(getattr(mail, 'time', ''))
     timestamp = parsed.timestamp() if parsed else epoch.timestamp()
-    rank = IMPORTANCE_RANK.get(getattr(mail, 'importance', '中'), 1)
+    rank = IMPORTANCE_RANK.get(getattr(mail, 'importance', '低'), 2)
     return (rank, -timestamp)
 
 
@@ -990,11 +1291,11 @@ def _sort_box_mails(box: MailboxDigest) -> None:
     box.emails.sort(key=_mail_sort_key)
 
 
-def _render_mail_list_item(mail: Any) -> str:
+def _render_mail_list_item(mail: Any, mailbox_id: str) -> str:
     summary = getattr(mail, 'summary', '')
     translation = getattr(mail, 'translation', '')
     body_text = getattr(mail, 'body_text', '')
-    importance = getattr(mail, 'importance', '中')
+    importance = getattr(mail, 'importance', '低')
     imp_class = {'高': 'imp-high', '中': 'imp-mid', '低': 'imp-low'}.get(
         importance, 'imp-mid'
     )
@@ -1016,8 +1317,37 @@ def _render_mail_list_item(mail: Any) -> str:
         if body_text
         else ''
     )
+    attachments = list(getattr(mail, 'attachments', []) or [])
+    attachment_html = ''
+    if attachments:
+        rows = ''.join(
+            '<li><span class="attachment-name">'
+            f'{escape(_single_line(item.name, 160))}</span>'
+            f'<span class="attachment-meta">{escape(item.content_type)} · '
+            f'{escape(_format_attachment_size(item.size_bytes))}</span></li>'
+            for item in attachments
+        )
+        attachment_html = (
+            f'<div class="attachments"><h3 class="detail-title">附件元数据'
+            f'（{len(attachments)}）</h3><ul>{rows}</ul>'
+            '<p class="attachment-note">仅显示名称、类型和大小；未打开或保存附件。</p>'
+            '</div>'
+        )
+    parsed_date = _mail_dt(getattr(mail, 'time', ''))
+    date_text = parsed_date.strftime('%Y-%m-%d') if parsed_date else ''
+    search_text = ' '.join([
+        str(getattr(mail, 'sender', '') or ''),
+        str(getattr(mail, 'subject', '') or ''),
+        str(summary or ''),
+        ' '.join(item.name for item in attachments),
+        ' '.join(item.content_type for item in attachments),
+    ]).casefold()
     return (
-        '<article class="mail">'
+        f'<article class="mail" data-key="{_escape_attr(_mail_dismiss_key(mailbox_id, mail))}" '
+        f'data-mailbox="{_escape_attr(mailbox_id)}" '
+        f'data-importance="{_escape_attr(importance)}" '
+        f'data-date="{_escape_attr(date_text)}" '
+        f'data-search="{_escape_attr(search_text)}">'
         '<button class="mail-head" type="button">'
         f'<span class="time">{escape(_mail_time(mail.time))}</span>'
         f'<span class="sender">{escape(_single_line(mail.sender, 60))}</span>'
@@ -1027,8 +1357,12 @@ def _render_mail_list_item(mail: Any) -> str:
         '<path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.6" '
         'stroke-linecap="round" stroke-linejoin="round"/></svg>'
         '</button>'
+        '<span class="mail-dismiss-wrap">'
+        '<button class="mail-dismiss" type="button" '
+        'title="标记为已处理：从摘要中隐藏，不影响邮箱里的已读状态">已读</button>'
+        '</span>'
         f'{summary_html}'
-        f'<div class="mail-detail">{translation_html}{original_html}</div>'
+        f'<div class="mail-detail">{attachment_html}{translation_html}{original_html}</div>'
         '</article>'
     )
 
@@ -1064,7 +1398,7 @@ def format_digest(mailboxes: list[MailboxDigest], generated_at: datetime) -> str
             continue
         lines.append(f'  {len(mails)} 封')
         for index, mail in enumerate(mails, 1):
-            importance = getattr(mail, 'importance', '中')
+            importance = getattr(mail, 'importance', '低')
             lines.append(
                 f'  {index}. [{importance}] {_mail_time(mail.time)} '
                 f'{_single_line(mail.sender, 40)} — {_single_line(mail.subject, 70)}'
@@ -1072,8 +1406,16 @@ def format_digest(mailboxes: list[MailboxDigest], generated_at: datetime) -> str
             summary = getattr(mail, 'summary', '')
             if summary:
                 lines.append(f'     ↳ {_single_line(summary, 110)}')
+            attachments = list(getattr(mail, 'attachments', []) or [])
+            if attachments:
+                attachment_text = '；'.join(
+                    f'{_single_line(item.name, 50)} '
+                    f'({item.content_type}, {_format_attachment_size(item.size_bytes)})'
+                    for item in attachments
+                )
+                lines.append(f'     附件：{_single_line(attachment_text, 180)}')
         lines.append('')
-    lines.append('只读模式：正文仅用于生成摘要，未改变已读状态')
+    lines.append('只读模式：正文仅用于生成摘要；卡片可标记"已读"仅隐藏显示')
     return '\n'.join(lines)
 
 
@@ -1088,6 +1430,10 @@ header h1 { margin: 0 0 10px; font-size: 22px; letter-spacing: 0; }
 .chip.ok { background: #1f7a45; }
 .chip.warn { background: #b3261e; }
 main { max-width: 860px; margin: 22px auto 40px; padding: 0 16px; }
+.filters { display: grid; grid-template-columns: minmax(180px, 1fr) repeat(3, minmax(120px, auto)) auto; gap: 8px; align-items: center; background: #fff; border: 1px solid #dfe3e8; border-radius: 8px; padding: 12px; margin-bottom: 16px; }
+.filters input, .filters select, .filters button { min-height: 34px; border: 1px solid #d6dce3; border-radius: 5px; background: #fff; color: #243b53; padding: 5px 9px; font: inherit; font-size: 13px; }
+.filters button { cursor: pointer; background: #f6f8fa; }
+.filter-count { grid-column: 1 / -1; color: #7b8794; font-size: 12px; }
 section.mailbox { background: #ffffff; border: 1px solid #dfe3e8; border-radius: 8px; margin-bottom: 18px; overflow: hidden; }
 .mailbox-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 14px 18px; border-bottom: 1px solid #eef1f4; }
 .mailbox-head h2 { margin: 0; font-size: 16px; }
@@ -1097,19 +1443,29 @@ section.mailbox { background: #ffffff; border: 1px solid #dfe3e8; border-radius:
 .head-actions button { font: inherit; font-size: 12px; color: #334e68; background: #f6f8fa; border: 1px solid #dfe3e8; border-radius: 4px; padding: 3px 10px; cursor: pointer; }
 .head-actions button:hover { background: #eef2f6; }
 .mail-list { list-style: none; margin: 0; padding: 0; }
+article.mail { position: relative; }
 article.mail + article.mail { border-top: 1px solid #eef1f4; }
-.mail-head { display: grid; grid-template-columns: 46px minmax(110px, 200px) 1fr 18px; gap: 10px; align-items: start; width: 100%; padding: 10px 14px; background: transparent; border: 0; font: inherit; text-align: left; cursor: pointer; }
+.mail-head { display: grid; grid-template-columns: 46px minmax(110px, 200px) 1fr 18px; gap: 10px; align-items: start; width: 100%; padding: 10px 92px 10px 14px; background: transparent; border: 0; font: inherit; text-align: left; cursor: pointer; }
 .mail-head:hover { background: #f6f8fa; }
 .mail .time { color: #7b8794; font-size: 13px; font-variant-numeric: tabular-nums; padding-top: 1px; }
 .mail .sender { color: #486581; font-size: 13px; overflow-wrap: anywhere; padding-top: 1px; }
 .mail .subject { color: #1f2430; font-size: 14px; overflow-wrap: anywhere; }
 .chevron { width: 14px; height: 14px; margin-top: 3px; color: #829ab1; transition: transform 0.15s ease; }
 .mail.open .chevron { transform: rotate(180deg); }
+.mail-dismiss-wrap { position: absolute; top: 8px; right: 36px; }
+.mail-dismiss { font: inherit; font-size: 11px; padding: 2px 8px; border-radius: 4px; border: 1px solid #dbe1e8; background: #fff; color: #8792a2; cursor: pointer; }
+.mail-dismiss:hover { color: #b3261e; border-color: #b3261e; background: #fdecea; }
 .mail-detail { display: none; padding: 4px 16px 16px 70px; background: #fbfcfd; border-top: 1px solid #eef1f4; }
 .mail.open .mail-detail { display: block; }
 .mail-summary { margin: 6px 14px 10px 70px; font-size: 13px; color: #243b53; background: #f0f6ff; border: 1px solid #d6e4ff; border-radius: 6px; padding: 6px 10px; }
 .mail-summary .label { color: #2563eb; font-weight: 600; margin-right: 6px; }
 .detail-title { margin: 0 0 6px; font-size: 13px; color: #52606d; }
+.attachments { margin-bottom: 14px; padding: 9px 11px; border: 1px solid #dfe7ef; border-radius: 6px; background: #fff; }
+.attachments ul { margin: 0; padding-left: 18px; }
+.attachments li { margin: 4px 0; }
+.attachment-name { color: #243b53; font-size: 13px; overflow-wrap: anywhere; }
+.attachment-meta { color: #7b8794; font-size: 12px; margin-left: 7px; }
+.attachment-note { margin: 7px 0 0; color: #9aa5b1; font-size: 11px; }
 .translation { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; line-height: 1.7; color: #243b53; }
 details.original { margin-top: 12px; }
 details.original summary { cursor: pointer; font-size: 13px; color: #829ab1; }
@@ -1122,7 +1478,7 @@ details.original summary { cursor: pointer; font-size: 13px; color: #829ab1; }
 .imp-mid { background: #fff4d5; color: #9a6700; }
 .imp-low { background: #eceff3; color: #64748b; }
 footer { text-align: center; color: #9aa5b1; font-size: 12px; padding: 8px 0 28px; }
-@media (max-width: 640px) { .mail-head { grid-template-columns: 42px 1fr 18px; } .mail .sender { display: none; } .mail-detail { padding-left: 16px; } }
+@media (max-width: 640px) { .filters { grid-template-columns: 1fr 1fr; } .filters .filter-search, .filter-count { grid-column: 1 / -1; } .mail-head { grid-template-columns: 42px 1fr 18px; } .mail .sender { display: none; } .mail-detail { padding-left: 16px; } }
 """
 
 
@@ -1148,7 +1504,9 @@ def format_digest_html(
                 '</div><p class="empty">过去 24 小时没有新邮件</p></section>'
             )
         mails = sorted(mails, key=_mail_sort_key)
-        items = ''.join(_render_mail_list_item(mail) for mail in mails)
+        items = ''.join(
+            _render_mail_list_item(mail, box.mailbox_id) for mail in mails
+        )
         actions = (
             '<span class="head-actions">'
             '<button type="button" data-toggle-all="open">展开全部</button>'
@@ -1156,7 +1514,7 @@ def format_digest_html(
             '</span>'
         )
         return (
-            f'<section class="mailbox" id="{escape(box.mailbox_id)}">'
+            f'<section class="mailbox" id="{escape(box.mailbox_id)}" data-mail-section>'
             '<div class="mailbox-head">'
             f'<h2>{escape(box.display_name)}</h2>'
             f'<span class="head-meta"><span class="count-badge">{len(mails)} 封</span>{actions}</span>'
@@ -1189,13 +1547,32 @@ def format_digest_html(
     total_mails = sum(len(box.emails) for box in ok_boxes)
     important_count = sum(
         1 for box in ok_boxes for mail in box.emails
-        if getattr(mail, 'importance', '中') == '高'
+        if getattr(mail, 'importance', '低') == '高'
     )
     stats_chip = f'<span class="chip">过去 24 小时共 {total_mails} 封</span>'
     important_chip = (
         f'<span class="chip chip-ok">重要 {important_count} 封</span>'
         if important_count
         else ''
+    )
+    mailbox_options = ''.join(
+        f'<option value="{_escape_attr(box.mailbox_id)}">'
+        f'{escape(box.display_name)}</option>'
+        for box in ok_boxes
+    )
+    filters_html = (
+        '<div class="filters" aria-label="邮件筛选">'
+        '<input class="filter-search" id="filter-search" type="search" '
+        'placeholder="搜索发件人、主题、摘要或附件名">'
+        '<select id="filter-mailbox"><option value="">全部邮箱</option>'
+        f'{mailbox_options}</select>'
+        '<select id="filter-importance"><option value="">全部重要程度</option>'
+        '<option value="高">高</option><option value="中">中</option>'
+        '<option value="低">低</option></select>'
+        '<input id="filter-date" type="date" aria-label="按日期筛选">'
+        '<button id="filter-reset" type="button">清除筛选</button>'
+        f'<span class="filter-count" id="filter-count">显示 {total_mails} 封</span>'
+        '</div>'
     )
     return (
         '<!DOCTYPE html>\n<html lang="zh-CN">\n<head>\n'
@@ -1209,10 +1586,10 @@ def format_digest_html(
         f'<span class="chip">{meta_text}</span>'
         f'{stats_chip}'
         f'{important_chip}'
-        f'<span class="chip">只读模式 · 未改变已读状态</span>'
+        f'<span class="chip">只读模式 · 卡片可标记"已读"隐藏</span>'
         f'{notes_chip}'
         '</div></div></header>\n'
-        f'<main>{"".join(sections)}</main>\n'
+        f'<main>{filters_html}{"".join(sections)}</main>\n'
         '<footer>AI-Work 每日邮件摘要 · 只读生成</footer>\n'
         '<script>'
         'document.querySelectorAll(".mail-head").forEach(function(b){'
@@ -1223,6 +1600,41 @@ def format_digest_html(
         'var open=b.getAttribute("data-toggle-all")==="open";'
         'b.closest("section").querySelectorAll(".mail").forEach(function(m){'
         'm.classList.toggle("open",open);});});});'
+        'document.querySelectorAll(".mail-dismiss").forEach(function(b){'
+        'b.addEventListener("click",async function(e){'
+        'e.stopPropagation();'
+        'var card=b.closest(".mail");if(!card)return;'
+        'var key=card.getAttribute("data-key")||"";'
+        'b.disabled=true;b.textContent="保存中";'
+        'try{var response=await fetch("/api/dismiss",{method:"POST",'
+        'headers:{"Content-Type":"application/json"},'
+        'body:JSON.stringify({keys:[key]})});'
+        'if(!response.ok)throw new Error("dismiss_failed");'
+        'card.style.transition="opacity 0.25s ease";card.style.opacity="0";'
+        'setTimeout(function(){card.remove();applyFilters();},250);'
+        '}catch(error){b.disabled=false;b.textContent="重试";'
+        'b.title="保存失败，请重试";}});});'
+        'function applyFilters(){'
+        'var q=(document.getElementById("filter-search").value||"").toLowerCase().trim();'
+        'var mailbox=document.getElementById("filter-mailbox").value;'
+        'var importance=document.getElementById("filter-importance").value;'
+        'var date=document.getElementById("filter-date").value;var visible=0;'
+        'document.querySelectorAll(".mail").forEach(function(m){'
+        'var show=(!q||(m.dataset.search||"").includes(q))'
+        '&&(!mailbox||m.dataset.mailbox===mailbox)'
+        '&&(!importance||m.dataset.importance===importance)'
+        '&&(!date||m.dataset.date===date);'
+        'm.style.display=show?"":"none";if(show)visible++;});'
+        'document.querySelectorAll("[data-mail-section]").forEach(function(s){'
+        'var cards=Array.from(s.querySelectorAll(".mail"));'
+        'var shown=cards.filter(function(m){return m.style.display!=="none";}).length;'
+        's.style.display=shown?"":"none";'
+        'var badge=s.querySelector(".count-badge");if(badge)badge.textContent=shown+" / "+cards.length+" 封";});'
+        'document.getElementById("filter-count").textContent="显示 "+visible+" 封";}'
+        '["filter-search","filter-mailbox","filter-importance","filter-date"].forEach(function(id){'
+        'document.getElementById(id).addEventListener("input",applyFilters);});'
+        'document.getElementById("filter-reset").addEventListener("click",function(){'
+        '["filter-search","filter-mailbox","filter-importance","filter-date"].forEach(function(id){document.getElementById(id).value="";});applyFilters();});'
         '</script>\n'
         '</body>\n</html>\n'
     )
@@ -1447,11 +1859,8 @@ def run_digest_update(
         if with_toasts and start_notice:
             show_toast('邮件摘要更新中', '正在读取三个邮箱…', '完成后将自动打开页面')
         generated_at = datetime.now().astimezone()
-        mailboxes = [
-            collect_qq_digest(),
-            collect_bachelor_digest(),
-            collect_master_digest(),
-        ]
+        mailboxes = _collect_mailbox_digests()
+        _apply_dismissed_filter(mailboxes)
         mailboxes_ok = all(box.ok for box in mailboxes)
         write_attempt_artifact(
             'mailboxes_read',
@@ -1597,7 +2006,7 @@ def select_new_high(
             continue
         for mail in box.emails:
             key = _mail_cache_key(box.mailbox_id, mail)
-            if getattr(mail, 'importance', '中') == '高' and key not in notified:
+            if getattr(mail, 'importance', '低') == '高' and key not in notified:
                 fresh.append(mail)
     return fresh
 
@@ -1609,13 +2018,15 @@ def check_high_importance_mails(*, notify: bool = True) -> dict[str, Any]:
     try:
         ensure_environment()
         now = datetime.now().astimezone()
-        mailboxes = [
-            collect_qq_digest(),
-            collect_bachelor_digest(),
-            collect_master_digest(),
-        ]
+        mailboxes = _collect_mailbox_digests()
+        _apply_dismissed_filter(mailboxes)
         api_key = load_summary_api_key()
-        enrich_digests(mailboxes, api_key)
+        enrich_digests(
+            mailboxes,
+            api_key,
+            include_translations=False,
+            cache=load_translation_cache(),
+        )
         notified = _load_notified_high()
         notified = _prune_notified(notified, now)
         fresh_high = []
@@ -1624,7 +2035,7 @@ def check_high_importance_mails(*, notify: bool = True) -> dict[str, Any]:
                 continue
             for mail in box.emails:
                 key = _mail_cache_key(box.mailbox_id, mail)
-                if getattr(mail, 'importance', '中') != '高' or key in notified:
+                if getattr(mail, 'importance', '低') != '高' or key in notified:
                     continue
                 fresh_high.append(mail)
                 notified[key] = now.isoformat()

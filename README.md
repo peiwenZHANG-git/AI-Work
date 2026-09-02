@@ -43,6 +43,30 @@ QQ / 网易 Browser DOM 摘要还需要可选依赖 `playwright`。该 adapter �
 python -m pip install playwright
 ```
 
+## 通用网页与文件下载
+
+通用浏览器能力同时提供 CLI 和 MCP 语义工具。打开网页时会新建
+Edge 窗口；下载默认仅允许 HTTPS、拒绝本机/私网字面地址、不覆盖已有文件，并使用
+临时文件原子落盘，同时返回大小与 SHA-256：
+
+```powershell
+python scripts/browser_download.py open https://example.com
+python scripts/browser_download.py download https://example.com/report.pdf D:\Downloads
+```
+
+可用 `--filename` 指定安全文件名、`--max-bytes` 调整默认 256 MiB 上限。仅在明确
+需要时使用 `--allow-http` 或 `--overwrite`。目标目录必须已经存在。登录态网页下载不
+会复制 Cookie 到此下载器；登录态下载使用下述受控浏览器会话。
+
+持久会话由专用工作线程持有，并使用 `%LOCALAPPDATA%\AI-Work\browser-agent-profile`
+独立资料目录，不复用三个邮箱 Profile。可用工具依次启动会话、导航、检查页面、点击
+唯一匹配元素、保存浏览器下载并停止会话。检查结果会移除 URL 查询串与片段，不返回
+Cookie 或密码框值；按钮和表单控件点击必须显式确认。浏览器下载默认不覆盖已有文件。
+
+新增 MCP 工具：`open_webpage`、`download_web_file`、`start_browser_session`、
+`navigate_browser`、`inspect_browser`、`click_browser_element`、
+`download_browser_element`、`stop_browser_session`。服务器当前固定注册 36 个工具。
+
 `pyautogui` 的故障保护已开启。把鼠标快速移动到屏幕左上角可中止 PyAutoGUI 操作。
 
 ## 启动
@@ -79,7 +103,7 @@ Smoke test 只使用唯一命名的专用记事本文件，测试结果写入 `t
 
 ## MCP 工具
 
-当前服务器注册 28 个工具；原有 27 个工具的名称、参数和返回结构保持不变。
+当前服务器注册 36 个工具；原有 28 个工具的名称、参数和返回结构保持不变。
 
 | 工具 | 用途 |
 |---|---|
@@ -168,7 +192,7 @@ Smoke test 只使用唯一命名的专用记事本文件，测试结果写入 `t
 ### 本机健康检查
 
 - 运行 `python scripts/system_health.py` 查看文本报告，或加 `--json` 供自动化消费；必需检查失败时退出码为 1。
-- 检查范围限于本机配置和运行状态：环境变量名存在性、Credential Manager 条目存在性、28 个 MCP 工具注册、计划任务、最近 `last-run.json` 状态和助手服务状态。
+- 检查范围限于本机配置和运行状态：环境变量名存在性、Credential Manager 条目存在性、36 个 MCP 工具注册、计划任务、最近 `last-run.json` 状态和助手服务状态。
 - 摘要健康检查要求邮箱状态全部为 `READY`/`EMPTY_TODAY`，且报告不超过 13 小时（覆盖每日 10:00/22:00 两次调度）；Toast 是否显示单独作为可选 INFO，不与邮件读取健康混在一起。
 - 摘要 HTML 和 `last-run.json` 使用临时文件加原子替换写入；状态包含 `ok`、邮箱读取结果、计数和 Toast 状态。状态写入失败会让任务显式失败，不会留下“任务成功但报告过期”的假信号。
 - `last-attempt.json` 记录运行阶段、邮箱状态/计数和错误类型；它不包含发件人、主题、正文、URL 或凭据，用于在任务失败但 `last-run.json` 未更新时定位阶段。

@@ -1,6 +1,11 @@
 ﻿"""Backward-compatible entry point for the Windows GUI MCP server."""
 
 from windows_gui.keyboard import hotkey, press_key, type_text
+from windows_gui.browser_download import download_web_file, open_webpage
+from windows_gui.browser_session import (
+    click_browser_element, download_browser_element, inspect_browser,
+    navigate_browser, start_browser_session, stop_browser_session,
+)
 from windows_gui.mailboxes import open_all_mailboxes
 from windows_gui.mail_draft import create_mail_draft
 from windows_gui.mail_send import send_mail_draft
@@ -30,6 +35,9 @@ __all__ = [
     "set_save_dialog_filename", "type_text", "open_all_mailboxes",
     "summarize_all_mailboxes_today", "search_mailboxes", "create_mail_draft",
     "send_mail_draft",
+    "open_webpage", "download_web_file", "start_browser_session",
+    "navigate_browser", "inspect_browser", "click_browser_element",
+    "download_browser_element", "stop_browser_session",
 ]
 
 

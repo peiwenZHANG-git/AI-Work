@@ -1,6 +1,7 @@
 """Local web app for the AI mail assistant (127.0.0.1 only)."""
 
 import json
+import argparse
 import sys
 import threading
 import webbrowser
@@ -21,6 +22,7 @@ from windows_gui.mail_assistant import (
     stage_draft_for_mailbox,
 )
 from windows_gui.mail_digest import DIGEST_DIR
+from windows_gui.mail_digest import dismiss_mail_keys
 from windows_gui.mail_digest import run_digest_update
 
 
@@ -194,6 +196,7 @@ class MailAssistantHandler(BaseHTTPRequestHandler):
             '/api/ai-draft': self._handle_ai_draft,
             '/api/save-draft': self._handle_save_draft,
             '/api/stage-draft': self._handle_stage_draft,
+            '/api/dismiss': self._handle_dismiss,
             '/api/send-mail': self._handle_send_mail,
         }
         handler = handlers.get(path)
@@ -237,6 +240,14 @@ class MailAssistantHandler(BaseHTTPRequestHandler):
         )
         self._send_json(result)
 
+    def _handle_dismiss(self, payload: dict) -> None:
+        keys = payload.get('keys')
+        if not isinstance(keys, list):
+            self._send_json({'error': 'keys must be a list'}, 400)
+            return
+        dismissed = dismiss_mail_keys([str(key) for key in keys])
+        self._send_json({'dismissed': dismissed})
+
     def _handle_send_mail(self, payload: dict) -> None:
         detail = send_staged_draft(str(payload.get('pending_id') or ''))
         self._send_json({'detail': detail})
@@ -245,15 +256,24 @@ class MailAssistantHandler(BaseHTTPRequestHandler):
         pass
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--open', action='store_true', help='open the local page')
+    parser.add_argument(
+        '--no-refresh',
+        action='store_true',
+        help='start without reading mailboxes (used for safe restarts)',
+    )
+    args = parser.parse_args(argv)
     try:
         server = ThreadingHTTPServer(('127.0.0.1', PORT), MailAssistantHandler)
     except OSError:
         webbrowser.open(f'http://127.0.0.1:{PORT}/')
         return 0
     print(f'mail assistant listening on http://127.0.0.1:{PORT}/')
-    start_refresh()
-    if '--open' in sys.argv:
+    if not args.no_refresh:
+        start_refresh()
+    if args.open:
         webbrowser.open(f'http://127.0.0.1:{PORT}/')
     server.serve_forever()
     return 0

@@ -4,15 +4,17 @@ import hashlib
 import json
 import os
 import requests
+import threading
 import unittest
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from types import SimpleNamespace
 import tempfile
 import unittest.mock as mock
 
 from windows_gui.mail_digest import (
+    AttachmentInfo,
     MailboxDigest,
     DigestMail,
     _mail_cache_key,
@@ -29,6 +31,7 @@ from windows_gui.mail_digest import (
     SummaryAPIError,
     clean_body_text,
     extract_body_text,
+    extract_attachment_metadata,
     graph_body_text,
     strip_html,
 )
@@ -40,6 +43,48 @@ def _mail(sender: str, subject: str, time: str, **extra) -> SimpleNamespace:
 
 
 class MailDigestTest(unittest.TestCase):
+    def test_every_mail_has_its_own_confirmed_dismiss_button(self) -> None:
+        box = MailboxDigest(
+            'qq_mail', 'QQ 邮箱', 'QQ', 'READY', '',
+            [
+                DigestMail('a', 'one', '2026-09-02T10:00:00+02:00',
+                           source_reference='imap:1'),
+                DigestMail('b', 'two', '2026-09-02T11:00:00+02:00',
+                           source_reference='imap:2'),
+            ],
+        )
+
+        html = format_digest_html(
+            [box], datetime(2026, 9, 2, 12, 0, tzinfo=timezone.utc)
+        )
+
+        self.assertEqual(2, html.count('class="mail-dismiss"'))
+        self.assertEqual(2, html.count('data-key="'))
+        self.assertIn('await fetch("/api/dismiss"', html)
+        self.assertIn('b.textContent="保存中"', html)
+        self.assertIn('if(!response.ok)throw', html)
+
+    def test_mailbox_collection_is_concurrent_and_preserves_order(self) -> None:
+        barrier = threading.Barrier(3)
+
+        def collector(mailbox_id):
+            def collect():
+                barrier.wait(timeout=1)
+                return MailboxDigest(
+                    mailbox_id, mailbox_id, mailbox_id, 'READY', ''
+                )
+            return collect
+
+        result = mail_digest._collect_mailbox_digests(tuple(
+            collector(mailbox_id)
+            for mailbox_id in ('qq_mail', 'bachelor_mail', 'master_mail')
+        ))
+
+        self.assertEqual(
+            ['qq_mail', 'bachelor_mail', 'master_mail'],
+            [box.mailbox_id for box in result],
+        )
+
     def test_format_digest_lists_ready_empty_and_failed_mailboxes(self) -> None:
         mailboxes = [
             MailboxDigest(
@@ -75,10 +120,10 @@ class MailDigestTest(unittest.TestCase):
         self.assertIn('【QQ 邮箱】', text)
         self.assertIn('  2 封', text)
         self.assertIn('21:02 A <a@example.com> — 会议通知', text)
-        self.assertIn('[中]', text)
+        self.assertIn('[低]', text)
         self.assertIn('过去 24 小时没有新邮件', text)
         self.assertIn('读取失败（TOKEN_EXPIRED）', text)
-        self.assertIn('只读模式：正文仅用于生成摘要，未改变已读状态', text)
+        self.assertIn('只读模式：正文仅用于生成摘要；卡片可标记"已读"仅隐藏显示', text)
 
     def test_format_digest_truncates_long_fields(self) -> None:
         box = MailboxDigest(
@@ -161,6 +206,11 @@ class MailDigestTest(unittest.TestCase):
                     body_text='Original text here',
                     summary='中文摘要内容',
                     translation='中文翻译内容',
+                    attachments=[AttachmentInfo(
+                        '作业模板 & 说明.docx',
+                        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                        2048,
+                    )],
                 )],
             ),
             MailboxDigest(
@@ -182,7 +232,7 @@ class MailDigestTest(unittest.TestCase):
         self.assertTrue(html.startswith('<!DOCTYPE html>'))
         self.assertIn('charset="utf-8"', html)
         self.assertIn('过去 24 小时共 1 封', html)
-        self.assertIn('imp-mid', html)
+        self.assertIn('imp-low', html)
         self.assertIn('A &lt;a@example.com&gt;', html)
         self.assertIn('会议 &amp; 通知', html)
         self.assertIn('过去 24 小时没有新邮件', html)
@@ -195,6 +245,18 @@ class MailDigestTest(unittest.TestCase):
         self.assertIn('中文翻译内容', html)
         self.assertIn('查看原文', html)
         self.assertIn('data-toggle-all', html)
+        self.assertIn('id="filter-search"', html)
+        self.assertIn('id="filter-mailbox"', html)
+        self.assertIn('id="filter-importance"', html)
+        self.assertIn('id="filter-date"', html)
+        self.assertIn('data-mailbox="qq_mail"', html)
+        self.assertIn('data-importance="低"', html)
+        self.assertIn('data-date="2026-08-29"', html)
+        self.assertIn('作业模板 &amp; 说明.docx', html)
+        self.assertIn('2.0 KB', html)
+        self.assertNotIn('contentBytes', html)
+        self.assertEqual(1, html.count('class="mail-dismiss"'))
+        self.assertEqual(1, html.count('data-key="'))
         self.assertNotIn('<a@example.com>', html)
 
     def test_format_digest_html_sorts_by_importance(self) -> None:
@@ -301,7 +363,125 @@ class AtomicWriteTests(unittest.TestCase):
             self.assertEqual([], list(Path(directory).glob('*.tmp')))
 
 
+class DismissedMailTests(unittest.TestCase):
+    def test_dismiss_store_is_deduplicated_and_atomic(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'dismissed-mail.json'
+            now = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
+            added = mail_digest.dismiss_mail_keys(
+                ['key-a', ' key-a ', 'key-b'],
+                now=now,
+                store_path=path,
+            )
+
+            self.assertEqual(2, added)
+            payload = json.loads(path.read_text(encoding='utf-8'))
+            self.assertEqual({'key-a', 'key-b'}, set(payload))
+
+            added = mail_digest.dismiss_mail_keys(
+                ['key-b'], now=now, store_path=path
+            )
+
+        self.assertEqual(0, added)
+
+    def test_dismiss_fails_explicitly_when_store_cannot_be_saved(self):
+        with mock.patch.object(
+            mail_digest, 'save_dismissed_store', return_value=False
+        ):
+            with self.assertRaises(OSError):
+                mail_digest.dismiss_mail_keys(['key-a'])
+
+    def test_dismissed_store_prunes_invalid_and_old_entries(self):
+        now = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
+        store = {
+            'fresh': now.isoformat(),
+            'stale': (now - timedelta(days=31)).isoformat(),
+            'invalid': 'not-a-date',
+        }
+        kept = mail_digest._prune_dismissed(store, now)
+
+        self.assertEqual({'fresh'}, set(kept))
+
+    def test_apply_dismissed_filter_removes_only_matching_cards(self):
+        box = MailboxDigest(
+            mailbox_id='qq_mail',
+            display_name='QQ 邮箱',
+            short_name='QQ',
+            status='READY',
+            message='',
+            emails=[
+                DigestMail('a', 'kept', '', body_text='keep body'),
+                DigestMail('b', 'hidden', '', body_text='hidden body'),
+            ],
+        )
+        dismissed = {
+            mail_digest._mail_cache_key('qq_mail', box.emails[1])
+        }
+
+        with mock.patch.object(
+            mail_digest, 'dismissed_keys', return_value=dismissed
+        ):
+            removed = mail_digest._apply_dismissed_filter([box])
+
+        self.assertEqual(1, removed)
+        self.assertEqual('kept', box.emails[0].subject)
+        self.assertEqual(1, len(box.emails))
+
+    def test_stable_reference_stays_dismissed_when_body_changes(self):
+        original = DigestMail(
+            'sender', 'subject', '', body_text='old body',
+            source_reference='imap:42',
+        )
+        refreshed = DigestMail(
+            'sender', 'subject', '', body_text='new body',
+            source_reference='imap:42',
+        )
+        dismissed = {mail_digest._mail_dismiss_key('qq_mail', original)}
+        box = MailboxDigest(
+            'qq_mail', 'QQ 邮箱', 'QQ', 'READY', '', [refreshed]
+        )
+
+        with mock.patch.object(
+            mail_digest, 'dismissed_keys', return_value=dismissed
+        ):
+            removed = mail_digest._apply_dismissed_filter([box])
+
+        self.assertEqual(1, removed)
+        self.assertEqual([], box.emails)
+
+
 class MailBodyTextTest(unittest.TestCase):
+    def test_enrich_persists_cache_once_after_batch(self) -> None:
+        box = MailboxDigest(
+            mailbox_id='qq_mail',
+            display_name='QQ 邮箱',
+            short_name='QQ',
+            status='READY',
+            message='',
+            emails=[
+                DigestMail('a', 's1', '', body_text='正文一'),
+                DigestMail('b', 's2', '', body_text='正文二'),
+            ],
+        )
+
+        def fake_post(url, headers=None, json=None, timeout=None):
+            user_content = json['messages'][1]['content']
+            content = (
+                '{"summary": "中文摘要", "importance": "中"}'
+                if 'JSON' in user_content else '中文翻译'
+            )
+            return SimpleNamespace(
+                status_code=200,
+                json=lambda: {'choices': [{'message': {'content': content}}]},
+            )
+
+        with mock.patch.object(
+            mail_digest, 'load_translation_cache', return_value={}
+        ), mock.patch.object(mail_digest, 'save_translation_cache') as save:
+            enrich_digests([box], 'test-key', transport=fake_post)
+
+        save.assert_called_once()
+
     def test_strip_html_removes_styles_scripts_and_escapes_entities(self) -> None:
         html_text = '<style>.x{}</style><p>你好 &amp; <b>世界</b></p><script>bad()</script>'
         self.assertEqual(strip_html(html_text), '你好 & 世界')
@@ -319,6 +499,63 @@ class MailBodyTextTest(unittest.TestCase):
         )
         self.assertEqual(extract_body_text(message), '正文内容在这里')
 
+    def test_extract_attachment_metadata_does_not_decode_payload(self) -> None:
+        message = EmailMessage()
+        message.set_content('正文内容在这里')
+        message.add_attachment(
+            b'12345',
+            maintype='application',
+            subtype='pdf',
+            filename='课程说明.pdf',
+        )
+        message.add_attachment(
+            b'logo', maintype='image', subtype='png', filename='logo.png'
+        )
+        inline_part = message.get_payload()[-1]
+        inline_part.replace_header(
+            'Content-Disposition', 'inline; filename="logo.png"'
+        )
+
+        attachments = extract_attachment_metadata(message)
+
+        self.assertEqual(1, len(attachments))
+        self.assertEqual('课程说明.pdf', attachments[0].name)
+        self.assertEqual('application/pdf', attachments[0].content_type)
+        self.assertEqual(5, attachments[0].size_bytes)
+
+    def test_graph_attachment_metadata_requests_only_safe_fields(self) -> None:
+        captured = {}
+
+        def fake_get(url, headers=None, timeout=None):
+            captured['url'] = url
+            return SimpleNamespace(
+                status_code=200,
+                json=lambda: {'value': [
+                    {
+                        'name': 'report.pdf',
+                        'contentType': 'application/pdf',
+                        'size': 1536,
+                        'isInline': False,
+                        'contentBytes': 'must-not-be-used',
+                    },
+                    {
+                        'name': 'logo.png',
+                        'contentType': 'image/png',
+                        'size': 100,
+                        'isInline': True,
+                    },
+                ]},
+            )
+
+        attachments = mail_digest._graph_attachment_metadata(
+            'message/id', 'token', transport=fake_get
+        )
+
+        self.assertIn('%24select=name%2CcontentType%2Csize%2CisInline', captured['url'])
+        self.assertNotIn('contentBytes', captured['url'])
+        self.assertEqual(['report.pdf'], [item.name for item in attachments])
+        self.assertEqual(1536, attachments[0].size_bytes)
+
     def test_graph_body_text_strips_html(self) -> None:
         body = {'contentType': 'HTML', 'content': '<p>Salut &amp; à demain</p>'}
         self.assertEqual(graph_body_text(body), 'Salut & à demain')
@@ -330,6 +567,9 @@ class MailBodyTextTest(unittest.TestCase):
         self.assertIn('简体中文', prompt)
         self.assertIn('JSON', prompt)
         self.assertIn('importance', prompt)
+        self.assertIn('需要收件人采取行动为高', prompt)
+        self.assertIn('学校相关但无需行动', prompt)
+        self.assertIn('其他所有邮件为低', prompt)
 
     def test_enrich_digests_calls_api_and_skips_empty_bodies(self) -> None:
         box = MailboxDigest(
@@ -368,7 +608,13 @@ class MailBodyTextTest(unittest.TestCase):
     def test_enrich_digests_reuses_cache_without_new_calls(self) -> None:
         cache = {
             hashlib.sha256('qq_mail|s1|正文'.encode('utf-8')).hexdigest()[:40]:
-            {'summary': '缓存摘要', 'translation': '缓存翻译'},
+            {
+                'summary': '缓存摘要',
+                'translation': '缓存翻译',
+                'classification_policy_version': (
+                    mail_digest.CLASSIFICATION_POLICY_VERSION
+                ),
+            },
         }
         box = MailboxDigest(
             mailbox_id='qq_mail',
@@ -385,6 +631,46 @@ class MailBodyTextTest(unittest.TestCase):
         enrich_digests([box], 'test-key', transport=no_post, cache=cache)
         self.assertEqual(box.emails[0].summary, '缓存摘要')
         self.assertEqual(box.emails[0].translation, '缓存翻译')
+
+    def test_old_policy_cache_reclassifies_without_retranslation(self) -> None:
+        cache_key = hashlib.sha256(
+            'qq_mail|s1|正文'.encode('utf-8')
+        ).hexdigest()[:40]
+        cache = {
+            cache_key: {
+                'summary': '旧缓存摘要',
+                'translation': '旧缓存翻译',
+                'importance': '高',
+            },
+        }
+        box = MailboxDigest(
+            mailbox_id='qq_mail',
+            display_name='QQ 邮箱',
+            short_name='QQ',
+            status='READY',
+            message='',
+            emails=[DigestMail('a', 's1', '', body_text='正文')],
+        )
+        calls = []
+
+        def fake_post(url, headers=None, json=None, timeout=None):
+            calls.append(json['messages'][1]['content'])
+            return SimpleNamespace(
+                status_code=200,
+                json=lambda: {'choices': [{'message': {'content': (
+                    '{"summary": "新摘要", "importance": "低"}'
+                )}}]},
+            )
+
+        enrich_digests([box], 'test-key', transport=fake_post, cache=cache)
+
+        self.assertEqual(1, len(calls))
+        self.assertEqual('旧缓存翻译', box.emails[0].translation)
+        self.assertEqual('低', box.emails[0].importance)
+        self.assertEqual(
+            mail_digest.CLASSIFICATION_POLICY_VERSION,
+            cache[cache_key]['classification_policy_version'],
+        )
 
     def test_enrich_digests_falls_back_to_preview_on_api_error(self) -> None:
         box = MailboxDigest(
