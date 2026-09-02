@@ -47,8 +47,9 @@ python -m pip install playwright
 ## 通用网页与文件下载
 
 通用浏览器能力同时提供 CLI 和 MCP 语义工具。打开网页时会新建
-Edge 窗口；下载默认仅允许 HTTPS、拒绝本机/私网字面地址、不覆盖已有文件，并使用
-临时文件原子落盘，同时返回大小与 SHA-256：
+Edge 窗口；打开和下载会解析并检查目标主机地址，拒绝本机、私网、link-local 和
+其他非公共地址；公共下载按禁用自动重定向的方式逐跳校验重定向目标。下载默认仅允许
+HTTPS、不覆盖已有文件，并使用临时文件原子落盘，同时返回大小与 SHA-256：
 
 ```powershell
 python scripts/browser_download.py open https://example.com
@@ -61,8 +62,10 @@ python scripts/browser_download.py download https://example.com/report.pdf D:\Do
 
 持久会话由专用工作线程持有，并使用 `%LOCALAPPDATA%\AI-Work\browser-agent-profile`
 独立资料目录，不复用三个邮箱 Profile。可用工具依次启动会话、导航、检查页面、点击
-唯一匹配元素、保存浏览器下载并停止会话。检查结果会移除 URL 查询串与片段，不返回
-Cookie 或密码框值；按钮和表单控件点击必须显式确认。浏览器下载默认不覆盖已有文件。
+唯一匹配元素、保存浏览器下载并停止会话。Playwright 请求在 context 级逐请求校验
+DNS/私网边界；检查结果会移除 URL 查询串与片段，不返回 Cookie 或输入框值；按钮和表单
+控件点击必须显式确认。登录态下载沿用 256 MiB 上限，默认不覆盖已有文件，失败或超限时
+清理临时文件。
 
 新增 MCP 工具：`open_webpage`、`download_web_file`、`start_browser_session`、
 `navigate_browser`、`inspect_browser`、`click_browser_element`、

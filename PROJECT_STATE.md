@@ -17,7 +17,7 @@
 ## 2. 架构
 
 - `windows_gui_mcp.py` 是向后兼容入口并重导出全部公共工具；FastMCP 实例与进程级设置在 `windows_gui/server.py`；当前 36 个工具恰好注册一次。
-- 通用网页能力分为 `browser_download.py`（公共 URL 校验、Edge 启动、无登录态原子下载）和 `browser_session.py`（专用工作线程持有 Playwright 持久 Edge 上下文、DOM 检查、确认式点击、登录态原子下载）；会话使用独立 Agent Profile，不复用邮箱 Profile。
+- 通用网页能力分为 `browser_download.py`（公共 URL/主机地址校验、逐跳重定向检查、Edge 启动、无登录态原子下载）和 `browser_session.py`（专用工作线程持有 Playwright 持久 Edge 上下文、网络路由守卫、DOM 检查、确认式点击、带上限的登录态原子下载）；会话使用独立 Agent Profile，不复用邮箱 Profile。
 - 模块职责遵循 `AGENTS.md`：鼠标/截图 `mouse.py`、键盘 `keyboard.py`、窗口 `windows.py`、UIA/菜单/保存对话框 `uia.py`；邮箱链路为 `mailboxes.py`（固定身份与 Edge 启动）、`mail_summary.py`（只读摘要与就绪校验）、`imap_mail.py`（QQ/网易 IMAP 只读传输）、`browser_mail.py`（可选 CDP/DOM 传输）、`mail_backends.py`（后端分发）、`mail_search.py`、`mail_draft.py`、`mail_send.py`。
 - 邮件后端优先级：Outlook（master_mail）优先 Microsoft Graph，失败回退经验证的 Edge 页面；QQ 与本科网易摘要优先 IMAP 只读后端，可选启用回环 CDP 浏览器 DOM 后端。
 - 摘要与助手：`mail_digest.py` + `scripts/daily_mail_digest.py` 由计划任务触发；`mail_assistant.py` + `mail_assistant_page.py` + `scripts/mail_assistant_server.py` 提供本机 8931 网页。助手 Web 层校验 `Host`、`Origin` 和 JSON Content-Type；本科 SMTP 发送前先保存 IMAP 草稿。
@@ -56,13 +56,14 @@
 - 两阶段草稿状态校验已提交：发送前确认 Graph `isDraft=true` 或 IMAP `\Draft` 标记；非草稿消息会显式失败，不会误发。
 - SMTP 旁路清理已提交：移除助手 `send_mail_smtp()` 的“新字段即时构建并发送”路径，只保留 `send_existing_email_smtp()` 发送已取回并校验的 `EmailMessage`。
 - 助手服务并发与响应头加固已提交：后台刷新启动由互斥锁保护；HTML 响应增加 `nosniff`、`no-referrer`、`SAMEORIGIN` 和 CSP。
-- 通用浏览器/下载已实现并注册 8 个 MCP 工具：公共网页打开和无登录态原子下载，以及使用独立 Agent Profile 的持久 Playwright Edge 会话启动、导航、页面检查、确认式点击、登录态原子下载和停止。URL 输出去除查询串/片段，检查不返回 Cookie 或密码框值，下载默认不覆盖并返回 SHA-256；服务器现固定注册 36 个工具，原有 28 个接口保持兼容。
+- 通用浏览器/下载已实现并注册 8 个 MCP 工具：公共网页打开和无登录态原子下载，以及使用独立 Agent Profile 的持久 Playwright Edge 会话启动、导航、页面检查、确认式点击、登录态原子下载和停止。URL 输出去除查询串/片段，检查不返回 Cookie 或输入框值，下载默认不覆盖并返回 SHA-256；公共 URL 与 Playwright 路由都会解析目标主机并拒绝非公共地址，公共下载逐跳校验重定向，两类下载均有 256 MiB 上限；服务器现固定注册 36 个工具，原有 28 个接口保持兼容。
 - 邮件摘要与助手已支持单邮件本地隐藏（不修改邮箱服务器状态）、30 天/5000 项清理、`/api/dismiss`、本地搜索与邮箱/重要程度/日期筛选，以及附件名称、MIME 类型和大小展示；IMAP 不解码附件，Graph 不请求 `contentBytes` 并过滤内嵌附件。每封卡片有独立“已读”按钮，按钮仅在持久化成功后隐藏；IMAP UID / Graph message ID 的本地哈希作为稳定隐藏标识，正文变化后不会重新出现，同时兼容旧内容哈希记录；并发写入使用进程锁避免丢失。为关闭长刷新竞态，AI enrichment 完成后、写 HTML 前会再次过滤；点击后原子更新当前 HTML，`/digest` 返回旧 artifact 前也会即时过滤。
 - 摘要读取与 AI enrichment 已并发化并保持固定邮箱显示顺序；AI 缓存改为整批落盘，重要程度政策升级到版本 2，高重要性检查不再进行无用翻译。助手启动器仅识别精确脚本进程，并提供 `--restart` / `--no-refresh` 安全选项。
 - AI 写信的草稿生成已与摘要请求参数解耦：默认使用快速 `glm-4-flash`，可由 `AI_WORK_DRAFT_MODEL` 单独覆盖；每次只发起一次请求，10 秒硬超时，最大输出 1200 tokens，网络失败不再自动重试导致长时间卡住。助手 HTML/JSON 响应现强制 `no-store`，页面 AI 请求有 22 秒客户端截止和明确超时错误，避免旧页面缓存或前端无限等待。远程 AI 超时、网络失败或响应格式无效时，服务端会自动返回可编辑的本地基础草稿并在页面标明兜底，不再出现无草稿的终态。2026-09-02 本机经同一 `/api/ai-draft` 真实接口多次验证成功，最新一次约 3.6 秒返回 AI 草稿，未保存或发送邮件。
 - AI 写信页面的无法生成根因已修复：脚本调用 `setStatus()` 时依赖 `#status`，但 HTML 曾缺少该 DOM 元素，导致点击后立即抛出 JavaScript 异常，`/api/ai-draft` 请求根本没有发出。现已增加带 `role=status`/`aria-live=polite` 的状态节点和防回归测试；用无界面 Edge 按真实流程验证“切换 AI 标签→输入→点击生成→填入主题/正文”成功，HTTP 200，约 4.59 秒，未保存或发送邮件。
 - 本地健康事件已接入摘要运行与 AI 草稿关键结果：事件采用固定组件、结果、代码和摘要白名单，不接收调用方详情或异常原文，并以 512 KiB、最多 3 个轮转文件限制磁盘占用；读写由线程锁与有界 Windows 跨进程 mutex 串行化，任何日志锁、文件或解码故障都只安全降级，不会中断摘要或写信主流程。共享只读健康模型覆盖 MCP 稳定接口、凭据存在性、摘要、助手服务、浏览器/CDP 和 Remote 六类状态；无法可靠解析本地化计划任务输出时返回 `UNKNOWN` 而非误报 `FAIL`。助手页新增“系统状态”面板及脱敏的最近错误，CLI 与页面共用四态模型，不新增 MCP 工具，也不主动启动服务、浏览器或网络探测。
 - 助手重启可靠性已修复：端口等待现在正确区分“等待关闭”和“等待监听”，并会在有界时间内重试精确脚本 PID 的 WMI 查询；仍只终止命令行明确运行 `mail_assistant_server.py` 的进程。真实 `--restart --no-refresh --no-open` 验证一次成功，未刷新邮箱，随后 `/api/status` 与 `/api/health` 均返回 HTTP 200。
+- 通用浏览器真实验收已通过一次受控 smoke：使用专用 `browser-agent-profile` 启动非 headless Edge，访问 Selenium 公共 downloads 测试页，检查 URL/DOM 脱敏，点击普通只读链接，通过 `File 1` 完成登录态下载路径的 14 字节文件下载并核对 SHA-256，确认不覆盖已有文件；三个私网导航负例全部被拒绝，stop 后导航显式失败。未使用邮箱 Profile、未提交表单或执行生产副作用。
 
 ## 4. 当前工作
 
@@ -75,7 +76,11 @@
 - 2026-09-02 最新只读健康检查确认：三个助手专用授权码、两个摘要授权码、GLM API key 与 Outlook refresh token 共 7 个凭据条目均已配置；计划任务最近返回 `0` 且定义匹配；最近摘要三邮箱均为健康状态，`last-run.json` 与 `last-attempt.json` 正常更新。
 - 本科网易暂不支持经 Edge 发送已有草稿（draft hash 无法稳定定位并校验）；QQ 发送为设计性禁止。
 - Edge 摘要/搜索回退只解析当前已验证页面的可见列表，不代表完整邮箱索引，也不打开正文。
+- URL/重定向防护会在每次请求前解析并校验主机地址，但尚未把连接固定到该次解析结果；理论上恶意权威 DNS 仍可在校验后的第二次解析中尝试 rebinding。真实浏览器验收只应使用受控公共测试 URL。
+- `open_webpage` 只校验用户提供的初始 URL；打开后的 HTTP 重定向由普通 Edge 跟随，不经过 Playwright context 路由逐跳防护。真实验收应使用固定公共 URL，不使用重定向链。
+- 登录态下载的 256 MiB 上限会限制复制到目标目录的临时文件并阻止发布，但 Playwright 浏览器自身临时文件没有下载进度取消钩子，极端响应仍可能在超限判定前占用临时磁盘。
 - 本次会话未运行真实桌面 smoke test（按仓库规则需用户明确授权）。
+- 2026-09-02 真实浏览器 smoke 结束时曾因进行中的邮件助手/摘要工作出现语法和局部导入失败；最新收尾验证已确认这些阻塞解除，当前无需浏览器收尾 blocker。
 - 2026-09-02 助手服务已用 `--restart --no-refresh --no-open` 安全重启并加载最新系统状态面板与重启修复；重启过程未读取邮箱或打开浏览器。
 - 工作区存在已忽略的运行时文件/目录（例如 `screen.png`、`__pycache__/`），未清理。
 

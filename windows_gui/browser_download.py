@@ -8,10 +8,11 @@ import ipaddress
 import os
 from pathlib import Path
 import re
+import socket
 import subprocess
 import tempfile
 from typing import Any, Callable
-from urllib.parse import unquote, urlsplit
+from urllib.parse import unquote, urljoin, urlsplit
 
 import requests
 
@@ -21,6 +22,8 @@ from .server import mcp
 
 DEFAULT_MAX_BYTES = 256 * 1024 * 1024
 _CHUNK_SIZE = 64 * 1024
+_MAX_REDIRECTS = 10
+_NAT64_NETWORK = ipaddress.IPv6Network("64:ff9b::/96")
 _INVALID_FILENAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _WINDOWS_RESERVED = {
     "CON", "PRN", "AUX", "NUL",
@@ -64,9 +67,50 @@ def validate_web_url(url: str, *, allow_http: bool = False) -> str:
     except ValueError:
         pass
     else:
-        if not address.is_global:
+        embedded_private = False
+        if (
+            address.version == 6
+            and address in _NAT64_NETWORK
+        ):
+            embedded_ipv4 = ipaddress.IPv4Address(int(address) & 0xFFFF_FFFF)
+            embedded_private = not embedded_ipv4.is_global
+        if embedded_private or not address.is_global:
             raise ValueError("private, loopback, and link-local addresses are not allowed")
     return url
+
+
+def _validate_public_host(url: str, *, allow_http: bool) -> str:
+    """Resolve every address for a validated URL and reject non-public results."""
+    validated = validate_web_url(url, allow_http=allow_http)
+    hostname = urlsplit(validated).hostname.casefold().rstrip(".")
+    try:
+        addresses = socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
+    except OSError as error:
+        raise ValueError("URL hostname cannot be resolved to a public address") from error
+    parsed_addresses = {result[4][0] for result in addresses}
+    if not parsed_addresses:
+        raise ValueError("URL hostname cannot be resolved to a public address")
+    for address_text in parsed_addresses:
+        try:
+            address = ipaddress.ip_address(address_text)
+        except ValueError as error:
+            raise ValueError("URL hostname resolved to an invalid address") from error
+        # Transition addresses can embed an arbitrary IPv4 target; do not let
+        # their outer global bit bypass private-address checks.
+        embedded_ipv4 = None
+        if address.version == 6:
+            if address.ipv4_mapped is not None:
+                embedded_ipv4 = address.ipv4_mapped
+            elif address in _NAT64_NETWORK:
+                embedded_ipv4 = ipaddress.IPv4Address(int(address) & 0xFFFF_FFFF)
+        if (
+            embedded_ipv4 is not None
+            or getattr(address, "sixtofour", None) is not None
+            or getattr(address, "teredo", None) is not None
+            or not address.is_global
+        ):
+            raise ValueError("URL hostname resolves to a private or local address")
+    return validated
 
 
 def redact_web_url(url: str) -> str:
@@ -112,7 +156,7 @@ def open_in_edge(
     process_runner: Callable[..., Any] = subprocess.Popen,
 ) -> dict[str, Any]:
     """Open a validated URL in a new Edge window."""
-    validated = validate_web_url(url, allow_http=True)
+    validated = _validate_public_host(url, allow_http=True)
     command = [str(edge_finder()), "--new-window"]
     if profile_directory:
         if any(char in profile_directory for char in '\r\n\x00'):
@@ -142,27 +186,68 @@ def download_file(
     if not destination.is_dir():
         raise ValueError("destination directory must already exist")
 
-    response = transport(validated, stream=True, timeout=timeout_seconds, allow_redirects=True)
-    temporary_path: Path | None = None
+    current_url = validated
+    response = None
     try:
-        response.raise_for_status()
-        final_url = validate_web_url(response.url, allow_http=allow_http)
-        content_length = response.headers.get("Content-Length")
-        if content_length is not None:
+        for _redirect_number in range(_MAX_REDIRECTS + 1):
+            current_url = _validate_public_host(current_url, allow_http=allow_http)
+            response = transport(
+                current_url, stream=True, timeout=timeout_seconds,
+                allow_redirects=False,
+            )
             try:
-                declared_size = int(content_length)
-            except ValueError as error:
-                raise ValueError("invalid Content-Length") from error
-            if declared_size < 0 or declared_size > max_bytes:
-                raise ValueError("download exceeds the configured size limit")
+                response.raise_for_status()
+                final_url = _validate_public_host(response.url, allow_http=allow_http)
+                if response.status_code not in {301, 302, 303, 307, 308}:
+                    return _save_download_response(
+                        response, validated, final_url, destination,
+                        filename=filename, max_bytes=max_bytes, overwrite=overwrite,
+                    )
+                location = response.headers.get("Location", "").strip()
+                if not location:
+                    raise ValueError("redirect response has no Location")
+                next_url = urljoin(current_url, location)
+            except BaseException:
+                response.close()
+                response = None
+                raise
+            response.close()
+            response = None
+            current_url = next_url
+        raise ValueError("too many redirects")
+    finally:
+        if response is not None:
+            response.close()
 
-        target = destination / _filename_from_response(response, filename)
-        if target.exists() and not overwrite:
-            raise FileExistsError(f"destination already exists: {target.name}")
-        digest = hashlib.sha256()
-        size = 0
-        descriptor, temporary_name = tempfile.mkstemp(prefix=".download-", suffix=".part", dir=destination)
-        temporary_path = Path(temporary_name)
+
+def _save_download_response(
+    response: Any,
+    source_url: str,
+    final_url: str,
+    destination: Path,
+    *,
+    filename: str | None,
+    max_bytes: int,
+    overwrite: bool,
+) -> DownloadResult:
+    """Write one already-validated response to destination atomically."""
+    content_length = response.headers.get("Content-Length")
+    if content_length is not None:
+        try:
+            declared_size = int(content_length)
+        except ValueError as error:
+            raise ValueError("invalid Content-Length") from error
+        if declared_size < 0 or declared_size > max_bytes:
+            raise ValueError("download exceeds the configured size limit")
+
+    target = destination / _filename_from_response(response, filename)
+    if target.exists() and not overwrite:
+        raise FileExistsError(f"destination already exists: {target.name}")
+    digest = hashlib.sha256()
+    size = 0
+    descriptor, temporary_name = tempfile.mkstemp(prefix=".download-", suffix=".part", dir=destination)
+    temporary_path = Path(temporary_name)
+    try:
         with os.fdopen(descriptor, "wb") as output:
             for chunk in response.iter_content(chunk_size=_CHUNK_SIZE):
                 if not chunk:
@@ -183,12 +268,11 @@ def download_file(
             temporary_path.unlink()
         temporary_path = None
         return DownloadResult(
-            path=str(target), source_url=validated, final_url=final_url,
+            path=str(target), source_url=source_url, final_url=final_url,
             size_bytes=size, sha256=digest.hexdigest(),
             content_type=response.headers.get("Content-Type", "").split(";", 1)[0].strip(),
         )
     finally:
-        response.close()
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
 

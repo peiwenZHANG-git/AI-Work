@@ -115,8 +115,11 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
             tools = await module.mcp.list_tools()
             names = {tool.name for tool in tools}
         else:
-            names = set(await module.mcp.get_tools())
+            tools = await module.mcp.get_tools()
+            names = {name for name in tools}
         self.assertEqual(EXPECTED_TOOLS, names)
+        self.assertEqual(36, len(tools))
+        self.assertEqual(len(names), len(tools))
 
     def test_entrypoint_reexports_existing_functions(self):
         module = importlib.import_module("windows_gui_mcp")

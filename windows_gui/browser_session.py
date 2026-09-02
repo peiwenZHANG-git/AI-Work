@@ -10,13 +10,21 @@ import threading
 import tempfile
 from typing import Any, Callable
 
-from .browser_download import _safe_filename, redact_web_url, validate_web_url
+from .browser_download import (
+    DEFAULT_MAX_BYTES, _safe_filename, _validate_public_host, redact_web_url,
+)
 from .mailboxes import _find_edge_executable
 from .server import mcp
 
 
 _DEFAULT_TIMEOUT_SECONDS = 15.0
 _MAX_INSPECT_CHARS = 40_000
+_MAX_BROWSER_DOWNLOAD_BYTES = DEFAULT_MAX_BYTES
+_INSPECT_CONTROLS_EXPRESSION = (
+    "els => els.slice(0, 100).map(e => ({tag: e.tagName.toLowerCase(), "
+    "type: e.type || '', text: (e.innerText || "
+    "e.getAttribute('aria-label') || e.name || '').trim().slice(0, 300)}))"
+)
 
 
 def _profile_root() -> Path:
@@ -44,16 +52,25 @@ class PlaywrightRuntime:
         )
         self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
         self._page.set_default_timeout(10_000)
+        self._context.route("**/*", self._route_guard)
+
+    def _route_guard(self, route: Any) -> None:
+        try:
+            _validate_public_host(route.request.url, allow_http=True)
+            route.continue_()
+        except (ValueError, OSError):
+            route.abort()
 
     def close(self) -> dict[str, str]:
         try:
-            self._context.close()
+            self._context.unroute("**/*", self._route_guard)
         finally:
+            self._context.close()
             self._playwright.stop()
         return {"status": "STOPPED"}
 
     def navigate(self, url: str) -> dict[str, Any]:
-        validated = validate_web_url(url, allow_http=True)
+        validated = _validate_public_host(url, allow_http=True)
         response = self._page.goto(validated, wait_until="domcontentloaded", timeout=30_000)
         return {
             "status": "NAVIGATED", "url": redact_web_url(self._page.url),
@@ -73,13 +90,27 @@ class PlaywrightRuntime:
             if item.get("href", "").startswith(("http://", "https://"))
         ]
         controls = self._page.locator("button, input, select, textarea").evaluate_all(
-            "els => els.slice(0, 100).map(e => ({tag: e.tagName.toLowerCase(), type: e.type || '', text: (e.innerText || ((e.type || '').toLowerCase() === 'password' ? '' : e.value) || e.getAttribute('aria-label') || e.name || '').trim().slice(0, 300)}))"
+            _INSPECT_CONTROLS_EXPRESSION,
         )
+        safe_controls = []
+        for control in controls:
+            control_type = control.get("type", "").lower()
+            if control_type == "password":
+                control_text = ""
+            else:
+                control_text = (
+                    control.get("text") or control.get("label")
+                    or control.get("name") or ""
+                )
+            safe_controls.append({
+                "tag": control.get("tag", ""), "type": control_type,
+                "text": control_text.strip()[:300],
+            })
         return {
             "status": "READY", "url": redact_web_url(self._page.url),
             "title": self._page.title()[:500], "text": text[:limit],
             "text_truncated": len(text) > limit, "links": safe_links,
-            "controls": controls,
+            "controls": safe_controls,
         }
 
     def _unique_target(self, text: str, exact: bool) -> Any:
@@ -124,12 +155,20 @@ class PlaywrightRuntime:
         os.close(descriptor)
         temporary = Path(temporary_name)
         try:
-            download.save_as(str(temporary))
-            size = temporary.stat().st_size
+            source = Path(download.path())
             digest = hashlib.sha256()
-            with temporary.open("rb") as stream:
-                for chunk in iter(lambda: stream.read(64 * 1024), b""):
-                    digest.update(chunk)
+            size = 0
+            with source.open("rb") as source_stream:
+                with temporary.open("wb") as output_stream:
+                    for chunk in iter(lambda: source_stream.read(64 * 1024), b""):
+                        size += len(chunk)
+                        if size > _MAX_BROWSER_DOWNLOAD_BYTES:
+                            raise ValueError("download exceeds the configured size limit")
+                        digest.update(chunk)
+                        output_stream.write(chunk)
+                    output_stream.flush()
+                    os.fsync(output_stream.fileno())
+            download.delete()
             os.link(temporary, output)
         finally:
             temporary.unlink(missing_ok=True)
@@ -190,14 +229,15 @@ class BrowserSessionController:
         with self._lock:
             commands = self._commands
             thread = self._thread
-        if commands is None or thread is None or not thread.is_alive():
-            raise RuntimeError("browser session is not running")
-        result: queue.Queue[Any] = queue.Queue(maxsize=1)
-        commands.put((action, arguments, result))
+            if commands is None or thread is None or not thread.is_alive():
+                raise RuntimeError("browser session is not running")
+            result: queue.Queue[Any] = queue.Queue(maxsize=1)
+            commands.put((action, arguments, result))
         value = result.get(timeout=timeout)
         if isinstance(value, BaseException):
             raise value
         if action == "stop":
+            thread.join(timeout=5.0)
             with self._lock:
                 self._commands = None
                 self._thread = None

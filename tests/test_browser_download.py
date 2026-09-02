@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+import socket
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from windows_gui.browser_download import (
     download_file, open_in_edge, redact_web_url, validate_web_url,
@@ -12,10 +14,14 @@ from windows_gui.browser_download import (
 
 
 class FakeResponse:
-    def __init__(self, body=b"hello", *, url="https://files.example/report.txt", headers=None):
+    def __init__(
+        self, body=b"hello", *, url="https://files.example/report.txt",
+        headers=None, status_code=200,
+    ):
         self.body = body
         self.url = url
         self.headers = headers or {}
+        self.status_code = status_code
         self.closed = False
 
     def raise_for_status(self):
@@ -33,9 +39,25 @@ class UrlValidationTests(unittest.TestCase):
         self.assertEqual("https://example.com/a", validate_web_url("https://example.com/a"))
 
     def test_rejects_credentials_local_and_non_https(self):
-        for url in ("https://u:p@example.com", "https://127.0.0.1/a", "https://localhost/a", "file:///tmp/a", "http://example.com"):
+        for url in (
+            "https://u:p@example.com", "https://127.0.0.1/a",
+            "https://[::1]/a", "https://[64:ff9b::10.0.0.1]/a",
+            "https://localhost/a", "file:///tmp/a", "http://example.com",
+        ):
             with self.subTest(url=url), self.assertRaises(ValueError):
                 validate_web_url(url)
+
+    def test_rejects_hostname_resolving_to_private_address(self):
+        resolver_result = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.1.2.3", 443)),
+        ]
+        with patch.object(
+            socket, "getaddrinfo", return_value=resolver_result
+        ), self.assertRaises(ValueError):
+            download_file(
+                "https://rebind.example/a", "D:/not-created",
+                transport=lambda *args, **kwargs: self.fail("transport must not run"),
+            )
 
     def test_redacts_query_fragment_and_credentials(self):
         self.assertEqual(
@@ -47,11 +69,15 @@ class UrlValidationTests(unittest.TestCase):
 class BrowserOpeningTests(unittest.TestCase):
     def test_opens_new_edge_window_with_injected_runner(self):
         calls = []
-        result = open_in_edge(
-            "https://example.com", profile_directory="Profile 2",
-            edge_finder=lambda: Path("C:/Edge/msedge.exe"),
-            process_runner=lambda *args, **kwargs: calls.append((args, kwargs)),
-        )
+        resolver_result = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("1.2.3.4", 443)),
+        ]
+        with patch.object(socket, "getaddrinfo", return_value=resolver_result):
+            result = open_in_edge(
+                "https://example.com", profile_directory="Profile 2",
+                edge_finder=lambda: Path("C:/Edge/msedge.exe"),
+                process_runner=lambda *args, **kwargs: calls.append((args, kwargs)),
+            )
         self.assertEqual("OPENED", result["status"])
         self.assertEqual(
             [str(Path("C:/Edge/msedge.exe")), "--new-window", "--profile-directory=Profile 2", "https://example.com"],
@@ -60,6 +86,14 @@ class BrowserOpeningTests(unittest.TestCase):
 
 
 class DownloadTests(unittest.TestCase):
+    def setUp(self):
+        resolver_result = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("1.2.3.4", 443)),
+        ]
+        resolver = patch.object(socket, "getaddrinfo", return_value=resolver_result)
+        resolver.start()
+        self.addCleanup(resolver.stop)
+
     def test_downloads_atomically_and_reports_hash(self):
         response = FakeResponse(headers={"Content-Disposition": "attachment; filename=report.txt", "Content-Type": "text/plain; charset=utf-8", "Content-Length": "5"})
         with tempfile.TemporaryDirectory() as directory:
@@ -88,6 +122,25 @@ class DownloadTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             result = download_file("https://example.com/file", directory, transport=lambda *a, **k: response)
             self.assertEqual("_CON.txt", Path(result.path).name)
+
+    def test_redirect_response_to_private_address_is_rejected(self):
+        urls = []
+        redirect = FakeResponse(
+            url="https://example.com/redirect", status_code=302,
+            headers={"Location": "https://127.0.0.1/secret"},
+        )
+        final = FakeResponse()
+
+        def transport(url, **kwargs):
+            self.assertFalse(kwargs["allow_redirects"])
+            urls.append(url)
+            return redirect if len(urls) == 1 else final
+
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ValueError):
+                download_file("https://example.com/redirect", directory, transport=transport)
+            self.assertEqual([], list(Path(directory).iterdir()))
+        self.assertEqual(["https://example.com/redirect"], urls)
 
 
 if __name__ == "__main__":
