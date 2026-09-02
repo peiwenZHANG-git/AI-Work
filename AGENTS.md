@@ -14,6 +14,21 @@ These instructions apply to the whole repository. This project is a Windows-only
 - Record only what a future AI/Codex session needs to resume work; do not log every minor edit.
 - Keep the project name and repository path at the top of `PROJECT_STATE.md`, and update its last-updated date whenever its content changes.
 
+## Repository facts and session initialization
+
+- The repository is the only source of current technical state. Chat history, Project Memory, and model memory provide background only and never replace `PROJECT_STATE.md`, `AGENTS.md`, Git / `origin/main`, or the current working tree as fact sources.
+- Verify repository facts automatically in reliability order before asking the user for anything:
+  1. Use an available, authorized GitHub repository connector.
+  2. If the connector is missing, disconnected, returns `USER_NOT_LOGGED_IN`, lacks permissions, or the API call fails, continue with the next path instead of requiring user intervention.
+  3. If the environment already has the AI-Work local Git repository, prefer read-only or low-side-effect Git operations: `git fetch origin main`, then read `origin/main:PROJECT_STATE.md` and `origin/main:AGENTS.md`. `git fetch` may update remote-tracking refs but must not trigger checkout, merge, rebase, reset, or any other working-tree change during this read.
+  4. If the local repository is unavailable, try GitHub Raw content.
+  5. If Raw is unavailable, try public GitHub pages or the Web.
+  6. Fall back to user-provided files or content only after all automatic paths have failed.
+- If every repository read path fails, state clearly that the repository's latest state cannot be independently verified, never present chat history, Project Memory, or older audit results as current repository facts, and do not begin significant implementation work that depends on current code state.
+- A new AI-Work session must complete repository-state initialization before judging current implementation, project progress, architecture, completed features, blockers, next steps, or making actual code changes. When the environment also has the local repository, verify branch, HEAD, `origin/main`, and `git status` in real time before any development task.
+- Read dynamic Git facts (current HEAD, current branch, ahead/behind, dirty/clean, staged state, unpushed commits) in real time when needed; never infer them from an old `PROJECT_STATE.md`, chat history, or memory.
+- If the connector, local Git, Raw, or Web can complete the read automatically, do not ask the user to open GitHub, copy files, run Git commands, take screenshots, or manually confirm hashes; request user involvement only when tooling is genuinely insufficient.
+
 ## Compatibility requirements
 
 - Keep `windows_gui_mcp.py` as the backward-compatible stdio entry point.
