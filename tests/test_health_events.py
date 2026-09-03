@@ -50,6 +50,25 @@ class HealthEventTests(unittest.TestCase):
             )
             self.assertEqual('+00:00', item['time'][-6:])
 
+    def test_browser_worker_events_are_allowlisted(self):
+        expected = {
+            'worker_recovered': (
+                'success', 'Browser session worker auto-recovered.'
+            ),
+            'worker_recovery_failed': (
+                'error', 'Browser session worker auto-recovery failed.'
+            ),
+        }
+        for code, (outcome, expected_summary) in expected.items():
+            with self.subTest(code=code):
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / 'events.jsonl'
+                    self.assertTrue(record_health_event(
+                        'browser_session', outcome, code, path=path
+                    ))
+                    item = json.loads(path.read_text(encoding='utf-8'))
+                self.assertEqual(expected_summary, item['summary'])
+
     def test_unknown_code_or_component_is_not_written(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'events.jsonl'

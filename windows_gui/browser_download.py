@@ -95,22 +95,36 @@ def _validate_public_host(url: str, *, allow_http: bool) -> str:
             address = ipaddress.ip_address(address_text)
         except ValueError as error:
             raise ValueError("URL hostname resolved to an invalid address") from error
-        # Transition addresses can embed an arbitrary IPv4 target; do not let
-        # their outer global bit bypass private-address checks.
-        embedded_ipv4 = None
-        if address.version == 6:
-            if address.ipv4_mapped is not None:
-                embedded_ipv4 = address.ipv4_mapped
-            elif address in _NAT64_NETWORK:
-                embedded_ipv4 = ipaddress.IPv4Address(int(address) & 0xFFFF_FFFF)
-        if (
-            embedded_ipv4 is not None
-            or getattr(address, "sixtofour", None) is not None
-            or getattr(address, "teredo", None) is not None
-            or not address.is_global
-        ):
-            raise ValueError("URL hostname resolves to a private or local address")
+        _reject_non_public_address(address)
     return validated
+
+
+def _reject_non_public_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> None:
+    """Reject one resolved address unless it is provably a safe public target.
+
+    Transition forms (IPv4-mapped, NAT64, 6to4, Teredo) can embed an
+    arbitrary IPv4 target behind an outer global prefix, so they are
+    rejected outright instead of trying to re-derive the embedded host.
+    """
+    embedded_ipv4 = None
+    if address.version == 6:
+        if address.ipv4_mapped is not None:
+            embedded_ipv4 = address.ipv4_mapped
+        elif address in _NAT64_NETWORK:
+            embedded_ipv4 = ipaddress.IPv4Address(int(address) & 0xFFFF_FFFF)
+    if (
+        embedded_ipv4 is not None
+        or getattr(address, "sixtofour", None) is not None
+        or getattr(address, "teredo", None) is not None
+        or address.is_multicast
+        or address.is_link_local
+        or address.is_reserved
+        or address.is_unspecified
+        or address.is_loopback
+        or address.is_private
+        or not address.is_global
+    ):
+        raise ValueError("URL hostname resolves to a private or local address")
 
 
 def redact_web_url(url: str) -> str:

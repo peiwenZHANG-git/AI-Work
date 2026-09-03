@@ -9,7 +9,8 @@ import unittest
 from unittest.mock import patch
 
 from windows_gui.browser_download import (
-    download_file, open_in_edge, redact_web_url, validate_web_url,
+    _validate_public_host, download_file, open_in_edge, redact_web_url,
+    validate_web_url,
 )
 
 
@@ -64,6 +65,66 @@ class UrlValidationTests(unittest.TestCase):
             "https://example.com/report",
             redact_web_url("https://user:secret@example.com/report?token=private#part"),
         )
+
+
+class ResolvedAddressGuardTests(unittest.TestCase):
+    def _resolve(self, addresses):
+        result = [
+            (
+                socket.AF_INET6 if ":" in address else socket.AF_INET,
+                socket.SOCK_STREAM, 6, "", (address, 443),
+            )
+            for address in addresses
+        ]
+        resolver = patch.object(socket, "getaddrinfo", return_value=result)
+        resolver.start()
+        self.addCleanup(resolver.stop)
+
+    def test_public_ipv4_and_ipv6_addresses_are_allowed(self):
+        self._resolve(["1.2.3.4"])
+        self.assertEqual(
+            "https://example.com/a",
+            _validate_public_host("https://example.com/a", allow_http=False),
+        )
+        self._resolve(["2606:2800:220:1:248:1893:25c8:1946"])
+        self.assertEqual(
+            "https://example.com/a",
+            _validate_public_host("https://example.com/a", allow_http=False),
+        )
+
+    def test_private_local_and_transition_addresses_are_rejected(self):
+        cases = [
+            "127.0.0.1", "10.1.2.3", "172.16.0.1", "172.31.255.255",
+            "192.168.1.1", "169.254.1.1", "0.0.0.0", "224.0.0.1",
+            "::1", "fe80::1", "fc00::1", "ff02::1", "::",
+            "::ffff:10.0.0.1",
+            "64:ff9b::a00:1",
+            "2002:a00:1::",
+            "2001:0::",
+        ]
+        for address in cases:
+            with self.subTest(address=address):
+                self._resolve([address])
+                with self.assertRaises(ValueError):
+                    _validate_public_host("https://example.com/a", allow_http=False)
+
+    def test_any_private_address_in_multi_record_response_is_rejected(self):
+        self._resolve(["1.2.3.4", "10.0.0.9"])
+        with self.assertRaises(ValueError):
+            _validate_public_host("https://example.com/a", allow_http=False)
+
+    def test_public_then_private_resolution_is_rejected(self):
+        self._resolve(["1.2.3.4"])
+        _validate_public_host("https://example.com/a", allow_http=False)
+        self._resolve(["10.0.0.9"])
+        with self.assertRaises(ValueError):
+            _validate_public_host("https://example.com/a", allow_http=False)
+
+    def test_unresolvable_hostname_fails_closed(self):
+        with patch.object(
+            socket, "getaddrinfo", side_effect=OSError("dns failure")
+        ), self.assertRaises(ValueError):
+            _validate_public_host("https://example.com/a", allow_http=False)
 
 
 class BrowserOpeningTests(unittest.TestCase):

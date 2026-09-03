@@ -265,15 +265,24 @@ class TaskCenter:
         """Cancel one staged task; returns False when it is not pending."""
         task_id = str(task_id)
         with self._lock:
-            context = self._pending.pop(task_id, None)
-            if context is None:
-                return False
-            meta = self._meta.pop(task_id, None)
-            if meta is None:
-                meta = self._fallback_meta_locked()
-            meta.state = STATE_CANCELLED
-            self._store_terminal_locked(task_id, meta)
-            return True
+            return self._cancel_locked(task_id)
+
+    def _cancel_locked(self, task_id: str) -> bool:
+        context = self._pending.pop(task_id, None)
+        if context is None:
+            return False
+        meta = self._meta.pop(task_id, None)
+        if meta is None:
+            meta = self._fallback_meta_locked()
+        meta.state = STATE_CANCELLED
+        self._store_terminal_locked(task_id, meta)
+        return True
+
+    def cancel_all_staged(self) -> int:
+        """Cancel every staged task; returns how many were cancelled."""
+        with self._lock:
+            task_ids = list(self._pending)
+            return sum(1 for task_id in task_ids if self._cancel_locked(task_id))
 
     def lookup(self, task_id: str) -> TaskView | None:
         """Return the public view of one task without any verified context."""

@@ -32,6 +32,8 @@ EVENT_SUMMARIES = {
     'reply_draft_remote_failed': 'Remote AI reply draft generation failed.',
     'assistant_request_failed': 'Mail assistant request failed.',
     'digest_notification_warning': 'Digest completed but notification was not shown.',
+    'worker_recovered': 'Browser session worker auto-recovered.',
+    'worker_recovery_failed': 'Browser session worker auto-recovery failed.',
 }
 _LOCK = threading.Lock()
 _MUTEX_NAME = 'Local\\AI-Work-health-events'

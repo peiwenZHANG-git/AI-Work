@@ -155,6 +155,19 @@ class TaskCenterLifecycleTest(unittest.TestCase):
         with self.assertRaises(UnknownTaskError):
             center.complete(task_id, success=True)
 
+    def test_cancel_all_staged_cancels_every_pending_task(self) -> None:
+        center = make_center()
+        first = center.stage('mail', 'assistant_send_draft', {'n': 1})
+        second = center.stage('mail', 'assistant_send_draft', {'n': 2})
+        self.assertEqual(2, center.cancel_all_staged())
+        self.assertEqual(0, center.pending_count())
+        self.assertEqual(center.lookup(first).state, STATE_CANCELLED)
+        self.assertEqual(center.lookup(second).state, STATE_CANCELLED)
+        for task_id in (first, second):
+            with self.assertRaises(TaskConsumedError):
+                center.consume(task_id)
+        self.assertEqual(0, center.cancel_all_staged())
+
 
 class TaskCenterConcurrencyTest(unittest.TestCase):
     def test_concurrent_consumes_allow_exactly_one_winner(self) -> None:
