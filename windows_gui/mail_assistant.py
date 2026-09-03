@@ -12,10 +12,8 @@ import hashlib
 import imaplib
 import os
 import re
-import secrets
 import smtplib
 import ssl
-import threading
 import time
 from email.parser import BytesParser
 from email import policy
@@ -50,6 +48,7 @@ from windows_gui.mail_digest import (
     refresh_master_graph_token,
 )
 from windows_gui.health_events import record_health_event
+from windows_gui.task_center import TaskCenter, TaskCenterError
 
 
 ASSISTANT_SAVE_GRAPH_SCOPE = (
@@ -93,8 +92,14 @@ MAX_PENDING_DRAFTS = 16
 DRAFT_MODEL_ENVIRONMENT = 'AI_WORK_DRAFT_MODEL'
 DRAFT_REQUEST_TIMEOUT_SECONDS = 10
 DRAFT_MAX_OUTPUT_TOKENS = 1200
-PENDING_DRAFTS: dict[str, dict[str, Any]] = {}
-_PENDING_LOCK = threading.Lock()
+_TASK_CENTER = TaskCenter(
+    domains=('mail',),
+    action_types=('assistant_send_draft',),
+    ttl_seconds=PENDING_DRAFT_TTL_SECONDS,
+    max_tasks=MAX_PENDING_DRAFTS,
+)
+PENDING_DRAFTS: dict[str, dict[str, Any]] = _TASK_CENTER.pending
+_PENDING_LOCK = _TASK_CENTER.lock
 
 
 class AssistantError(Exception):
@@ -375,14 +380,7 @@ def _message_sha256(raw: bytes) -> str:
 
 
 def _purge_pending_drafts_locked(now: float | None = None) -> None:
-    now = time.monotonic() if now is None else now
-    expired = [
-        pending_id
-        for pending_id, context in PENDING_DRAFTS.items()
-        if context.get('_expires_at_mono', 0) <= now
-    ]
-    for pending_id in expired:
-        PENDING_DRAFTS.pop(pending_id, None)
+    _TASK_CENTER.purge_expired(now)
 
 
 def _store_pending_draft(
@@ -392,27 +390,28 @@ def _store_pending_draft(
     ttl_seconds: int = PENDING_DRAFT_TTL_SECONDS,
     max_items: int = MAX_PENDING_DRAFTS,
 ) -> str:
-    now = time.monotonic() if now is None else now
-    with _PENDING_LOCK:
-        _purge_pending_drafts_locked(now)
-        while len(PENDING_DRAFTS) >= max_items:
-            PENDING_DRAFTS.pop(next(iter(PENDING_DRAFTS)))
-        while True:
-            pending_id = secrets.token_urlsafe(32)
-            if pending_id not in PENDING_DRAFTS:
-                staged_context = dict(context)
-                staged_context['_expires_at_mono'] = now + ttl_seconds
-                PENDING_DRAFTS[pending_id] = staged_context
-                return pending_id
+    return _TASK_CENTER.stage(
+        'mail',
+        'assistant_send_draft',
+        context,
+        now=now,
+        ttl_seconds=ttl_seconds,
+        max_items=max_items,
+    )
 
 
 def _take_pending_draft(pending_id: str) -> dict[str, Any]:
-    with _PENDING_LOCK:
-        _purge_pending_drafts_locked()
-        try:
-            return PENDING_DRAFTS.pop(str(pending_id))
-        except KeyError as error:
-            raise AssistantError('待发送草稿不存在、已确认或服务已重启') from error
+    try:
+        return _TASK_CENTER.consume(pending_id)
+    except TaskCenterError as error:
+        raise AssistantError('待发送草稿不存在、已确认或服务已重启') from error
+
+
+def _record_staged_draft_outcome(pending_id: str, *, success: bool) -> None:
+    try:
+        _TASK_CENTER.complete(pending_id, success=success)
+    except TaskCenterError:
+        pass
 
 
 def _assistant_graph_token(scopes: str) -> str:
@@ -827,6 +826,16 @@ def stage_draft_for_mailbox(
 
 def send_staged_draft(pending_id: str) -> str:
     context = _take_pending_draft(pending_id)
+    try:
+        detail = _execute_staged_draft(context)
+    except BaseException:
+        _record_staged_draft_outcome(pending_id, success=False)
+        raise
+    _record_staged_draft_outcome(pending_id, success=True)
+    return detail
+
+
+def _execute_staged_draft(context: dict[str, Any]) -> str:
     mailbox_id = str(context.get('mailbox_id') or '')
     to, subject, body = validate_draft_fields(
         context.get('to'), context.get('subject'), context.get('body')
