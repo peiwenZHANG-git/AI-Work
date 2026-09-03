@@ -76,22 +76,27 @@ def body_fingerprint(body: bytes | None) -> str:
 
 def canonical_signing_string(
     method: str, path: str, body_hash: str, nonce: str, timestamp: int,
+    *, device_id: str | None = None,
 ) -> str:
-    return '\n'.join([
+    fields = [
         method.strip().upper(),
         path,
         body_hash,
         nonce,
         str(int(timestamp)),
-    ])
+    ]
+    if device_id is not None:
+        fields.append(f'device:{device_id}')
+    return '\n'.join(fields)
 
 
 def sign_request(
     secret: str, method: str, path: str, body_hash: str, nonce: str,
     timestamp: int,
+    *, device_id: str | None = None,
 ) -> str:
     message = canonical_signing_string(
-        method, path, body_hash, nonce, timestamp
+        method, path, body_hash, nonce, timestamp, device_id=device_id,
     ).encode('utf-8')
     return hmac.new(secret.encode('utf-8'), message, hashlib.sha256).hexdigest()
 
@@ -316,6 +321,8 @@ class RemoteAuthenticator:
         method: str,
         path: str,
         body: bytes | None,
+        *,
+        signed_device_id: str | None = None,
     ) -> None:
         device_id = str(device_id)
         nonce = str(nonce)
@@ -339,6 +346,7 @@ class RemoteAuthenticator:
             body_hash = body_fingerprint(body)
             expected = sign_request(
                 secret, str(method), str(path), body_hash, nonce, stamp,
+                device_id=signed_device_id,
             )
             if not hmac.compare_digest(expected, str(signature)):
                 raise SignatureError('request signature does not match')

@@ -1,7 +1,9 @@
 # AI-Work Remote 架构与威胁模型（Phase 3A 设计文档）
 
-状态：设计文档，未实现。本文只定义架构、边界与实施计划；Phase 3B 实现前，
-其中标注“需要用户批准”的决策必须逐项获得确认。
+状态：设计边界与实现说明。Phase 3B-1（协议与认证原语）、3B-2（loopback
+health server）和 3B-3（pairing / device / revocation）已实现；3B-4
+（TaskCenter staging 与本地确认页）尚未实现；3B-5（LAN opt-in）未获批准，
+不得实现。
 
 ## 1. Goals
 
@@ -202,20 +204,29 @@ method/function 分发、任意 selector、任意 JavaScript、任意文件读�
   每设备随机 secret（32 字节）。服务端 secret 存 Credential Manager
   （服务 `AI-Work/windows-gui/remote`，用户名 `device_<opaque_id>`）；
   客户端自行安全存储。
-- 认证：每个请求携带 device opaque id、session token（见 §10）、nonce、
-  timestamp，并对 `method\npath\nbody-hash\nnonce\ntimestamp` 计算
-  HMAC-SHA256。服务端用该设备 secret 验签。secret 永不出现在 URL、命令行、
-  日志或明文配置。
+- 认证：`POST /session` 携带 device opaque id、nonce、timestamp 和
+  `method\npath\nbody-hash\nnonce\ntimestamp` 的 HMAC-SHA256。
+  `POST /command` 额外要求 Bearer session，并且 HMAC 串以
+  `device:<opaque_id>` 收尾，显式绑定请求设备：
+  `method\npath\nbody-hash\nnonce\ntimestamp\ndevice:<opaque_id>`。
+  服务端用该设备 secret 验签，再校验 session 属于同一 device opaque id。
+  secret 永不出现在 URL、命令行、日志或明文配置。
 - 旋转：本地面板可对单设备重新配对（生成新 secret，旧 secret 立即失效）。
 
 ## 9. Replay prevention
 
-- 每个请求：128-bit 随机 nonce + 客户端 timestamp（±90 秒窗口）+ HMAC 签名。
+- `/command` 每个请求：128-bit 随机 nonce + 客户端 timestamp（±90 秒窗口）
+  + 显式绑定 device id 的 HMAC 签名。
 - 服务端有界 nonce 缓存（TTL = 时间窗，LRU 上限如 4096）；重复 nonce 固定拒绝。
 - 应用层签名在 TLS 之外仍然必需：它保护 LAN HTTP 场景与任何 TLS 终止代理，
-  并把重放防护与传输解耦。即使用了 TLS，stage 类 mutating 命令也保留签名 +
-  nonce；另外为 stage 请求引入客户端生成的幂等 `request_id`：同一
-  `(device, request_id)` 在 TTL 内重复提交返回首次结果，不产生第二个 Task。
+  并把重放防护与传输解耦。即使用了 TLS，mutating 命令也保留签名 + nonce；
+  命令信封中的客户端 `request_id` 以 `(device, request_id)` 为键进入
+  有界幂等缓存。只有成功 mutating 结果会缓存；重复同一
+  `(device, request_id)` 返回首次结果，不产生第二次副作用。
+  当前唯一的 enabled mutating 命令是 `session.revoke_self`，它撤销当前
+  Bearer session，不撤销设备凭据；幂等缓存命中先于已撤销 session 校验，
+  因此同一请求的授权重试得到确定性首次结果，而新的 `request_id`
+  在旧 session 上固定拒绝。
 - confirm/cancel：confirm 只存在于本地平面（无重放面）；`task.cancel` 幂等
   （重复取消返回相同终态）；已消费/过期引用的重复使用返回确定性错误
   （TaskCenter 已保证）。
@@ -298,8 +309,9 @@ REST over HTTP(S)，JSON：
 - `POST /pairing/claim`（无认证；body: pairing code + 设备名 + 客户端证书指纹
   [仅 LAN/TLS]）→ 设备凭据（仅此一次返回）。
 - `POST /session`（HMAC）→ session token。
-- `POST /command`（HMAC + session；body: 命令枚举 + 参数 + request_id）→ 统一
-  响应 `{status, task_id?|data?}`；错误为固定 `{error: <fixed_code>}`。
+- `POST /command`（HMAC 绑定 device id + Bearer session；body: 命令枚举 +
+  参数 + request_id）→ 统一响应 `{status, task_id?|data?}`；错误为固定
+  `{error: <fixed_code>}`。
 - `GET /health`、`GET /tasks`（HMAC + session）。
 - 确认平面（仅 loopback）：`GET /local/confirmations`、
   `POST /local/confirmations/<task_id>/approve|cancel`。
@@ -471,7 +483,8 @@ MVP 刻意保持模块少；不为未来功能预留空壳。
 5. secret 只存 Credential Manager；URL/命令行/日志/明文配置零秘密。
 6. 命令固定枚举，未知即拒绝；每命令定义认证/级别/速率/审计。
 7. 默认绑定 loopback；LAN 仅 opt-in + TLS + 显式批准。
-8. mutating 远程请求必须 HMAC 签名 + nonce + 幂等 request_id。
+8. mutating 远程请求必须使用显式绑定 device id 的 HMAC 签名 + nonce +
+   幂等 request_id；当前 `session.revoke_self` 只撤销当前 session。
 9. 审计与健康事件使用固定 allowlist，不记录调用方提供的细节。
 10. 36 个 MCP 工具与现有确认语义不变；Remote 不新增 MCP 表面。
 
@@ -490,12 +503,10 @@ MVP 刻意保持模块少；不为未来功能预留空壳。
 | D9 | 远程请求 GUI 操作 | MVP 不开放 |
 | D10 | 远程自确认 | 设计上永久禁止，无批准路径 |
 
-## 27. 3A 审计结论
+## 27. Implementation status
 
-- 当前仓库（HEAD 与 origin/main 同步于本文写作时）没有任何 Remote 运行时：
-  `system_health.check_remote_component` 仍为固定 `UNKNOWN` 占位，无监听、
-  无配对、无跨设备代码。
-- Phase 1/2 交付的 TaskCenter、浏览器确认暂存、健康事件白名单与 Credential
-  Manager 封装构成 Remote 的直接复用基础（§3）。
-- 本文档全部结论基于最新仓库代码静态分析；未实现任何 Remote 功能，未新增
-  监听，未修改 MCP API，未写入任何凭据。
+- 3B-1 到 3B-3 的当前实现覆盖协议原语、loopback-only transport、pairing、
+  设备注册/撤销、`health.read`、`task.status` 和 `session.revoke_self`。
+- 3B-4 尚未开始：没有 domain adapter，没有 Remote 到 TaskCenter 的 staging，
+  也没有本地确认页。
+- Remote 不新增 MCP 表面；现有 MCP 公共接口保持不变。

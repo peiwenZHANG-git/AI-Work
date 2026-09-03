@@ -48,6 +48,7 @@ EVENT_SUMMARIES = {
     'remote_task_expired': 'Remote task expired.',
     'remote_device_revoked': 'Remote device was revoked.',
     'remote_all_devices_revoked': 'All remote devices were revoked.',
+    'remote_session_revoked': 'Remote session was revoked.',
 }
 _DEVICE_HASH_PATTERN = None  # compiled lazily to keep import time flat
 _LOCK = threading.Lock()

@@ -22,6 +22,7 @@ CODE_OUTCOMES = {
     'task_expired': 'warning',
     'device_revoked': 'warning',
     'all_devices_revoked': 'warning',
+    'session_revoked': 'success',
 }
 
 

@@ -86,12 +86,13 @@ class RemoteServer:
         self._collect_health = health_collector
         self._task_source = task_source or (lambda device_id: [])
         self._pepper_provider = pepper_provider
-        self._audit = audit_recorder
+        self._audit_recorder = audit_recorder
         self.devices_path = (
             Path(devices_path) if devices_path is not None
             else _default_devices_path()
         )
         self.idempotency = IdempotencyCache()
+        self._idempotency_lock = threading.Lock()
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -156,7 +157,7 @@ class RemoteServer:
         except Exception:
             pepper = None
         try:
-            self._audit(code, device_id=device_id, pepper=pepper)
+            self._audit_recorder(code, device_id=device_id, pepper=pepper)
         except Exception:
             pass
 
@@ -187,8 +188,33 @@ class RemoteServer:
         return 200, {'session': token}
 
     def handle_command(
-        self, device_id: str, body: bytes,
+        self,
+        body: bytes,
+        *,
+        device_id: str,
+        nonce: str,
+        timestamp: str,
+        signature: str,
+        session_token: str,
     ) -> tuple[int, dict[str, Any]]:
+        try:
+            self.authenticator.authenticate(
+                device_id,
+                nonce,
+                timestamp,
+                signature,
+                'POST',
+                '/command',
+                body,
+                signed_device_id=device_id,
+            )
+        except RemoteAuthError as error:
+            self._audit('auth_failed', device_id=device_id)
+            code = {
+                'ReplayError': 'replay_detected',
+                'TimestampError': 'timestamp_invalid',
+            }.get(type(error).__name__, 'auth_failed')
+            raise RemoteApiError(401, code) from error
         try:
             spec, request_id, params = parse_request_envelope(body)
         except UnknownCommandError as error:
@@ -205,8 +231,43 @@ class RemoteServer:
         if handler is None:
             self._audit('command_denied', device_id=device_id)
             raise RemoteApiError(400, 'unavailable_command')
+
+        if spec.mutating:
+            with self._idempotency_lock:
+                cached = self.idempotency.get(device_id, request_id)
+                if cached is not None:
+                    return 200, cached
+
+                session_device = self._require_session_device(
+                    session_token, device_id,
+                )
+                self._check_rate_limits(device_id, spec.rate_limit)
+                if spec.name == 'session.revoke_self':
+                    status, payload = self._command_revoke_self(
+                        device_id, session_device, session_token,
+                    )
+                else:
+                    status, payload = handler(device_id, request_id, params)
+                if status == 200:
+                    self.idempotency.put(device_id, request_id, payload)
+                return status, payload
+
+        self._require_session_device(session_token, device_id)
         self._check_rate_limits(device_id, spec.rate_limit)
         return handler(device_id, request_id, params)
+
+    def _require_session_device(
+        self, session_token: str, device_id: str,
+    ) -> str:
+        try:
+            session_device = self.authenticator.validate_session(session_token)
+        except RemoteAuthError as error:
+            self._audit('auth_failed', device_id=device_id)
+            raise RemoteApiError(401, 'auth_failed') from error
+        if not secrets.compare_digest(session_device, str(device_id)):
+            self._audit('auth_failed', device_id=device_id)
+            raise RemoteApiError(401, 'auth_failed')
+        return session_device
 
     def _check_rate_limits(self, device_id: str, rate_limit: str) -> None:
         device_limit = LIMITS[f'{rate_limit}_device']
@@ -237,11 +298,17 @@ class RemoteServer:
         return 200, {'tasks': self._task_source(device_id)}
 
     def _command_revoke_self(
-        self, device_id: str, request_id: str, params: dict[str, Any],
+        self,
+        device_id: str,
+        session_device: str,
+        session_token: str,
     ) -> tuple[int, dict[str, Any]]:
-        if not self._revoke_device(device_id):
+        if not secrets.compare_digest(session_device, str(device_id)):
             raise RemoteApiError(401, 'auth_failed')
-        return 200, {'status': 'REVOKED'}
+        if not self.authenticator.revoke_session(session_token):
+            raise RemoteApiError(401, 'auth_failed')
+        self._audit('session_revoked', device_id=device_id)
+        return 200, {'status': 'SESSION_REVOKED'}
 
     def _revoke_device(self, device_id: str) -> bool:
         revoked = self.authenticator.revoke_device(device_id)
@@ -398,6 +465,12 @@ class _RequestHandler(BaseHTTPRequestHandler):
         except RemoteAuthError as error:
             raise RemoteApiError(401, 'auth_failed') from error
 
+    def _bearer_token(self) -> str:
+        header = self.headers.get('Authorization') or ''
+        if not header.startswith('Bearer '):
+            raise RemoteApiError(401, 'auth_failed')
+        return header[len('Bearer '):].strip()
+
     def _run(self, action: Callable[[], tuple[int, dict[str, Any]]]) -> None:
         try:
             status, payload = action()
@@ -484,9 +557,15 @@ class _RequestHandler(BaseHTTPRequestHandler):
             return
         if path == '/command':
             def action():
-                device_id = self._require_session()
                 body = self._read_body()
-                return self.remote.handle_command(device_id, body)
+                return self.remote.handle_command(
+                    body,
+                    device_id=self.headers.get('X-Remote-Device') or '',
+                    nonce=self.headers.get('X-Remote-Nonce') or '',
+                    timestamp=self.headers.get('X-Remote-Timestamp') or '',
+                    signature=self.headers.get('X-Signature') or '',
+                    session_token=self._bearer_token(),
+                )
             self._run(action)
             return
         self._send_error(404, 'not_found')

@@ -16,6 +16,7 @@ class PairingDeviceTests(unittest.TestCase):
     def setUp(self):
         self.backend = FakeStoreBackend()
         self.clock = {'now': 1_000.0, 'wall': 1_700_000_000.0}
+        self.audit_events = []
         self.devices_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.devices_dir.cleanup)
         self.devices_path = Path(self.devices_dir.name) / 'devices.json'
@@ -57,6 +58,13 @@ class PairingDeviceTests(unittest.TestCase):
     def local(self, server, method, path, body=None):
         headers = {'Host': f'127.0.0.1:{server.port}'}
         return self.request(server, method, path, body=body, headers=headers)
+
+    def _record_audit(self, code, *, outcome=None, device_id=None, pepper=None):
+        device_hash = (
+            auth.audit_device_hash(device_id, pepper)
+            if device_id and pepper else None
+        )
+        self.audit_events.append((code, outcome, device_hash, pepper))
 
     def claim(self, server, code, device_name='device', source='203.0.113.9'):
         body = json.dumps({'code': code, 'device_name': device_name}).encode()
@@ -167,8 +175,8 @@ class PairingDeviceTests(unittest.TestCase):
         self.assertNotIn(secret, repr(payload))
         self.assertNotIn('secret', payload['devices'][0])
 
-    def test_revoke_self_revokes_only_calling_device(self):
-        server = self._make_server()
+    def test_revoke_self_is_session_scoped_and_idempotent(self):
+        server = self._make_server(audit_recorder=self._record_audit)
         tokens = {}
         secrets_by_device = {}
         for name in ('device-a', 'device-b'):
@@ -191,22 +199,61 @@ class PairingDeviceTests(unittest.TestCase):
             tokens[name] = json.loads(data)['session']
             secrets_by_device[name] = enrolled
 
-        victim = secrets_by_device['device-a']['device_id']
-        body = json.dumps({
-            'command': 'session.revoke_self',
-            'request_id': 'a' * 16,
-            'params': {},
-        }).encode()
-        status, data = self.request(
-            server, 'POST', '/command', body=body,
-            headers={'Authorization': f"Bearer {tokens['device-a']}"},
-        )
-        self.assertEqual(200, status)
-        self.assertEqual({'status': 'REVOKED'}, json.loads(data))
-        self.assertNotIn(f'device_{victim}', self.backend.secrets)
+        device_a = secrets_by_device['device-a']
+        device_b = secrets_by_device['device-b']
 
-        survivor = secrets_by_device['device-b']['device_id']
-        self.assertIn(f'device_{survivor}', self.backend.secrets)
+        def command(request_id, nonce):
+            body = json.dumps({
+                'command': 'session.revoke_self',
+                'request_id': request_id,
+                'params': {},
+            }).encode('utf-8')
+            stamp = int(self.clock['wall'])
+            signature = auth.sign_request(
+                device_a['secret'],
+                'POST',
+                '/command',
+                auth.body_fingerprint(body),
+                nonce,
+                stamp,
+                device_id=device_a['device_id'],
+            )
+            headers = {
+                'Host': f'127.0.0.1:{server.port}',
+                'Authorization': f"Bearer {tokens['device-a']}",
+                'X-Remote-Device': device_a['device_id'],
+                'X-Remote-Nonce': nonce,
+                'X-Remote-Timestamp': str(stamp),
+                'X-Signature': signature,
+            }
+            return self.request(
+                server, 'POST', '/command', body=body, headers=headers,
+            )
+
+        status, data = command('a' * 16, 'revoke-nonce-1')
+        self.assertEqual(200, status)
+        self.assertEqual({'status': 'SESSION_REVOKED'}, json.loads(data))
+
+        status, data = command('a' * 16, 'revoke-nonce-2')
+        self.assertEqual(200, status)
+        self.assertEqual({'status': 'SESSION_REVOKED'}, json.loads(data))
+
+        status, data = command('b' * 16, 'revoke-nonce-3')
+        self.assertEqual(401, status)
+        self.assertEqual({'error': 'auth_failed'}, json.loads(data))
+
+        revoked_audit = [
+            event for event in self.audit_events
+            if event[0] == 'session_revoked'
+        ]
+        self.assertEqual(1, len(revoked_audit))
+        self.assertEqual(16, len(revoked_audit[0][2]))
+        self.assertNotIn(device_a['device_id'], repr(self.audit_events))
+        self.assertNotIn(tokens['device-a'], repr(self.audit_events))
+        self.assertNotIn(device_a['secret'], repr(self.audit_events))
+
+        self.assertIn(f"device_{device_a['device_id']}", self.backend.secrets)
+        self.assertIn(f"device_{device_b['device_id']}", self.backend.secrets)
         status, data = self.request(
             server, 'GET', '/health',
             headers={'Authorization': f"Bearer {tokens['device-b']}"},

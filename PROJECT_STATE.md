@@ -67,6 +67,7 @@
 - 助手重启可靠性已修复：端口等待现在正确区分“等待关闭”和“等待监听”，并会在有界时间内重试精确脚本 PID 的 WMI 查询；仍只终止命令行明确运行 `mail_assistant_server.py` 的进程。真实 `--restart --no-refresh --no-open` 验证一次成功，未刷新邮箱，随后 `/api/status` 与 `/api/health` 均返回 HTTP 200。
 - 通用浏览器真实验收已通过一次受控 smoke：使用专用 `browser-agent-profile` 启动非 headless Edge，访问 Selenium 公共 downloads 测试页，检查 URL/DOM 脱敏，点击普通只读链接，通过 `File 1` 完成登录态下载路径的 14 字节文件下载并核对 SHA-256，确认不覆盖已有文件；三个私网导航负例全部被拒绝，stop 后导航显式失败。未使用邮箱 Profile、未提交表单或执行生产副作用。
 - 邮箱工作流下一阶段已实现且不改变 36 工具 MCP 接口：摘要卡片携带本机渲染元数据和“AI 回复”入口，助手可根据最新本地摘要卡片生成可编辑回复草稿，但不会自动保存或发送；`/api/today-todos` 只解析最近一次本地摘要，提取截止、需办理、学校行政和高重要度事项，不访问或修改邮箱；`/api/mail-search` 把常见中文时间/关键词解析为参数后复用现有只读 `search_mailboxes()` 元数据搜索。QQ 发送仍然禁止，所有发送仍复用两阶段确认。
+- Remote Phase 3B-3 收口已完成且不改变 36 个 MCP 工具接口：`/command` 现要求显式绑定 device id 的 HMAC 加 Bearer session 双重认证；`session.revoke_self` 只撤销当前 session，按 `(device, request_id)` 幂等，旧 session 的新请求固定拒绝；审计仍用固定事件码并只记录哈希设备标识。
 2026-09-02 本机验收：助手已用 `--restart --no-refresh --no-open` 加载当前工作树，真实本地页面确认三个新入口存在，待办 API 返回 HTTP 200，AI 回复按钮默认禁用，搜索请求边界返回 400；未触发真实邮箱搜索、AI 生成、草稿保存、发送、删除、移动或标记。
 
 ## 4. 当前工作
@@ -112,4 +113,4 @@
 
 ## 8. 最近一次更新
 
-2026-09-02（Europe/Paris）
+2026-09-03（Europe/Paris）

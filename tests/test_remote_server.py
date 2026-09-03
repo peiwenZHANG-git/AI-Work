@@ -107,6 +107,55 @@ class RemoteServerTests(unittest.TestCase):
             'Host': f'127.0.0.1:{self.server.port}',
         }
 
+    def post_command(
+        self,
+        *,
+        token,
+        device_id,
+        secret,
+        command='health.read',
+        request_id=None,
+        params=None,
+        nonce='command-nonce',
+        timestamp=None,
+        signature=None,
+        signed_device_id=None,
+        include_hmac=True,
+        include_session=True,
+        body=None,
+    ):
+        if body is None:
+            body = json.dumps({
+                'command': command,
+                'request_id': request_id or ('a' * 16),
+                'params': params or {},
+            }).encode('utf-8')
+        headers = {'Host': f'127.0.0.1:{self.server.port}'}
+        if include_hmac:
+            stamp = int(self.clock['wall'] if timestamp is None else timestamp)
+            if signature is None:
+                signature = auth.sign_request(
+                    secret,
+                    'POST',
+                    '/command',
+                    auth.body_fingerprint(body),
+                    nonce,
+                    stamp,
+                    device_id=(
+                        device_id if signed_device_id is None
+                        else signed_device_id
+                    ),
+                )
+            headers.update({
+                'X-Remote-Device': device_id,
+                'X-Remote-Nonce': nonce,
+                'X-Remote-Timestamp': str(stamp),
+                'X-Signature': signature,
+            })
+        if include_session:
+            headers['Authorization'] = f'Bearer {token}'
+        return self.request('POST', '/command', body=body, headers=headers)
+
     def test_session_round_trip_and_health_read(self):
         device_id, secret = self.enroll()
         status, data = self.post_session(device_id, secret)
@@ -183,11 +232,11 @@ class RemoteServerTests(unittest.TestCase):
         device_id, secret = self.enroll()
         _, data = self.post_session(device_id, secret)
         token = json.loads(data)['session']
-        body = json.dumps({
-            'command': 'task.status', 'request_id': 'a' * 16, 'params': {},
-        }).encode('utf-8')
-        status, data = self.request(
-            'POST', '/command', body=body, headers=self.authed_headers(token),
+        status, data = self.post_command(
+            token=token,
+            device_id=device_id,
+            secret=secret,
+            command='task.status',
         )
         self.assertEqual(200, status)
         self.assertEqual({'tasks': []}, json.loads(data))
@@ -196,13 +245,13 @@ class RemoteServerTests(unittest.TestCase):
         device_id, secret = self.enroll()
         _, data = self.post_session(device_id, secret)
         token = json.loads(data)['session']
-        body = json.dumps({
-            'command': 'browser.request_click',
-            'request_id': 'a' * 16,
-            'params': {'text': 'Submit'},
-        }).encode('utf-8')
-        status, data = self.request(
-            'POST', '/command', body=body, headers=self.authed_headers(token),
+        status, data = self.post_command(
+            token=token,
+            device_id=device_id,
+            secret=secret,
+            command='browser.request_click',
+            request_id='b' * 16,
+            params={'text': 'Submit'},
         )
         self.assertEqual(400, status)
         self.assertEqual({'error': 'unavailable_command'}, json.loads(data))
@@ -211,14 +260,98 @@ class RemoteServerTests(unittest.TestCase):
         device_id, secret = self.enroll()
         _, data = self.post_session(device_id, secret)
         token = json.loads(data)['session']
-        body = json.dumps({
-            'command': 'shell.exec', 'request_id': 'a' * 16, 'params': {},
-        }).encode('utf-8')
-        status, data = self.request(
-            'POST', '/command', body=body, headers=self.authed_headers(token),
+        status, data = self.post_command(
+            token=token,
+            device_id=device_id,
+            secret=secret,
+            command='shell.exec',
         )
         self.assertEqual(400, status)
         self.assertEqual({'error': 'unknown_command'}, json.loads(data))
+
+    def test_command_requires_both_hmac_and_session(self):
+        device_id, secret = self.enroll()
+        _, data = self.post_session(device_id, secret, nonce='session-n1')
+        token = json.loads(data)['session']
+
+        status, data = self.post_command(
+            token=token,
+            device_id=device_id,
+            secret=secret,
+            include_hmac=False,
+        )
+        self.assertEqual(401, status)
+        self.assertEqual({'error': 'auth_failed'}, json.loads(data))
+
+        status, data = self.post_command(
+            token=token,
+            device_id=device_id,
+            secret=secret,
+            include_session=False,
+        )
+        self.assertEqual(401, status)
+        self.assertEqual({'error': 'auth_failed'}, json.loads(data))
+
+    def test_command_rejects_bad_hmac_and_wrong_session(self):
+        device_id, secret = self.enroll()
+        _, data = self.post_session(device_id, secret, nonce='session-n1')
+        token = json.loads(data)['session']
+
+        status, data = self.post_command(
+            token=token,
+            device_id=device_id,
+            secret=secret,
+            signature='0' * 64,
+        )
+        self.assertEqual(401, status)
+        self.assertEqual({'error': 'auth_failed'}, json.loads(data))
+
+        status, data = self.post_command(
+            token='not-a-session',
+            device_id=device_id,
+            secret=secret,
+            nonce='wrong-session-nonce',
+        )
+        self.assertEqual(401, status)
+        self.assertEqual({'error': 'auth_failed'}, json.loads(data))
+
+    def test_command_binds_device_id_and_rejects_replayed_nonce(self):
+        first_id, first_secret = self.enroll('device-a')
+        second_id, second_secret = self.enroll('device-b')
+        _, data = self.post_session(first_id, first_secret, nonce='a-session')
+        token = json.loads(data)['session']
+
+        status, data = self.post_command(
+            token=token,
+            device_id=first_id,
+            secret=second_secret,
+            signed_device_id=first_id,
+        )
+        self.assertEqual(401, status)
+        self.assertEqual({'error': 'auth_failed'}, json.loads(data))
+
+        body = json.dumps({
+            'command': 'health.read',
+            'request_id': 'c' * 16,
+            'params': {},
+        }).encode('utf-8')
+        status, _ = self.post_command(
+            token=token,
+            device_id=first_id,
+            secret=first_secret,
+            nonce='same-command-nonce',
+            body=body,
+        )
+        self.assertEqual(200, status)
+        status, data = self.post_command(
+            token=token,
+            device_id=first_id,
+            secret=first_secret,
+            nonce='same-command-nonce',
+            body=body,
+        )
+        self.assertEqual(401, status)
+        self.assertEqual({'error': 'replay_detected'}, json.loads(data))
 
     def test_health_rate_limit_per_device(self):
         device_id, secret = self.enroll()
