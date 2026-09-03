@@ -13,6 +13,7 @@ These instructions apply to the whole repository. This project is a Windows-only
 - Do not persist dynamic Git facts that can immediately become stale, such as the current HEAD hash, current branch, dirty/clean status, or unpushed commits; query them when needed instead.
 - Record only what a future AI/Codex session needs to resume work; do not log every minor edit.
 - Keep the project name and repository path at the top of `PROJECT_STATE.md`, and update its last-updated date whenever its content changes.
+- For significant development work, when repository Skills are available, follow `.agents/skills/ai-work-task-init/SKILL.md` before implementation and `.agents/skills/ai-work-delivery-check/SKILL.md` before declaring the task complete. If the current agent does not support repository Skills, apply the equivalent workflow directly from this file and the current `PROJECT_STATE.md`.
 
 ## Repository facts and session initialization
 
