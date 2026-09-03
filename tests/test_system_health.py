@@ -222,7 +222,12 @@ class SystemHealthTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'last-run.json'
             path.write_text(json.dumps(data), encoding='utf-8')
-            result = self.health.check_last_digest(path, now_factory=lambda: now)
+            attempt_path = Path(directory) / 'last-attempt.json'
+            result = self.health.check_last_digest(
+                path,
+                now_factory=lambda: now,
+                attempt_path=attempt_path,
+            )
 
         self.assertTrue(result['ok'])
         self.assertEqual('ok', result['detail'])
@@ -240,7 +245,12 @@ class SystemHealthTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'last-run.json'
             path.write_text(json.dumps(data), encoding='utf-8')
-            result = self.health.check_last_digest(path, now_factory=lambda: now)
+            attempt_path = Path(directory) / 'last-attempt.json'
+            result = self.health.check_last_digest(
+                path,
+                now_factory=lambda: now,
+                attempt_path=attempt_path,
+            )
 
         self.assertFalse(result['ok'])
         self.assertEqual('stale:25.0h', result['detail'])
@@ -257,7 +267,12 @@ class SystemHealthTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'last-run.json'
             path.write_text(json.dumps(data), encoding='utf-8')
-            result = self.health.check_last_digest(path, now_factory=lambda: now)
+            attempt_path = Path(directory) / 'last-attempt.json'
+            result = self.health.check_last_digest(
+                path,
+                now_factory=lambda: now,
+                attempt_path=attempt_path,
+            )
 
         self.assertFalse(result['ok'])
         self.assertEqual('stale:unknown', result['detail'])
