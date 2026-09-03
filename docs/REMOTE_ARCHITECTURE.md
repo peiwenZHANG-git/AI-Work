@@ -272,6 +272,27 @@ TLS（§13）与启动时的显著本地提示。
 
 ## 14. Protocol（草案）
 
+### 14.1 Transport 比较
+
+| 维度 | HTTPS REST（本设计） | WebSocket | HTTP + 轮询 | Named Pipe | Cloud relay |
+| --- | --- | --- | --- | --- | --- |
+| 复杂度 | 低（复用助手服务模式） | 中（长连接状态机、心跳） | 低 | 中（Windows 专属 API） | 高（外部服务、账户体系） |
+| 认证 | 每请求 HMAC + session，天然请求边界 | 连接级认证，中间指令需另防重放 | 同 REST | 管道 ACL，模型不同 | 依赖云身份 |
+| TLS | loopback 可 HTTP；LAN 用 TLS | 同左 | 同左 | 不适用（本机） | 强制但由第三方终结 |
+| 推送需求 | MVP 无需推送，`task.status` 轮询足够 | 天然推送 | 轮询即本质 | 本机通知即可 | 可推送 |
+| NAT 穿透 | 不涉及（LAN/loopback） | 不涉及 | 不涉及 | 不涉及 | 天然可穿 NAT（未来方案） |
+| LAN MVP 契合 | 高 | 中（对 MVP 是过度设计） | 高（与 REST 合并使用） | 低（无法服务 LAN） | 低（MVP 排除） |
+| 重放防护 | 应用层签名 + nonce（§9） | 需在消息层重建同等机制 | 同 REST | 需自定义 | 由云方案定义 |
+| Python 生态 | stdlib `http.server` + 现有模式 | 需第三方库（如 websockets） | 同 REST | `pywin32` | SDK 依赖 |
+| Windows 兼容 | 已验证（助手服务） | 一般 | 已验证 | 良好但冷门 | 取决于厂商 |
+
+**结论：Phase 3B MVP 选择 HTTP REST + 轮询**（`task.status` 轮询覆盖无推送需求），
+与现有 mail assistant 服务器同构、认证面最清晰、零新依赖。WebSocket 的推送
+能力对 MVP 无价值；Named Pipe 无法支撑未来 LAN；cloud relay 仅作为未来需要
+公网访问时的独立评审方案（不在本架构范围内）。
+
+### 14.2 REST 协议草案
+
 REST over HTTP(S)，JSON：
 
 - `POST /pairing/claim`（无认证；body: pairing code + 设备名 + 客户端证书指纹
