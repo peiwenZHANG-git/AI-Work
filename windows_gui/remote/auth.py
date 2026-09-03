@@ -12,6 +12,7 @@ import hmac
 import secrets
 import threading
 import time
+from datetime import datetime
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -110,6 +111,8 @@ class DeviceRecord:
     device_id: str
     name: str
     created_mono: float
+    status: str = 'active'
+    created_at_iso: str = ''
 
 
 @dataclass
@@ -193,6 +196,13 @@ class RemoteAuthenticator:
         if self._now() > self._pairing_expires_mono:
             raise PairingCodeExpiredError('pairing code has expired')
 
+    def clear_pairing(self) -> None:
+        """Drop any pending pairing code (restart semantics)."""
+        with self._lock:
+            self._pairing_code = None
+            self._pairing_used = False
+            self._pairing_expires_mono = 0.0
+
     def claim_pairing(
         self, code: str, device_name: str, *, now: float | None = None,
     ) -> tuple[str, str]:
@@ -211,8 +221,50 @@ class RemoteAuthenticator:
             self._secret_store.set_secret(device_id, device_secret)
             self._devices[device_id] = DeviceRecord(
                 device_id=device_id, name=name, created_mono=current,
+                created_at_iso=datetime.fromtimestamp(
+                    self._wall()
+                ).astimezone().isoformat(),
             )
             return device_id, device_secret
+
+    def restore_devices(self, records: list[dict[str, Any]]) -> int:
+        """Restore persisted device metadata; returns restored count.
+
+        Only records with valid opaque ids and known statuses are accepted;
+        anything else is skipped so a corrupt registry cannot escalate.
+        """
+        current = self._now()
+        restored = 0
+        with self._lock:
+            for record in records:
+                if not isinstance(record, dict):
+                    continue
+                device_id = record.get('device_id')
+                name = record.get('name')
+                status = record.get('status')
+                created_at_iso = record.get('created_at')
+                if (
+                    not isinstance(device_id, str)
+                    or len(device_id) != _DEVICE_ID_HEX_CHARS
+                    or any(char not in '0123456789abcdef' for char in device_id)
+                    or device_id in self._devices
+                ):
+                    continue
+                if not isinstance(name, str) or not name or len(name) > 64:
+                    name = 'unnamed device'
+                if status not in ('active', 'revoked'):
+                    continue
+                if not isinstance(created_at_iso, str):
+                    created_at_iso = ''
+                self._devices[device_id] = DeviceRecord(
+                    device_id=device_id,
+                    name=name,
+                    created_mono=current,
+                    status=status,
+                    created_at_iso=created_at_iso,
+                )
+                restored += 1
+        return restored
 
     def list_devices(self) -> list[DeviceRecord]:
         with self._lock:
@@ -221,9 +273,10 @@ class RemoteAuthenticator:
     def revoke_device(self, device_id: str) -> bool:
         """Revoke one device: kill sessions and remove its stored secret."""
         with self._lock:
-            if device_id not in self._devices:
+            device = self._devices.get(device_id)
+            if device is None or device.status != 'active':
                 return False
-            self._devices.pop(device_id, None)
+            device.status = 'revoked'
             dead_tokens = [
                 token for token, session in self._sessions.items()
                 if session.device_id == device_id
@@ -232,6 +285,25 @@ class RemoteAuthenticator:
                 self._sessions.pop(token, None)
         self._secret_store.delete_secret(device_id)
         return True
+
+    def revoke_all_devices(self) -> int:
+        """Revoke every active device and clear all replay state."""
+        with self._lock:
+            active = [
+                device for device in self._devices.values()
+                if device.status == 'active'
+            ]
+            for device in active:
+                device.status = 'revoked'
+            self._sessions.clear()
+            self._nonces.clear()
+        for device in active:
+            self._secret_store.delete_secret(device.device_id)
+        return len(active)
+
+    def clear_nonces(self) -> None:
+        with self._lock:
+            self._nonces.clear()
 
     # -- request authentication ---------------------------------------
 
@@ -251,7 +323,7 @@ class RemoteAuthenticator:
         wall_now = self._wall()
         with self._lock:
             device = self._devices.get(device_id)
-            if device is None:
+            if device is None or device.status != 'active':
                 raise UnknownDeviceError('device is not enrolled')
             if nonce in self._nonces:
                 raise ReplayError('request nonce has already been used')
@@ -288,7 +360,8 @@ class RemoteAuthenticator:
         current = self._now() if now is None else float(now)
         token = secrets.token_urlsafe(32)
         with self._lock:
-            if device_id not in self._devices:
+            device = self._devices.get(device_id)
+            if device is None or device.status != 'active':
                 raise UnknownDeviceError('device is not enrolled')
             device_sessions = sorted(
                 (

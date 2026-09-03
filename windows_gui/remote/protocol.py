@@ -213,3 +213,18 @@ class IdempotencyCache:
             self._entries[key] = (current + self._ttl, dict(response))
             while len(self._entries) > self._capacity:
                 self._entries.popitem(last=False)
+
+    def purge_device(self, device_id: str) -> int:
+        """Drop all cached responses for one device; returns purged count."""
+        prefix = (str(device_id),)
+        with self._lock:
+            doomed = [key for key in self._entries if key[:1] == prefix]
+            for key in doomed:
+                self._entries.pop(key, None)
+            return len(doomed)
+
+    def purge_all(self) -> int:
+        with self._lock:
+            count = len(self._entries)
+            self._entries.clear()
+            return count

@@ -21,6 +21,7 @@ CODE_OUTCOMES = {
     'task_confirmed_local': 'success',
     'task_expired': 'warning',
     'device_revoked': 'warning',
+    'all_devices_revoked': 'warning',
 }
 
 

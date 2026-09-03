@@ -8,10 +8,12 @@ detail in any response.
 from __future__ import annotations
 
 import json
+import os
 import secrets
 import threading
 from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, Callable
 
 from ..mail_backends import WindowsCredentialManagerSecretStore
@@ -19,18 +21,25 @@ from ..system_health import collect_dashboard_health
 from .audit import record_remote_event
 from .auth import (
     REMOTE_CREDENTIAL_SERVICE,
+    PairingCodeExpiredError,
+    PairingCodeInvalidError,
     RemoteAuthError,
     RemoteAuthenticator,
     audit_device_hash,
 )
 from .policy import LIMITS, RateLimiter
-from .protocol import (
-    IdempotencyCache, ProtocolError, UnknownCommandError, parse_request_envelope,
-)
+from .protocol import ProtocolError, UnknownCommandError, parse_request_envelope
+from .protocol import IdempotencyCache
 
 
 DEFAULT_PORT = 8932
 MAX_BODY_BYTES = 256 * 1024
+
+
+def _default_devices_path() -> Path:
+    local = os.environ.get('LOCALAPPDATA')
+    base = Path(local) if local else Path.home() / 'AppData' / 'Local'
+    return base / 'AI-Work' / 'remote' / 'devices.json'
 
 
 class RemoteApiError(Exception):
@@ -65,6 +74,7 @@ class RemoteServer:
         task_source: Callable[[str], list[dict[str, Any]]] | None = None,
         pepper_provider: Callable[[], str] = _default_audit_pepper,
         audit_recorder: Callable[..., bool] = record_remote_event,
+        devices_path: Path | None = None,
     ) -> None:
         if host not in ('127.0.0.1', 'localhost'):
             raise ValueError('Remote server binds loopback addresses only')
@@ -77,12 +87,18 @@ class RemoteServer:
         self._task_source = task_source or (lambda device_id: [])
         self._pepper_provider = pepper_provider
         self._audit = audit_recorder
+        self.devices_path = (
+            Path(devices_path) if devices_path is not None
+            else _default_devices_path()
+        )
+        self.idempotency = IdempotencyCache()
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
     # -- lifecycle ------------------------------------------------------
 
     def start(self) -> None:
+        self._load_registry()
         handler = partial(_RequestHandler, remote=self)
         self._httpd = ThreadingHTTPServer((self.host, self.requested_port), handler)
         self.port = self._httpd.server_address[1]
@@ -102,6 +118,35 @@ class RemoteServer:
         if self._thread is not None:
             self._thread.join(timeout=5.0)
             self._thread = None
+
+    # -- device registry -------------------------------------------------
+
+    def _load_registry(self) -> None:
+        try:
+            raw = self.devices_path.read_text(encoding='utf-8')
+            records = json.loads(raw)
+        except (OSError, ValueError):
+            return
+        if isinstance(records, list):
+            self.authenticator.restore_devices(records)
+
+    def _save_registry(self) -> None:
+        records = [
+            {
+                'device_id': device.device_id,
+                'name': device.name,
+                'status': device.status,
+                'created_at': device.created_at_iso,
+            }
+            for device in self.authenticator.list_devices()
+        ]
+        self.devices_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.devices_path.with_suffix('.json.tmp')
+        temporary.write_text(
+            json.dumps(records, ensure_ascii=True, indent=2),
+            encoding='utf-8',
+        )
+        temporary.replace(self.devices_path)
 
     # -- helpers used by the handler -------------------------------------
 
@@ -154,6 +199,7 @@ class RemoteServer:
         handlers = {
             'health.read': self._command_health_read,
             'task.status': self._command_task_status,
+            'session.revoke_self': self._command_revoke_self,
         }
         handler = handlers.get(spec.name)
         if handler is None:
@@ -189,6 +235,81 @@ class RemoteServer:
         self, device_id: str, request_id: str, params: dict[str, Any],
     ) -> tuple[int, dict[str, Any]]:
         return 200, {'tasks': self._task_source(device_id)}
+
+    def _command_revoke_self(
+        self, device_id: str, request_id: str, params: dict[str, Any],
+    ) -> tuple[int, dict[str, Any]]:
+        if not self._revoke_device(device_id):
+            raise RemoteApiError(401, 'auth_failed')
+        return 200, {'status': 'REVOKED'}
+
+    def _revoke_device(self, device_id: str) -> bool:
+        revoked = self.authenticator.revoke_device(device_id)
+        if revoked:
+            self.idempotency.purge_device(device_id)
+            self._audit('device_revoked', device_id=device_id)
+            self._save_registry()
+        return revoked
+
+    def handle_pairing_start(self) -> tuple[int, dict[str, Any]]:
+        code = self.authenticator.start_pairing()
+        self._audit('pairing_started')
+        return 200, {'pairing_code': code}
+
+    def handle_pairing_claim(
+        self, body: bytes, source_key: str,
+    ) -> tuple[int, dict[str, Any]]:
+        if not self.limiter.allow(
+            LIMITS['pairing_claim_source'], source_key,
+        ) or not self.limiter.allow(LIMITS['pairing_claim_global'], 'global'):
+            self._audit('rate_limited')
+            raise RemoteApiError(429, 'rate_limited')
+        try:
+            envelope = json.loads(body.decode('utf-8'))
+        except (UnicodeDecodeError, ValueError) as error:
+            raise RemoteApiError(400, 'invalid_request') from error
+        if not isinstance(envelope, dict) or set(envelope) - {
+            'code', 'device_name',
+        }:
+            raise RemoteApiError(400, 'invalid_request')
+        code = envelope.get('code')
+        device_name = envelope.get('device_name', '')
+        if not isinstance(code, str) or (
+            device_name is not None and not isinstance(device_name, str)
+        ):
+            raise RemoteApiError(400, 'invalid_request')
+        try:
+            device_id, secret = self.authenticator.claim_pairing(
+                code, device_name or '',
+            )
+        except PairingCodeExpiredError as error:
+            self._audit('pairing_failed')
+            raise RemoteApiError(403, 'pairing_expired') from error
+        except PairingCodeInvalidError as error:
+            self._audit('pairing_failed')
+            raise RemoteApiError(403, 'pairing_invalid') from error
+        self._audit('pairing_completed', device_id=device_id)
+        self._save_registry()
+        return 200, {'device_id': device_id, 'secret': secret}
+
+    def list_local_devices(self) -> tuple[int, dict[str, Any]]:
+        devices = [
+            {
+                'device_id': device.device_id,
+                'name': device.name,
+                'status': device.status,
+                'created_at': device.created_at_iso,
+            }
+            for device in self.authenticator.list_devices()
+        ]
+        return 200, {'devices': devices}
+
+    def revoke_all_devices(self) -> tuple[int, dict[str, Any]]:
+        count = self.authenticator.revoke_all_devices()
+        self.idempotency.purge_all()
+        self._audit('all_devices_revoked')
+        self._save_registry()
+        return 200, {'revoked': count}
 
     def _device_hash(self, device_id: str) -> str:
         try:
@@ -317,6 +438,9 @@ class _RequestHandler(BaseHTTPRequestHandler):
                 return self.remote._command_health_read(device_id, '', {})
             self._run(action)
             return
+        if path == '/local/devices':
+            self._run(self.remote.list_local_devices)
+            return
         self._send_error(404, 'not_found')
 
     def do_POST(self):  # noqa: N802
@@ -334,6 +458,29 @@ class _RequestHandler(BaseHTTPRequestHandler):
                     body,
                 )
             self._run(action)
+            return
+        if path == '/pairing/claim':
+            def action():
+                body = self._read_body()
+                source_key = self.client_address[0]
+                return self.remote.handle_pairing_claim(body, source_key)
+            self._run(action)
+            return
+        if path == '/local/pairing/start':
+            self._run(self.remote.handle_pairing_start)
+            return
+        if path.startswith('/local/devices/') and path.endswith('/revoke'):
+            def action():
+                device_id = path[len('/local/devices/'):-len('/revoke')]
+                if not device_id or '/' in device_id:
+                    raise RemoteApiError(404, 'not_found')
+                if not self.remote._revoke_device(device_id):
+                    raise RemoteApiError(404, 'unknown_device')
+                return 200, {'status': 'REVOKED'}
+            self._run(action)
+            return
+        if path == '/local/devices/revoke-all':
+            self._run(self.remote.revoke_all_devices)
             return
         if path == '/command':
             def action():

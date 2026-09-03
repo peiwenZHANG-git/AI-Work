@@ -177,6 +177,17 @@ class IdempotencyCacheTests(unittest.TestCase):
         self.assertIsNone(cache.get('d', 'r1'))
         self.assertEqual({'n': 2}, cache.get('d', 'r2'))
 
+    def test_purge_device_and_purge_all(self):
+        cache = protocol.IdempotencyCache()
+        cache.put('device-1', 'request-1', {'n': 1})
+        cache.put('device-1', 'request-2', {'n': 2})
+        cache.put('device-2', 'request-3', {'n': 3})
+        self.assertEqual(2, cache.purge_device('device-1'))
+        self.assertIsNone(cache.get('device-1', 'request-1'))
+        self.assertEqual({'n': 3}, cache.get('device-2', 'request-3'))
+        self.assertEqual(1, cache.purge_all())
+        self.assertIsNone(cache.get('device-2', 'request-3'))
+
 
 if __name__ == '__main__':
     unittest.main()
