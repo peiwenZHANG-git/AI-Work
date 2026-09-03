@@ -19,6 +19,7 @@ MAX_ROTATED_FILES = 3
 MAX_READ_EVENTS = 200
 ALLOWED_COMPONENTS = {
     'mail_digest', 'mail_assistant', 'browser_session', 'mail_cdp', 'mcp',
+    'remote',
 }
 ALLOWED_OUTCOMES = {'success', 'warning', 'error'}
 EVENT_SUMMARIES = {
@@ -34,7 +35,20 @@ EVENT_SUMMARIES = {
     'digest_notification_warning': 'Digest completed but notification was not shown.',
     'worker_recovered': 'Browser session worker auto-recovered.',
     'worker_recovery_failed': 'Browser session worker auto-recovery failed.',
+    'remote_auth_failed': 'Remote authentication failed.',
+    'remote_rate_limited': 'Remote request was rate limited.',
+    'remote_command_denied': 'Remote command was denied.',
+    'remote_session_created': 'Remote session was created.',
+    'remote_pairing_started': 'Remote pairing was started.',
+    'remote_pairing_completed': 'Remote pairing completed.',
+    'remote_pairing_failed': 'Remote pairing failed.',
+    'remote_task_staged': 'Remote task was staged.',
+    'remote_task_cancelled': 'Remote task was cancelled.',
+    'remote_task_confirmed_local': 'Remote task was confirmed locally.',
+    'remote_task_expired': 'Remote task expired.',
+    'remote_device_revoked': 'Remote device was revoked.',
 }
+_DEVICE_HASH_PATTERN = None  # compiled lazily to keep import time flat
 _LOCK = threading.Lock()
 _MUTEX_NAME = 'Local\\AI-Work-health-events'
 
@@ -94,12 +108,23 @@ def record_health_event(
     now_factory: Callable[[], datetime] | None = None,
     max_bytes: int = MAX_EVENT_BYTES,
     rotations: int = MAX_ROTATED_FILES,
+    device: str | None = None,
 ) -> bool:
     """Append an allowlisted event; caller data and exception text are never stored."""
     if component not in ALLOWED_COMPONENTS:
         return False
     if outcome not in ALLOWED_OUTCOMES or code not in EVENT_SUMMARIES:
         return False
+    device_hash = None
+    if device is not None:
+        global _DEVICE_HASH_PATTERN
+        if _DEVICE_HASH_PATTERN is None:
+            import re
+
+            _DEVICE_HASH_PATTERN = re.compile(r'^[0-9a-f]{16}$')
+        if not isinstance(device, str) or not _DEVICE_HASH_PATTERN.fullmatch(device):
+            return False
+        device_hash = device
     payload = {
         'component': component,
         'outcome': outcome,
@@ -107,6 +132,8 @@ def record_health_event(
         'summary': EVENT_SUMMARIES[code],
         'time': _now_iso(now_factory),
     }
+    if device_hash is not None:
+        payload['device'] = device_hash
     try:
         with _LOCK:
             with _cross_process_lock():
@@ -169,13 +196,16 @@ def _read_health_events_unlocked(
             ):
                 invalid_lines += 1
                 continue
-            events.append({
+            event = {
                 'component': item['component'],
                 'outcome': item['outcome'],
                 'code': item['code'],
                 'summary': EVENT_SUMMARIES[item['code']],
                 'time': str(item.get('time') or ''),
-            })
+            }
+            if item.get('device') is not None:
+                event['device'] = str(item['device'])
+            events.append(event)
     return {'events': events[-max(0, min(int(limit), MAX_READ_EVENTS)):], 'invalid_lines': invalid_lines}
 
 

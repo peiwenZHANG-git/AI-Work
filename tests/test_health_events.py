@@ -69,6 +69,51 @@ class HealthEventTests(unittest.TestCase):
                     item = json.loads(path.read_text(encoding='utf-8'))
                 self.assertEqual(expected_summary, item['summary'])
 
+    def test_remote_events_are_allowlisted_with_optional_device(self):
+        expected = {
+            'remote_auth_failed': ('error', 'Remote authentication failed.'),
+            'remote_task_staged': ('success', 'Remote task was staged.'),
+            'remote_device_revoked': (
+                'warning', 'Remote device was revoked.'
+            ),
+        }
+        for code, (outcome, expected_summary) in expected.items():
+            with self.subTest(code=code):
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / 'events.jsonl'
+                    self.assertTrue(record_health_event(
+                        'remote', outcome, code, path=path,
+                        device='0123456789abcdef',
+                    ))
+                    item = json.loads(path.read_text(encoding='utf-8'))
+                self.assertEqual(expected_summary, item['summary'])
+                self.assertEqual('0123456789abcdef', item['device'])
+
+    def test_remote_device_hash_must_be_sixteen_hex(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'events.jsonl'
+            self.assertFalse(record_health_event(
+                'remote', 'error', 'remote_auth_failed', path=path,
+                device='NOT-HEX',
+            ))
+            self.assertFalse(path.exists())
+
+    def test_reader_preserves_remote_device_field(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'events.jsonl'
+            self.assertTrue(record_health_event(
+                'remote', 'success', 'remote_session_created', path=path,
+                device='abcdef0123456789',
+                now_factory=lambda: datetime(
+                    2026, 9, 3, 12, 0, tzinfo=timezone.utc,
+                ),
+            ))
+            report = read_health_events(path)
+        self.assertEqual(1, len(report['events']))
+        self.assertEqual(
+            'abcdef0123456789', report['events'][0].get('device')
+        )
+
     def test_unknown_code_or_component_is_not_written(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'events.jsonl'

@@ -30,6 +30,14 @@ class RateLimiterTests(unittest.TestCase):
         self.assertTrue(self.limiter.allow(limit, 'device-2'))
         self.assertFalse(self.limiter.allow(limit, 'device-1'))
 
+    def test_limits_with_the_same_key_are_isolated(self):
+        first = policy.RateLimit('first', 1, 60.0)
+        second = policy.RateLimit('second', 1, 60.0)
+        self.assertTrue(self.limiter.allow(first, 'device-1'))
+        self.assertTrue(self.limiter.allow(second, 'device-1'))
+        self.assertFalse(self.limiter.allow(first, 'device-1'))
+        self.assertFalse(self.limiter.allow(second, 'device-1'))
+
     def test_capacity_evicts_oldest_key(self):
         limiter = policy.RateLimiter(capacity=2, now_factory=lambda: self.clock['now'])
         limit = policy.RateLimit('probe', 1, 60.0)

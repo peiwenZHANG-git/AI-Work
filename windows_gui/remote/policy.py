@@ -54,6 +54,7 @@ class RateLimiter:
         """Record one event if allowed; return False when rate limited."""
         current = self._now() if now is None else float(now)
         with self._lock:
+            key = f'{limit.name}:{key}'
             window = self._windows.get(key)
             if window is None:
                 if len(self._windows) >= self._capacity:
