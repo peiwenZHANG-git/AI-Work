@@ -2,7 +2,9 @@
 
 import http.client
 import json
+import tempfile
 import unittest
+from pathlib import Path
 
 from windows_gui.remote import auth, policy
 from windows_gui.remote.server import RemoteServer
@@ -44,9 +46,16 @@ class RemoteServerTests(unittest.TestCase):
             limiter=policy.RateLimiter(now_factory=lambda: self.clock['now']),
             pepper_provider=lambda: 'test-pepper',
             health_collector=self._fake_health,
+            devices_path=self._devices_path(),
         )
         self.server.start()
         self.addCleanup(self.server.stop)
+
+    def _devices_path(self):
+        if not hasattr(self, '_devices_dir'):
+            self._devices_dir = tempfile.TemporaryDirectory()
+            self.addCleanup(self._devices_dir.cleanup)
+        return Path(self._devices_dir.name) / 'devices.json'
 
     def _fake_health(self):
         self.health_calls.append(1)
