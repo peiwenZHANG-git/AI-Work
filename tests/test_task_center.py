@@ -267,5 +267,54 @@ class MailAssistantMigrationTest(unittest.TestCase):
         self.assertEqual(view.state, STATE_FAILED)
 
 
+class InspectStagedContextTests(unittest.TestCase):
+    def setUp(self):
+        self.clock = {'now': 1_000.0}
+        self.center = TaskCenter(
+            domains=('mail',),
+            action_types=('assistant_send_draft',),
+            now_factory=lambda: self.clock['now'],
+            id_factory=lambda: f'inspect-{next(itertools.count())}',
+        )
+
+    def test_staged_context_reads_only_staged_tasks(self):
+        task_id = self.center.stage(
+            'mail', 'assistant_send_draft', {'secret': 'value'},
+        )
+        context = self.center.inspect_staged_context(task_id)
+        self.assertEqual('value', context['secret'])
+
+    def test_inspect_returns_defensive_copy(self):
+        task_id = self.center.stage(
+            'mail', 'assistant_send_draft', {'secret': 'value'},
+        )
+        context = self.center.inspect_staged_context(task_id)
+        context['secret'] = 'mutated'
+        again = self.center.inspect_staged_context(task_id)
+        self.assertEqual('value', again['secret'])
+
+    def test_expired_task_fails_inspection_closed(self):
+        task_id = self.center.stage(
+            'mail', 'assistant_send_draft', {'n': 1}, ttl_seconds=60,
+        )
+        self.center.purge_expired(now=1_000 + 61)
+        self.assertIsNone(self.center.inspect_staged_context(task_id))
+
+    def test_cancelled_and_consumed_tasks_fail_inspection_closed(self):
+        cancelled = self.center.stage(
+            'mail', 'assistant_send_draft', {'n': 1},
+        )
+        self.center.cancel(cancelled)
+        self.assertIsNone(self.center.inspect_staged_context(cancelled))
+        consumed = self.center.stage(
+            'mail', 'assistant_send_draft', {'n': 2},
+        )
+        self.center.consume(consumed)
+        self.assertIsNone(self.center.inspect_staged_context(consumed))
+        self.assertIsNone(
+            self.center.inspect_staged_context('never-staged')
+        )
+
+
 if __name__ == '__main__':
     unittest.main()

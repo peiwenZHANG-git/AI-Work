@@ -306,6 +306,22 @@ class TaskCenter:
                 )
             return None
 
+    def inspect_staged_context(self, task_id: str) -> dict[str, Any] | None:
+        """Return a defensive copy of one STAGED task's verified context.
+
+        Server-side internal API for domain adapters and the local
+        confirmation plane only; never included in remote-visible
+        payloads, repr, or logs. Fails closed (returns None) for
+        unknown, expired, cancelled, or consumed tasks.
+        """
+        current = self._now_factory()
+        with self._lock:
+            self._purge_expired_locked(current)
+            context = self._pending.get(str(task_id))
+            if context is None:
+                return None
+            return dict(context)
+
     def purge_expired(self, now: float | None = None) -> int:
         """Expire due staged tasks and return how many were removed."""
         current = self._current(now)

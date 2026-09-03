@@ -49,10 +49,27 @@ EVENT_SUMMARIES = {
     'remote_device_revoked': 'Remote device was revoked.',
     'remote_all_devices_revoked': 'All remote devices were revoked.',
     'remote_session_revoked': 'Remote session was revoked.',
+    'remote_task_rejected_local': 'Remote task was rejected locally.',
+    'remote_task_execution_succeeded': 'Remote task executed successfully.',
+    'remote_task_execution_failed': 'Remote task execution failed.',
 }
-_DEVICE_HASH_PATTERN = None  # compiled lazily to keep import time flat
+_AUDIT_HASH_PATTERN = None  # compiled lazily to keep import time flat
 _LOCK = threading.Lock()
 _MUTEX_NAME = 'Local\\AI-Work-health-events'
+
+
+def _validated_hash(value: str | None) -> str | None:
+    """Return a validated 16-hex audit hash, or None when absent/invalid."""
+    global _AUDIT_HASH_PATTERN
+    if value is None:
+        return None
+    if _AUDIT_HASH_PATTERN is None:
+        import re
+
+        _AUDIT_HASH_PATTERN = re.compile(r'^[0-9a-f]{16}$')
+    if not isinstance(value, str) or not _AUDIT_HASH_PATTERN.fullmatch(value):
+        return ''
+    return value
 
 
 @contextmanager
@@ -111,22 +128,17 @@ def record_health_event(
     max_bytes: int = MAX_EVENT_BYTES,
     rotations: int = MAX_ROTATED_FILES,
     device: str | None = None,
+    task: str | None = None,
 ) -> bool:
     """Append an allowlisted event; caller data and exception text are never stored."""
     if component not in ALLOWED_COMPONENTS:
         return False
     if outcome not in ALLOWED_OUTCOMES or code not in EVENT_SUMMARIES:
         return False
-    device_hash = None
-    if device is not None:
-        global _DEVICE_HASH_PATTERN
-        if _DEVICE_HASH_PATTERN is None:
-            import re
-
-            _DEVICE_HASH_PATTERN = re.compile(r'^[0-9a-f]{16}$')
-        if not isinstance(device, str) or not _DEVICE_HASH_PATTERN.fullmatch(device):
-            return False
-        device_hash = device
+    device_hash = _validated_hash(device)
+    task_hash = _validated_hash(task)
+    if device_hash == '' or task_hash == '':
+        return False
     payload = {
         'component': component,
         'outcome': outcome,
@@ -136,6 +148,8 @@ def record_health_event(
     }
     if device_hash is not None:
         payload['device'] = device_hash
+    if task_hash is not None:
+        payload['task'] = task_hash
     try:
         with _LOCK:
             with _cross_process_lock():
@@ -207,6 +221,8 @@ def _read_health_events_unlocked(
             }
             if item.get('device') is not None:
                 event['device'] = str(item['device'])
+            if item.get('task') is not None:
+                event['task'] = str(item['task'])
             events.append(event)
     return {'events': events[-max(0, min(int(limit), MAX_READ_EVENTS)):], 'invalid_lines': invalid_lines}
 

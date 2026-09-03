@@ -32,6 +32,10 @@ class InvalidRequestError(ProtocolError):
     """Raised for malformed envelopes, ids, or parameters."""
 
 
+class RequestIdConflictError(ProtocolError):
+    """Raised when a request_id is reused with different content."""
+
+
 @dataclass(frozen=True)
 class CommandSpec:
     name: str
@@ -190,27 +194,36 @@ class IdempotencyCache:
             OrderedDict()
         )
 
-    def get(self, device_id: str, request_id: str) -> dict[str, Any] | None:
+    def get(
+        self, device_id: str, request_id: str, fingerprint: str | None = None,
+    ) -> dict[str, Any] | None:
         current = self._now()
         key = (str(device_id), str(request_id))
         with self._lock:
             entry = self._entries.get(key)
             if entry is None:
                 return None
-            expires, response = entry
+            expires, response, stored_fingerprint = entry
             if expires <= current:
                 self._entries.pop(key, None)
                 return None
+            if fingerprint != stored_fingerprint:
+                raise RequestIdConflictError(
+                    'request_id was already used with different content'
+                )
             return dict(response)
 
     def put(
         self, device_id: str, request_id: str, response: dict[str, Any],
+        fingerprint: str | None = None,
     ) -> None:
         current = self._now()
         key = (str(device_id), str(request_id))
         with self._lock:
             self._entries.pop(key, None)
-            self._entries[key] = (current + self._ttl, dict(response))
+            self._entries[key] = (
+                current + self._ttl, dict(response), fingerprint,
+            )
             while len(self._entries) > self._capacity:
                 self._entries.popitem(last=False)
 

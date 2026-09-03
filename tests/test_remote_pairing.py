@@ -2,12 +2,14 @@
 
 import http.client
 import json
+import re
 import tempfile
 import threading
 import unittest
 from pathlib import Path
 
 from windows_gui.remote import auth, policy
+from windows_gui.remote.adapters import RemoteAdapters
 from windows_gui.remote.server import RemoteServer
 from tests.test_remote_server import FakeStoreBackend
 
@@ -22,6 +24,7 @@ class PairingDeviceTests(unittest.TestCase):
         self.devices_path = Path(self.devices_dir.name) / 'devices.json'
 
     def _make_server(self, **overrides):
+        adapters = overrides.pop('adapters', None)
         authenticator = overrides.pop(
             'authenticator',
             auth.RemoteAuthenticator(
@@ -37,6 +40,7 @@ class PairingDeviceTests(unittest.TestCase):
             pepper_provider=lambda: 'test-pepper',
             health_collector=lambda: {'overall_status': 'PASS', 'components': []},
             devices_path=self.devices_path,
+            adapters=adapters,
             **overrides,
         )
         server.start()
@@ -59,7 +63,9 @@ class PairingDeviceTests(unittest.TestCase):
         headers = {'Host': f'127.0.0.1:{server.port}'}
         return self.request(server, method, path, body=body, headers=headers)
 
-    def _record_audit(self, code, *, outcome=None, device_id=None, pepper=None):
+    def _record_audit(self, code, *, outcome=None, device_id=None,
+                      task_id=None, pepper=None):
+        _ = task_id
         device_hash = (
             auth.audit_device_hash(device_id, pepper)
             if device_id and pepper else None
@@ -254,6 +260,7 @@ class PairingDeviceTests(unittest.TestCase):
 
         self.assertIn(f"device_{device_a['device_id']}", self.backend.secrets)
         self.assertIn(f"device_{device_b['device_id']}", self.backend.secrets)
+
         status, data = self.request(
             server, 'GET', '/health',
             headers={'Authorization': f"Bearer {tokens['device-b']}"},
@@ -339,6 +346,227 @@ class PairingDeviceTests(unittest.TestCase):
             thread.join()
         successes = [data for status, data in results if status == 200]
         self.assertEqual(1, len(successes))
+
+
+class ConfirmationPlaneTests(PairingDeviceTests):
+    def setUp(self):
+        self.click_calls = []
+        self.audit_events = []
+        self.devices_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.devices_dir.cleanup)
+        self.devices_path = Path(self.devices_dir.name) / 'devices.json'
+        self.adapters = RemoteAdapters(
+            browser_click_executor=self._record_click,
+            download_root=self.devices_dir.name,
+        )
+        self.backend = FakeStoreBackend()
+        self.clock = {'now': 1_000.0, 'wall': 1_700_000_000.0}
+
+    def _record_click(self, text, exact):
+        self.click_calls.append((text, exact))
+        return {'status': 'CLICKED'}
+
+    def _make_server(self, **overrides):
+        audit_recorder = getattr(self, '_record_audit', None)
+        audit_recorder = overrides.pop('audit_recorder', audit_recorder)
+        server = RemoteServer(
+            port=0,
+            authenticator=auth.RemoteAuthenticator(
+                secret_store=auth.DeviceSecretStore(self.backend.factory),
+                now_factory=lambda: self.clock['now'],
+                wall_factory=lambda: self.clock['wall'],
+            ),
+            limiter=policy.RateLimiter(now_factory=lambda: self.clock['now']),
+            pepper_provider=lambda: 'test-pepper',
+            health_collector=lambda: {'overall_status': 'PASS', 'components': []},
+            devices_path=self.devices_path,
+            adapters=self.adapters,
+            audit_recorder=audit_recorder,
+        )
+        server.start()
+        self.addCleanup(server.stop)
+        return server
+
+    def _open_session(self, server, device_id, secret, nonce='session-1'):
+        stamp = int(self.clock['wall'])
+        signature = auth.sign_request(
+            secret, 'POST', '/session', auth.body_fingerprint(b''), nonce, stamp,
+        )
+        status, data = self.request(server, 'POST', '/session', body=b'', headers={
+            'Host': f'127.0.0.1:{server.port}',
+            'X-Remote-Device': device_id,
+            'X-Remote-Nonce': nonce,
+            'X-Remote-Timestamp': str(stamp),
+            'X-Signature': signature,
+        })
+        self.assertEqual(200, status)
+        return json.loads(data)['session']
+
+    def _command(self, server, device_id, secret, session_token, command,
+                 request_id, params):
+        body = json.dumps({
+            'command': command, 'request_id': request_id, 'params': params,
+        }).encode('utf-8')
+        stamp = int(self.clock['wall'])
+        signature = auth.sign_request(
+            secret, 'POST', '/command', auth.body_fingerprint(body),
+            f'n-{request_id}', stamp, device_id=device_id,
+        )
+        return self.request(server, 'POST', '/command', body=body, headers={
+            'Host': f'127.0.0.1:{server.port}',
+            'Authorization': f'Bearer {session_token}',
+            'X-Remote-Device': device_id,
+            'X-Remote-Nonce': f'n-{request_id}',
+            'X-Remote-Timestamp': str(stamp),
+            'X-Signature': signature,
+        })
+
+    def _csrf_from_page(self, server):
+        status, data = self.local(server, 'GET', '/local/confirmations/page')
+        self.assertEqual(200, status)
+        match = re.search(r"CSRF_TOKEN = '([^']+)'", data.decode('utf-8'))
+        self.assertIsNotNone(match)
+        return match.group(1)
+
+    def test_remote_staging_and_local_approval_flow(self):
+        server = self._make_server()
+        device_id, secret = self.enroll_named(server, 'phone')
+        session_token = self._open_session(server, device_id, secret)
+        status, data = self._command(
+            server, device_id, secret, session_token,
+            'browser.request_click', 'r' * 16, {'text': 'Submit'},
+        )
+        self.assertEqual(200, status)
+        task_id = json.loads(data)['task_id']
+
+        status, data = self.local(server, 'GET', '/local/confirmations')
+        self.assertEqual(200, status)
+        payload = json.loads(data)
+        self.assertEqual(1, len(payload['confirmations']))
+        confirmation = payload['confirmations'][0]
+        self.assertEqual('remote_click', confirmation['action'])
+        self.assertIn('点击元素', confirmation['summary'])
+        self.assertEqual(16, len(confirmation['device']))
+        self.assertNotIn(device_id, json.dumps(payload))
+
+        status, _ = self.local(server, 'POST',
+            f'/local/confirmations/{task_id}/approve')
+        self.assertEqual(403, status)
+
+        token = self._csrf_from_page(server)
+        status, data = self.request(server, 'POST',
+            f'/local/confirmations/{task_id}/approve', body=b'',
+            headers={
+                'Host': f'127.0.0.1:{server.port}',
+                'X-Local-CSRF': 'wrong-token',
+            })
+        self.assertEqual(403, status)
+
+        self.assertEqual([], self.click_calls)
+        status, data = self.request(server, 'POST',
+            f'/local/confirmations/{task_id}/approve', body=b'',
+            headers={
+                'Host': f'127.0.0.1:{server.port}',
+                'X-Local-CSRF': token,
+            })
+        self.assertEqual(200, status)
+        self.assertEqual([('Submit', True)], self.click_calls)
+
+        status, data = self._command(
+            server, device_id, secret, session_token,
+            'task.status', 's' * 16, {},
+        )
+        tasks = json.loads(data)['tasks']
+        self.assertEqual('SUCCEEDED', tasks[0]['state'])
+
+    def enroll_named(self, server, name):
+        _, data = self.local(server, 'POST', '/local/pairing/start')
+        code = json.loads(data)['pairing_code']
+        _, data = self.claim(server, code, name)
+        enrolled = json.loads(data)
+        return enrolled['device_id'], enrolled['secret']
+
+    def test_cross_origin_and_remote_credential_cannot_approve(self):
+        server = self._make_server()
+        device_id, secret = self.enroll_named(server, 'phone')
+        session_token = self._open_session(server, device_id, secret)
+        _, data = self._command(
+            server, device_id, secret, session_token,
+            'browser.request_click', 'r' * 16, {'text': 'Submit'},
+        )
+        task_id = json.loads(data)['task_id']
+        token = self._csrf_from_page(server)
+
+        status, data = self.request(server, 'POST',
+            f'/local/confirmations/{task_id}/approve', body=b'',
+            headers={
+                'Host': f'127.0.0.1:{server.port}',
+                'Origin': 'https://evil.example',
+                'X-Local-CSRF': token,
+            })
+        self.assertEqual(403, status)
+
+        status, data = self.request(server, 'POST',
+            f'/local/confirmations/{task_id}/approve', body=b'',
+            headers={
+                'Host': f'127.0.0.1:{server.port}',
+                'Authorization': f'Bearer {session_token}',
+            })
+        self.assertEqual(403, status)
+        self.assertEqual([], self.click_calls)
+
+    def test_local_reject_and_status_lifecycle(self):
+        server = self._make_server()
+        device_id, secret = self.enroll_named(server, 'phone')
+        session_token = self._open_session(server, device_id, secret)
+        _, data = self._command(
+            server, device_id, secret, session_token,
+            'mail.request_draft', 'r' * 16,
+            {
+                'mailbox_id': 'qq_mail', 'to': 'teacher@cuc.edu.cn',
+                'subject': '您好', 'body': '正文',
+            },
+        )
+        task_id = json.loads(data)['task_id']
+        token = self._csrf_from_page(server)
+        status, data = self.request(server, 'POST',
+            f'/local/confirmations/{task_id}/cancel', body=b'',
+            headers={
+                'Host': f'127.0.0.1:{server.port}',
+                'X-Local-CSRF': token,
+            })
+        self.assertEqual(200, status)
+        self.assertEqual({'status': 'CANCELLED'}, json.loads(data))
+        status, data = self.request(server, 'POST',
+            f'/local/confirmations/{task_id}/approve', body=b'',
+            headers={
+                'Host': f'127.0.0.1:{server.port}',
+                'X-Local-CSRF': token,
+            })
+        self.assertEqual(409, status)
+        self.assertEqual({'error': 'task_not_pending'}, json.loads(data))
+
+    def test_revoked_device_tasks_are_cancelled_and_not_confirmable(self):
+        server = self._make_server()
+        device_id, secret = self.enroll_named(server, 'phone')
+        session_token = self._open_session(server, device_id, secret)
+        _, data = self._command(
+            server, device_id, secret, session_token,
+            'browser.request_click', 'r' * 16, {'text': 'Submit'},
+        )
+        task_id = json.loads(data)['task_id']
+        status, _ = self.local(
+            server, 'POST', f'/local/devices/{device_id}/revoke',
+        )
+        self.assertEqual(200, status)
+        status, data = self.request(server, 'POST',
+            f'/local/confirmations/{task_id}/approve', body=b'',
+            headers={
+                'Host': f'127.0.0.1:{server.port}',
+                'X-Local-CSRF': self._csrf_from_page(server),
+            })
+        self.assertEqual(409, status)
+        self.assertEqual([], self.click_calls)
 
 
 if __name__ == '__main__':

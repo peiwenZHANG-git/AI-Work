@@ -115,7 +115,6 @@ class RemoteServerTests(unittest.TestCase):
         secret,
         command='health.read',
         request_id=None,
-        params=None,
         nonce='command-nonce',
         timestamp=None,
         signature=None,
@@ -123,13 +122,15 @@ class RemoteServerTests(unittest.TestCase):
         include_hmac=True,
         include_session=True,
         body=None,
+        params=None,
     ):
         if body is None:
-            body = json.dumps({
+            envelope = {
                 'command': command,
                 'request_id': request_id or ('a' * 16),
-                'params': params or {},
-            }).encode('utf-8')
+            }
+            envelope['params'] = params if params is not None else {}
+            body = json.dumps(envelope).encode('utf-8')
         headers = {'Host': f'127.0.0.1:{self.server.port}'}
         if include_hmac:
             stamp = int(self.clock['wall'] if timestamp is None else timestamp)
@@ -241,7 +242,7 @@ class RemoteServerTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertEqual({'tasks': []}, json.loads(data))
 
-    def test_staging_command_is_unavailable_in_3b2(self):
+    def test_staging_command_returns_task_reference(self):
         device_id, secret = self.enroll()
         _, data = self.post_session(device_id, secret)
         token = json.loads(data)['session']
@@ -253,8 +254,25 @@ class RemoteServerTests(unittest.TestCase):
             request_id='b' * 16,
             params={'text': 'Submit'},
         )
+        self.assertEqual(200, status)
+        payload = json.loads(data)
+        self.assertEqual('STAGED', payload['status'])
+        self.assertTrue(payload['task_id'])
+
+    def test_staging_requires_valid_params(self):
+        device_id, secret = self.enroll()
+        _, data = self.post_session(device_id, secret)
+        token = json.loads(data)['session']
+        status, data = self.post_command(
+            token=token,
+            device_id=device_id,
+            secret=secret,
+            command='browser.request_click',
+            request_id='c' * 16,
+            params={},
+        )
         self.assertEqual(400, status)
-        self.assertEqual({'error': 'unavailable_command'}, json.loads(data))
+        self.assertEqual({'error': 'invalid_request'}, json.loads(data))
 
     def test_unknown_command_is_rejected(self):
         device_id, secret = self.enroll()

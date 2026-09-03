@@ -8,17 +8,22 @@ detail in any response.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import secrets
 import threading
+from collections import OrderedDict
 from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 
 from ..mail_backends import WindowsCredentialManagerSecretStore
+from ..task_center import TaskCenterError
 from ..system_health import collect_dashboard_health
 from .audit import record_remote_event
+from .audit import CODE_OUTCOMES, audit_task_hash
+from .adapters import RemoteAdapters
 from .auth import (
     REMOTE_CREDENTIAL_SERVICE,
     PairingCodeExpiredError,
@@ -28,12 +33,66 @@ from .auth import (
     audit_device_hash,
 )
 from .policy import LIMITS, RateLimiter
-from .protocol import ProtocolError, UnknownCommandError, parse_request_envelope
+from .protocol import (
+    ProtocolError, RequestIdConflictError, UnknownCommandError,
+    parse_request_envelope,
+)
 from .protocol import IdempotencyCache
 
 
 DEFAULT_PORT = 8932
 MAX_BODY_BYTES = 256 * 1024
+
+_CONFIRMATION_PAGE_TEMPLATE = """<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="referrer" content="no-referrer">
+<title>AI-Work Remote 待确认任务</title></head>
+<body>
+<h1>Remote 待确认任务</h1>
+<p>以下请求由已配对设备发起，需要本机确认后才会执行。</p>
+<ul id="confirmations"></ul>
+<p id="status"></p>
+<script>
+const CSRF_TOKEN = '{{CSRF}}';
+async function refresh() {
+  const list = document.getElementById('confirmations');
+  list.innerHTML = '';
+  const response = await fetch('/local/confirmations');
+  const payload = await response.json();
+  for (const task of payload.confirmations || []) {
+    const item = document.createElement('li');
+    item.textContent = `${task.action} — ${task.summary}（设备 ${task.device}）`;
+    const approve = document.createElement('button');
+    approve.textContent = '批准执行';
+    approve.addEventListener('click', () => act(task.task_id, 'approve'));
+    const reject = document.createElement('button');
+    reject.textContent = '拒绝';
+    reject.addEventListener('click', () => act(task.task_id, 'cancel'));
+    item.appendChild(approve);
+    item.appendChild(reject);
+    list.appendChild(item);
+  }
+  if (!(payload.confirmations || []).length) {
+    document.getElementById('status').textContent = '当前没有待确认任务。';
+  } else {
+    document.getElementById('status').textContent = '';
+  }
+}
+async function act(taskId, verb) {
+  const response = await fetch(
+    `/local/confirmations/${taskId}/${verb}`,
+    {method: 'POST', headers: {'X-Local-CSRF': CSRF_TOKEN}},
+  );
+  if (!response.ok) {
+    document.getElementById('status').textContent =
+      '操作失败（' + response.status + '）。';
+  }
+  refresh();
+}
+refresh();
+</script>
+</body></html>
+"""
 
 
 def _default_devices_path() -> Path:
@@ -71,10 +130,10 @@ class RemoteServer:
         authenticator: RemoteAuthenticator | None = None,
         limiter: RateLimiter | None = None,
         health_collector: Callable[[], dict[str, Any]] = collect_dashboard_health,
-        task_source: Callable[[str], list[dict[str, Any]]] | None = None,
         pepper_provider: Callable[[], str] = _default_audit_pepper,
         audit_recorder: Callable[..., bool] = record_remote_event,
         devices_path: Path | None = None,
+        adapters: RemoteAdapters | None = None,
     ) -> None:
         if host not in ('127.0.0.1', 'localhost'):
             raise ValueError('Remote server binds loopback addresses only')
@@ -84,9 +143,11 @@ class RemoteServer:
         self.authenticator = authenticator or RemoteAuthenticator()
         self.limiter = limiter or RateLimiter()
         self._collect_health = health_collector
-        self._task_source = task_source or (lambda device_id: [])
         self._pepper_provider = pepper_provider
         self._audit_recorder = audit_recorder
+        self.adapters = adapters or RemoteAdapters(audit=self._task_audit)
+        self._csrf_tokens: OrderedDict[str, float] = OrderedDict()
+        self._csrf_lock = threading.Lock()
         self.devices_path = (
             Path(devices_path) if devices_path is not None
             else _default_devices_path()
@@ -151,15 +212,58 @@ class RemoteServer:
 
     # -- helpers used by the handler -------------------------------------
 
-    def _audit(self, code: str, *, device_id: str | None = None) -> None:
+    def _audit(self, code: str, *, device_id: str | None = None,
+               task_id: str | None = None) -> None:
+        details = {}
+        if device_id:
+            details['device_id'] = device_id
+        if task_id:
+            details['task_id'] = task_id
         try:
-            pepper = self._pepper_provider()
-        except Exception:
-            pepper = None
-        try:
-            self._audit_recorder(code, device_id=device_id, pepper=pepper)
+            self._audit_recorder(
+                code,
+                outcome=CODE_OUTCOMES.get(code, 'warning'),
+                pepper=self._safe_pepper(),
+                **details,
+            )
         except Exception:
             pass
+
+    def _task_audit(self, code: str, *, device_id: str | None = None,
+                    task_id: str | None = None) -> None:
+        self._audit(code, device_id=device_id, task_id=task_id)
+
+    def _safe_pepper(self) -> str | None:
+        try:
+            return self._pepper_provider()
+        except Exception:
+            return None
+
+    def _new_csrf_token(self) -> str:
+        token = secrets.token_urlsafe(32)
+        current = self.authenticator._now()
+        with self._csrf_lock:
+            self._csrf_tokens[token] = current + 1800.0
+            expired = [
+                value for value, expires in self._csrf_tokens.items()
+                if expires <= current
+            ]
+            for value in expired:
+                self._csrf_tokens.pop(value, None)
+            while len(self._csrf_tokens) > 64:
+                self._csrf_tokens.popitem(last=False)
+        return token
+
+    def _csrf_valid(self, token: str) -> bool:
+        current = self.authenticator._now()
+        with self._csrf_lock:
+            expired = [
+                value for value, expires in self._csrf_tokens.items()
+                if expires <= current
+            ]
+            for value in expired:
+                self._csrf_tokens.pop(value, None)
+            return str(token) in self._csrf_tokens
 
     def handle_session(
         self,
@@ -225,7 +329,17 @@ class RemoteServer:
         handlers = {
             'health.read': self._command_health_read,
             'task.status': self._command_task_status,
+            'task.cancel': self._command_task_cancel,
             'session.revoke_self': self._command_revoke_self,
+            'browser.request_click': partial(
+                self._command_stage, command='browser.request_click',
+            ),
+            'browser.request_download': partial(
+                self._command_stage, command='browser.request_download',
+            ),
+            'mail.request_draft': partial(
+                self._command_stage, command='mail.request_draft',
+            ),
         }
         handler = handlers.get(spec.name)
         if handler is None:
@@ -295,7 +409,32 @@ class RemoteServer:
     def _command_task_status(
         self, device_id: str, request_id: str, params: dict[str, Any],
     ) -> tuple[int, dict[str, Any]]:
-        return 200, {'tasks': self._task_source(device_id)}
+        return 200, {'tasks': self.adapters.list_device_tasks(device_id)}
+
+    def _command_task_cancel(
+        self, device_id: str, request_id: str, params: dict[str, Any],
+    ) -> tuple[int, dict[str, Any]]:
+        task_id = str(params.get('task_id') or '')
+        if not self.adapters.cancel_device_task(device_id, task_id):
+            raise RemoteApiError(404, 'unknown_task')
+        return 200, {'status': 'CANCELLED'}
+
+    def _command_stage(
+        self, device_id: str, request_id: str, params: dict[str, Any],
+        *, command: str,
+    ) -> tuple[int, dict[str, Any]]:
+        fingerprint = hashlib.sha256(json.dumps(
+            {'command': command, 'params': params},
+            sort_keys=True, separators=(',', ':'),
+        ).encode('utf-8')).hexdigest()
+        try:
+            result = self.adapters.stage(
+                device_id=device_id, request_id=request_id,
+                command=command, params=params, fingerprint=fingerprint,
+            )
+        except RequestIdConflictError as error:
+            raise RemoteApiError(409, 'request_id_conflict') from error
+        return 200, result
 
     def _command_revoke_self(
         self,
@@ -313,6 +452,7 @@ class RemoteServer:
     def _revoke_device(self, device_id: str) -> bool:
         revoked = self.authenticator.revoke_device(device_id)
         if revoked:
+            self.adapters.revoke_device_tasks(device_id)
             self.idempotency.purge_device(device_id)
             self._audit('device_revoked', device_id=device_id)
             self._save_registry()
@@ -373,10 +513,18 @@ class RemoteServer:
 
     def revoke_all_devices(self) -> tuple[int, dict[str, Any]]:
         count = self.authenticator.revoke_all_devices()
+        self.adapters.cancel_all_staged()
         self.idempotency.purge_all()
         self._audit('all_devices_revoked')
         self._save_registry()
         return 200, {'revoked': count}
+
+    def local_confirmations_view(self) -> tuple[int, dict[str, Any]]:
+        confirmations = self.adapters.local_confirmations()
+        for item in confirmations:
+            raw_device = str(item.pop('device_id', ''))
+            item['device'] = self._device_hash(raw_device) if raw_device else ''
+        return 200, {'confirmations': confirmations}
 
     def _device_hash(self, device_id: str) -> str:
         try:
@@ -403,7 +551,8 @@ class _RequestHandler(BaseHTTPRequestHandler):
         if (self.headers.get('Host') or '').casefold() != expected:
             self._send_error(403, 'forbidden')
             return True
-        if self.headers.get('Origin'):
+        origin = self.headers.get('Origin')
+        if origin and origin != f'http://127.0.0.1:{self.remote.port}':
             self._send_error(403, 'forbidden')
             return True
         return False
@@ -514,7 +663,32 @@ class _RequestHandler(BaseHTTPRequestHandler):
         if path == '/local/devices':
             self._run(self.remote.list_local_devices)
             return
+        if path == '/local/confirmations':
+            self._run(self.remote.local_confirmations_view)
+            return
+        if path == '/local/confirmations/page':
+            self._send_confirmation_page()
+            return
         self._send_error(404, 'not_found')
+
+    def _send_confirmation_page(self) -> None:
+        token = self.remote._new_csrf_token()
+        page = _CONFIRMATION_PAGE_TEMPLATE.replace('{{CSRF}}', token)
+        data = page.encode('utf-8')
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.send_header('Referrer-Policy', 'no-referrer')
+        self.send_header('X-Frame-Options', 'SAMEORIGIN')
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header(
+            'Content-Security-Policy',
+            "default-src 'none'; script-src 'unsafe-inline'; "
+            "connect-src 'self'; frame-ancestors 'none'",
+        )
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
     def do_POST(self):  # noqa: N802
         if not self._api_guard():
@@ -566,6 +740,40 @@ class _RequestHandler(BaseHTTPRequestHandler):
                     signature=self.headers.get('X-Signature') or '',
                     session_token=self._bearer_token(),
                 )
+            self._run(action)
+            return
+        if path.startswith('/local/confirmations/') and (
+            path.endswith('/approve') or path.endswith('/cancel')
+        ):
+            def action():
+                if not self.remote._csrf_valid(
+                    self.headers.get('X-Local-CSRF') or '',
+                ):
+                    raise RemoteApiError(403, 'csrf_invalid')
+                verb = 'approve' if path.endswith('/approve') else 'cancel'
+                task_id = path[
+                    len('/local/confirmations/'):-len(verb) - 1
+                ]
+                if verb == 'approve':
+                    try:
+                        result = self.remote.adapters.approve_task(task_id)
+                    except TaskCenterError as error:
+                        raise RemoteApiError(
+                            409, 'task_not_pending',
+                        ) from error
+                    except Exception:
+                        self.remote._audit(
+                            'task_execution_failed', task_id=task_id,
+                        )
+                        raise RemoteApiError(500, 'execution_failed')
+                    self.remote._audit(
+                        'task_execution_succeeded', task_id=task_id,
+                    )
+                    return 200, result
+                if not self.remote.adapters.reject_task(task_id):
+                    raise RemoteApiError(404, 'unknown_task')
+                self.remote._audit('task_local_rejected', task_id=task_id)
+                return 200, {'status': 'CANCELLED'}
             self._run(action)
             return
         self._send_error(404, 'not_found')
