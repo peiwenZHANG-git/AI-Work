@@ -1,8 +1,10 @@
 """Unit tests for remote staging adapters (ownership, approval, leakage)."""
 
+import threading
 import unittest
 
 from windows_gui.remote import adapters as remote_adapters
+from windows_gui.task_center import TaskCenterError
 from windows_gui.remote.adapters import RemoteAdapters
 from windows_gui.remote.protocol import RequestIdConflictError
 
@@ -191,6 +193,73 @@ class LocalApprovalTests(unittest.TestCase):
         self.assertEqual('CANCELLED', view['state'])
         with self.assertRaises(Exception):
             self.adapters.approve_task(staged['task_id'])
+
+
+class RaceConditionTests(unittest.TestCase):
+    def setUp(self):
+        self.clock = {'now': 1_000.0}
+        self.adapters, self.events, _ = make_adapters(
+            now_factory=lambda: self.clock['now'],
+        )
+
+    def _stage_click(self):
+        return self.adapters.stage(
+            device_id='device-a', request_id='r1',
+            command='browser.request_click',
+            params={'text': 'Submit', 'exact': True},
+            fingerprint=fingerprint('browser.request_click', {
+                'text': 'Submit', 'exact': True,
+            }),
+        )
+
+    def test_concurrent_approve_executes_exactly_once(self):
+        staged = self._stage_click()
+        results = []
+        errors = []
+        lock = threading.Lock()
+
+        def approve():
+            try:
+                result = self.adapters.approve_task(staged['task_id'])
+            except TaskCenterError as error:
+                with lock:
+                    errors.append(error)
+            else:
+                with lock:
+                    results.append(result)
+
+        threads = [threading.Thread(target=approve) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(1, len(results))
+        self.assertEqual(1, len(errors))
+        self.assertIsInstance(errors[0], TaskCenterError)
+        view = self.adapters.list_device_tasks('device-a')[0]
+        self.assertEqual('SUCCEEDED', view['state'])
+
+    def test_revoke_wins_over_approve(self):
+        staged = self._stage_click()
+        self.adapters.revoke_device_tasks('device-a')
+        with self.assertRaises(Exception):
+            self.adapters.approve_task(staged['task_id'])
+
+    def test_expiry_wins_over_approve(self):
+        params = {
+            'mailbox_id': 'master_mail', 'to': 't@example.edu',
+            'subject': 's', 'body': 'b',
+        }
+        task_id = self.adapters.stage(
+            device_id='device-a', request_id='expiry-1',
+            command='mail.request_draft', params=params,
+            fingerprint=fingerprint('mail.request_draft', params),
+        )
+        self.clock['now'] += 1801
+        with self.assertRaises(Exception):
+            self.adapters.approve_task(task_id)
+        view = self.adapters.list_device_tasks('device-a')
+        self.assertEqual([], [t for t in view if t['state'] == 'STAGED'])
 
 
 if __name__ == '__main__':

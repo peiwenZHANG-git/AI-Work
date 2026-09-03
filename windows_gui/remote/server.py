@@ -53,7 +53,6 @@ _CONFIRMATION_PAGE_TEMPLATE = """<!doctype html>
 <ul id="confirmations"></ul>
 <p id="status"></p>
 <script>
-const CSRF_TOKEN = '{{CSRF}}';
 async function refresh() {
   const list = document.getElementById('confirmations');
   list.innerHTML = '';
@@ -79,9 +78,11 @@ async function refresh() {
   }
 }
 async function act(taskId, verb) {
+  const tokenResponse = await fetch('/local/confirmations/token');
+  const tokenPayload = await tokenResponse.json();
   const response = await fetch(
     `/local/confirmations/${taskId}/${verb}`,
-    {method: 'POST', headers: {'X-Local-CSRF': CSRF_TOKEN}},
+    {method: 'POST', headers: {'X-Local-CSRF': tokenPayload.token || ''}},
   );
   if (!response.ok) {
     document.getElementById('status').textContent =
@@ -134,6 +135,7 @@ class RemoteServer:
         audit_recorder: Callable[..., bool] = record_remote_event,
         devices_path: Path | None = None,
         adapters: RemoteAdapters | None = None,
+        confirmation_token_ttl: float = 600.0,
     ) -> None:
         if host not in ('127.0.0.1', 'localhost'):
             raise ValueError('Remote server binds loopback addresses only')
@@ -148,6 +150,7 @@ class RemoteServer:
         self.adapters = adapters or RemoteAdapters(audit=self._task_audit)
         self._csrf_tokens: OrderedDict[str, float] = OrderedDict()
         self._csrf_lock = threading.Lock()
+        self._confirmation_token_ttl = float(confirmation_token_ttl)
         self.devices_path = (
             Path(devices_path) if devices_path is not None
             else _default_devices_path()
@@ -239,11 +242,19 @@ class RemoteServer:
         except Exception:
             return None
 
-    def _new_csrf_token(self) -> str:
+    def _new_action_token(self) -> str:
+        """Issue one single-use local action token.
+
+        The token authorizes exactly one approve/cancel call on the local
+        confirmation plane and is consumed atomically on use. It defends
+        against remote devices and cross-site requests; it is not a
+        user-presence proof, and a malicious local process in the same
+        user session remains a residual risk.
+        """
         token = secrets.token_urlsafe(32)
         current = self.authenticator._now()
         with self._csrf_lock:
-            self._csrf_tokens[token] = current + 1800.0
+            self._csrf_tokens[token] = current + self._confirmation_token_ttl
             expired = [
                 value for value, expires in self._csrf_tokens.items()
                 if expires <= current
@@ -254,7 +265,8 @@ class RemoteServer:
                 self._csrf_tokens.popitem(last=False)
         return token
 
-    def _csrf_valid(self, token: str) -> bool:
+    def _consume_action_token(self, token: str) -> bool:
+        """Atomically consume one action token; replay fails closed."""
         current = self.authenticator._now()
         with self._csrf_lock:
             expired = [
@@ -263,7 +275,7 @@ class RemoteServer:
             ]
             for value in expired:
                 self._csrf_tokens.pop(value, None)
-            return str(token) in self._csrf_tokens
+            return self._csrf_tokens.pop(str(token), None) is not None
 
     def handle_session(
         self,
@@ -666,15 +678,18 @@ class _RequestHandler(BaseHTTPRequestHandler):
         if path == '/local/confirmations':
             self._run(self.remote.local_confirmations_view)
             return
+        if path == '/local/confirmations/token':
+            self._send_json(
+                {'token': self.remote._new_action_token()}
+            )
+            return
         if path == '/local/confirmations/page':
             self._send_confirmation_page()
             return
         self._send_error(404, 'not_found')
 
     def _send_confirmation_page(self) -> None:
-        token = self.remote._new_csrf_token()
-        page = _CONFIRMATION_PAGE_TEMPLATE.replace('{{CSRF}}', token)
-        data = page.encode('utf-8')
+        data = _CONFIRMATION_PAGE_TEMPLATE.encode('utf-8')
         self.send_response(200)
         self.send_header('Content-Type', 'text/html; charset=utf-8')
         self.send_header('X-Content-Type-Options', 'nosniff')
@@ -746,7 +761,7 @@ class _RequestHandler(BaseHTTPRequestHandler):
             path.endswith('/approve') or path.endswith('/cancel')
         ):
             def action():
-                if not self.remote._csrf_valid(
+                if not self.remote._consume_action_token(
                     self.headers.get('X-Local-CSRF') or '',
                 ):
                     raise RemoteApiError(403, 'csrf_invalid')

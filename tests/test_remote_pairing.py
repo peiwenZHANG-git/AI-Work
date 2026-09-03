@@ -367,8 +367,9 @@ class ConfirmationPlaneTests(PairingDeviceTests):
         return {'status': 'CLICKED'}
 
     def _make_server(self, **overrides):
-        audit_recorder = getattr(self, '_record_audit', None)
-        audit_recorder = overrides.pop('audit_recorder', audit_recorder)
+        audit_recorder = overrides.pop(
+            'audit_recorder', getattr(self, '_record_audit', None),
+        )
         server = RemoteServer(
             port=0,
             authenticator=auth.RemoteAuthenticator(
@@ -382,6 +383,7 @@ class ConfirmationPlaneTests(PairingDeviceTests):
             devices_path=self.devices_path,
             adapters=self.adapters,
             audit_recorder=audit_recorder,
+            **overrides,
         )
         server.start()
         self.addCleanup(server.stop)
@@ -421,12 +423,12 @@ class ConfirmationPlaneTests(PairingDeviceTests):
             'X-Signature': signature,
         })
 
-    def _csrf_from_page(self, server):
-        status, data = self.local(server, 'GET', '/local/confirmations/page')
+    def _action_token(self, server):
+        status, data = self.local(
+            server, 'GET', '/local/confirmations/token',
+        )
         self.assertEqual(200, status)
-        match = re.search(r"CSRF_TOKEN = '([^']+)'", data.decode('utf-8'))
-        self.assertIsNotNone(match)
-        return match.group(1)
+        return json.loads(data)['token']
 
     def test_remote_staging_and_local_approval_flow(self):
         server = self._make_server()
@@ -453,7 +455,7 @@ class ConfirmationPlaneTests(PairingDeviceTests):
             f'/local/confirmations/{task_id}/approve')
         self.assertEqual(403, status)
 
-        token = self._csrf_from_page(server)
+        token = self._action_token(server)
         status, data = self.request(server, 'POST',
             f'/local/confirmations/{task_id}/approve', body=b'',
             headers={
@@ -495,7 +497,7 @@ class ConfirmationPlaneTests(PairingDeviceTests):
             'browser.request_click', 'r' * 16, {'text': 'Submit'},
         )
         task_id = json.loads(data)['task_id']
-        token = self._csrf_from_page(server)
+        token = self._action_token(server)
 
         status, data = self.request(server, 'POST',
             f'/local/confirmations/{task_id}/approve', body=b'',
@@ -528,7 +530,7 @@ class ConfirmationPlaneTests(PairingDeviceTests):
             },
         )
         task_id = json.loads(data)['task_id']
-        token = self._csrf_from_page(server)
+        token = self._action_token(server)
         status, data = self.request(server, 'POST',
             f'/local/confirmations/{task_id}/cancel', body=b'',
             headers={
@@ -537,11 +539,12 @@ class ConfirmationPlaneTests(PairingDeviceTests):
             })
         self.assertEqual(200, status)
         self.assertEqual({'status': 'CANCELLED'}, json.loads(data))
+        fresh_token = self._action_token(server)
         status, data = self.request(server, 'POST',
             f'/local/confirmations/{task_id}/approve', body=b'',
             headers={
                 'Host': f'127.0.0.1:{server.port}',
-                'X-Local-CSRF': token,
+                'X-Local-CSRF': fresh_token,
             })
         self.assertEqual(409, status)
         self.assertEqual({'error': 'task_not_pending'}, json.loads(data))
@@ -563,10 +566,116 @@ class ConfirmationPlaneTests(PairingDeviceTests):
             f'/local/confirmations/{task_id}/approve', body=b'',
             headers={
                 'Host': f'127.0.0.1:{server.port}',
-                'X-Local-CSRF': self._csrf_from_page(server),
+                'X-Local-CSRF': self._action_token(server),
             })
         self.assertEqual(409, status)
         self.assertEqual([], self.click_calls)
+
+
+class ActionTokenHardeningTests(ConfirmationPlaneTests):
+    def _stage_two(self, server, device_id, secret, session_token):
+        first = self._command(
+            server, device_id, secret, session_token,
+            'browser.request_click', 'r' * 16, {'text': 'One'},
+        )
+        second = self._command(
+            server, device_id, secret, session_token,
+            'browser.request_click', 's' * 16, {'text': 'Two'},
+        )
+        return (
+            json.loads(first[1])['task_id'],
+            json.loads(second[1])['task_id'],
+        )
+
+    def _approve(self, server, task_id, token):
+        return self.request(server, 'POST',
+            f'/local/confirmations/{task_id}/approve', body=b'',
+            headers={
+                'Host': f'127.0.0.1:{server.port}',
+                'X-Local-CSRF': token,
+            })
+
+    def test_action_token_replay_fails_closed(self):
+        server = self._make_server()
+        device_id, secret = self.enroll_named(server, 'phone')
+        session_token = self._open_session(server, device_id, secret)
+        task_one, task_two = self._stage_two(
+            server, device_id, secret, session_token,
+        )
+        token = self._action_token(server)
+        status, _ = self._approve(server, task_one, token)
+        self.assertEqual(200, status)
+        status, data = self._approve(server, task_two, token)
+        self.assertEqual(403, status)
+        self.assertEqual({'error': 'csrf_invalid'}, json.loads(data))
+        self.assertEqual(1, len(self.click_calls))
+
+    def test_malformed_action_token_fails(self):
+        server = self._make_server()
+        device_id, secret = self.enroll_named(server, 'phone')
+        session_token = self._open_session(server, device_id, secret)
+        task_id, _ = self._stage_two(
+            server, device_id, secret, session_token,
+        )
+        status, data = self._approve(server, task_id, 'garbage')
+        self.assertEqual(403, status)
+        self.assertEqual({'error': 'csrf_invalid'}, json.loads(data))
+
+    def test_expired_action_token_fails(self):
+        server = self._make_server(confirmation_token_ttl=1.0)
+        device_id, secret = self.enroll_named(server, 'phone')
+        session_token = self._open_session(server, device_id, secret)
+        task_id, _ = self._stage_two(
+            server, device_id, secret, session_token,
+        )
+        token = self._action_token(server)
+        self.clock['now'] += 2.0
+        status, data = self._approve(server, task_id, token)
+        self.assertEqual(403, status)
+        self.assertEqual({'error': 'csrf_invalid'}, json.loads(data))
+        self.assertEqual([], self.click_calls)
+
+    def test_action_token_does_not_survive_restart(self):
+        server = self._make_server()
+        device_id, secret = self.enroll_named(server, 'phone')
+        session_token = self._open_session(server, device_id, secret)
+        task_id, _ = self._stage_two(
+            server, device_id, secret, session_token,
+        )
+        token = self._action_token(server)
+        server.stop()
+        restarted = self._make_server()
+        status, data = self._approve(restarted, task_id, token)
+        self.assertEqual(403, status)
+        self.assertEqual([], self.click_calls)
+
+    def test_concurrent_replay_has_single_winner(self):
+        server = self._make_server()
+        device_id, secret = self.enroll_named(server, 'phone')
+        session_token = self._open_session(server, device_id, secret)
+        task_one, task_two = self._stage_two(
+            server, device_id, secret, session_token,
+        )
+        token = self._action_token(server)
+        outcomes = []
+        lock = threading.Lock()
+
+        def approve(target):
+            status, _ = self._approve(server, target, token)
+            with lock:
+                outcomes.append(status)
+
+        threads = [
+            threading.Thread(target=approve, args=(task_one,)),
+            threading.Thread(target=approve, args=(task_two,)),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(1, outcomes.count(200))
+        self.assertEqual(1, outcomes.count(403))
+        self.assertEqual(1, len(self.click_calls))
 
 
 if __name__ == '__main__':
