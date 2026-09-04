@@ -423,9 +423,14 @@ class ConfirmationPlaneTests(PairingDeviceTests):
             'X-Signature': signature,
         })
 
-    def _action_token(self, server):
-        status, data = self.local(
-            server, 'GET', '/local/confirmations/token',
+    def _action_token(self, server, task_id, action='approve'):
+        body = json.dumps({'task_id': task_id, 'action': action}).encode()
+        status, data = self.request(
+            server, 'POST', '/local/confirmations/token', body=body,
+            headers={
+                'Host': f'127.0.0.1:{server.port}',
+                'Content-Type': 'application/json',
+            },
         )
         self.assertEqual(200, status)
         return json.loads(data)['token']
@@ -455,7 +460,7 @@ class ConfirmationPlaneTests(PairingDeviceTests):
             f'/local/confirmations/{task_id}/approve')
         self.assertEqual(403, status)
 
-        token = self._action_token(server)
+        token = self._action_token(server, task_id)
         status, data = self.request(server, 'POST',
             f'/local/confirmations/{task_id}/approve', body=b'',
             headers={
@@ -497,7 +502,7 @@ class ConfirmationPlaneTests(PairingDeviceTests):
             'browser.request_click', 'r' * 16, {'text': 'Submit'},
         )
         task_id = json.loads(data)['task_id']
-        token = self._action_token(server)
+        token = self._action_token(server, task_id)
 
         status, data = self.request(server, 'POST',
             f'/local/confirmations/{task_id}/approve', body=b'',
@@ -530,7 +535,7 @@ class ConfirmationPlaneTests(PairingDeviceTests):
             },
         )
         task_id = json.loads(data)['task_id']
-        token = self._action_token(server)
+        token = self._action_token(server, task_id, 'cancel')
         status, data = self.request(server, 'POST',
             f'/local/confirmations/{task_id}/cancel', body=b'',
             headers={
@@ -539,7 +544,7 @@ class ConfirmationPlaneTests(PairingDeviceTests):
             })
         self.assertEqual(200, status)
         self.assertEqual({'status': 'CANCELLED'}, json.loads(data))
-        fresh_token = self._action_token(server)
+        fresh_token = self._action_token(server, task_id)
         status, data = self.request(server, 'POST',
             f'/local/confirmations/{task_id}/approve', body=b'',
             headers={
@@ -566,7 +571,7 @@ class ConfirmationPlaneTests(PairingDeviceTests):
             f'/local/confirmations/{task_id}/approve', body=b'',
             headers={
                 'Host': f'127.0.0.1:{server.port}',
-                'X-Local-CSRF': self._action_token(server),
+                'X-Local-CSRF': self._action_token(server, task_id),
             })
         self.assertEqual(409, status)
         self.assertEqual([], self.click_calls)
@@ -602,12 +607,56 @@ class ActionTokenHardeningTests(ConfirmationPlaneTests):
         task_one, task_two = self._stage_two(
             server, device_id, secret, session_token,
         )
-        token = self._action_token(server)
+        token = self._action_token(server, task_one)
         status, _ = self._approve(server, task_one, token)
         self.assertEqual(200, status)
         status, data = self._approve(server, task_two, token)
         self.assertEqual(403, status)
         self.assertEqual({'error': 'csrf_invalid'}, json.loads(data))
+        self.assertEqual(1, len(self.click_calls))
+
+    def test_action_token_is_bound_to_task(self):
+        server = self._make_server()
+        device_id, secret = self.enroll_named(server, 'phone')
+        session_token = self._open_session(server, device_id, secret)
+        task_one, task_two = self._stage_two(
+            server, device_id, secret, session_token,
+        )
+        token = self._action_token(server, task_one)
+        status, data = self._approve(server, task_two, token)
+        self.assertEqual(403, status)
+        self.assertEqual({'error': 'csrf_invalid'}, json.loads(data))
+        self.assertEqual([], self.click_calls)
+
+        status, data = self._approve(server, task_one, token)
+        self.assertEqual(403, status)
+        self.assertEqual([], self.click_calls)
+        fresh = self._action_token(server, task_one)
+        status, _ = self._approve(server, task_one, fresh)
+        self.assertEqual(200, status)
+        self.assertEqual(1, len(self.click_calls))
+
+    def test_action_token_is_bound_to_action(self):
+        server = self._make_server()
+        device_id, secret = self.enroll_named(server, 'phone')
+        session_token = self._open_session(server, device_id, secret)
+        task_id, _ = self._stage_two(
+            server, device_id, secret, session_token,
+        )
+        token = self._action_token(server, task_id, 'approve')
+        status, data = self.request(server, 'POST',
+            f'/local/confirmations/{task_id}/cancel', body=b'',
+            headers={
+                'Host': f'127.0.0.1:{server.port}',
+                'X-Local-CSRF': token,
+            })
+        self.assertEqual(403, status)
+        self.assertEqual({'error': 'csrf_invalid'}, json.loads(data))
+        self.assertEqual([], self.click_calls)
+
+        fresh = self._action_token(server, task_id)
+        status, _ = self._approve(server, task_id, fresh)
+        self.assertEqual(200, status)
         self.assertEqual(1, len(self.click_calls))
 
     def test_malformed_action_token_fails(self):
@@ -628,7 +677,7 @@ class ActionTokenHardeningTests(ConfirmationPlaneTests):
         task_id, _ = self._stage_two(
             server, device_id, secret, session_token,
         )
-        token = self._action_token(server)
+        token = self._action_token(server, task_id)
         self.clock['now'] += 2.0
         status, data = self._approve(server, task_id, token)
         self.assertEqual(403, status)
@@ -642,7 +691,7 @@ class ActionTokenHardeningTests(ConfirmationPlaneTests):
         task_id, _ = self._stage_two(
             server, device_id, secret, session_token,
         )
-        token = self._action_token(server)
+        token = self._action_token(server, task_id)
         server.stop()
         restarted = self._make_server()
         status, data = self._approve(restarted, task_id, token)
@@ -656,7 +705,7 @@ class ActionTokenHardeningTests(ConfirmationPlaneTests):
         task_one, task_two = self._stage_two(
             server, device_id, secret, session_token,
         )
-        token = self._action_token(server)
+        token = self._action_token(server, task_one)
         outcomes = []
         lock = threading.Lock()
 

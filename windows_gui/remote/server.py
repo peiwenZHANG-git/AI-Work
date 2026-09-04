@@ -78,7 +78,11 @@ async function refresh() {
   }
 }
 async function act(taskId, verb) {
-  const tokenResponse = await fetch('/local/confirmations/token');
+  const tokenResponse = await fetch('/local/confirmations/token', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({task_id: taskId, action: verb}),
+  });
   const tokenPayload = await tokenResponse.json();
   const response = await fetch(
     `/local/confirmations/${taskId}/${verb}`,
@@ -148,7 +152,9 @@ class RemoteServer:
         self._pepper_provider = pepper_provider
         self._audit_recorder = audit_recorder
         self.adapters = adapters or RemoteAdapters(audit=self._task_audit)
-        self._csrf_tokens: OrderedDict[str, float] = OrderedDict()
+        self._csrf_tokens: OrderedDict[str, tuple[str, str, float]] = (
+            OrderedDict()
+        )
         self._csrf_lock = threading.Lock()
         self._confirmation_token_ttl = float(confirmation_token_ttl)
         self.devices_path = (
@@ -242,8 +248,8 @@ class RemoteServer:
         except Exception:
             return None
 
-    def _new_action_token(self) -> str:
-        """Issue one single-use local action token.
+    def _new_action_token(self, task_id: str, action: str) -> str:
+        """Issue one single-use task/action-bound local token.
 
         The token authorizes exactly one approve/cancel call on the local
         confirmation plane and is consumed atomically on use. It defends
@@ -251,12 +257,18 @@ class RemoteServer:
         user-presence proof, and a malicious local process in the same
         user session remains a residual risk.
         """
+        if action not in ('approve', 'cancel') or not task_id:
+            raise ValueError('invalid action token binding')
         token = secrets.token_urlsafe(32)
         current = self.authenticator._now()
         with self._csrf_lock:
-            self._csrf_tokens[token] = current + self._confirmation_token_ttl
+            self._csrf_tokens[token] = (
+                task_id,
+                action,
+                current + self._confirmation_token_ttl,
+            )
             expired = [
-                value for value, expires in self._csrf_tokens.items()
+                value for value, (_, _, expires) in self._csrf_tokens.items()
                 if expires <= current
             ]
             for value in expired:
@@ -265,17 +277,25 @@ class RemoteServer:
                 self._csrf_tokens.popitem(last=False)
         return token
 
-    def _consume_action_token(self, token: str) -> bool:
-        """Atomically consume one action token; replay fails closed."""
+    def _consume_action_token(
+        self, token: str, *, task_id: str, action: str,
+    ) -> bool:
+        """Atomically consume one bound action token; misuse fails closed."""
         current = self.authenticator._now()
         with self._csrf_lock:
             expired = [
-                value for value, expires in self._csrf_tokens.items()
+                value for value, (_, _, expires) in self._csrf_tokens.items()
                 if expires <= current
             ]
             for value in expired:
                 self._csrf_tokens.pop(value, None)
-            return self._csrf_tokens.pop(str(token), None) is not None
+            binding = self._csrf_tokens.pop(str(token), None)
+            if binding is None:
+                return False
+            return (
+                secrets.compare_digest(binding[0], task_id)
+                and secrets.compare_digest(binding[1], action)
+            )
 
     def handle_session(
         self,
@@ -511,6 +531,25 @@ class RemoteServer:
         self._save_registry()
         return 200, {'device_id': device_id, 'secret': secret}
 
+    def handle_action_token(self, body: bytes) -> tuple[int, dict[str, Any]]:
+        try:
+            envelope = json.loads(body.decode('utf-8'))
+        except (UnicodeDecodeError, ValueError) as error:
+            raise RemoteApiError(400, 'invalid_request') from error
+        if not isinstance(envelope, dict) or set(envelope) != {
+            'task_id', 'action',
+        }:
+            raise RemoteApiError(400, 'invalid_request')
+        task_id = envelope.get('task_id')
+        action = envelope.get('action')
+        if (
+            not isinstance(task_id, str)
+            or not task_id or len(task_id) > 256
+            or action not in ('approve', 'cancel')
+        ):
+            raise RemoteApiError(400, 'invalid_request')
+        return 200, {'token': self._new_action_token(task_id, action)}
+
     def list_local_devices(self) -> tuple[int, dict[str, Any]]:
         devices = [
             {
@@ -678,11 +717,6 @@ class _RequestHandler(BaseHTTPRequestHandler):
         if path == '/local/confirmations':
             self._run(self.remote.local_confirmations_view)
             return
-        if path == '/local/confirmations/token':
-            self._send_json(
-                {'token': self.remote._new_action_token()}
-            )
-            return
         if path == '/local/confirmations/page':
             self._send_confirmation_page()
             return
@@ -744,6 +778,17 @@ class _RequestHandler(BaseHTTPRequestHandler):
         if path == '/local/devices/revoke-all':
             self._run(self.remote.revoke_all_devices)
             return
+        if path == '/local/confirmations/token':
+            def action():
+                content_type = (
+                    self.headers.get('Content-Type', '')
+                    .split(';', 1)[0].strip().casefold()
+                )
+                if content_type != 'application/json':
+                    raise RemoteApiError(400, 'invalid_request')
+                return self.remote.handle_action_token(self._read_body())
+            self._run(action)
+            return
         if path == '/command':
             def action():
                 body = self._read_body()
@@ -761,14 +806,16 @@ class _RequestHandler(BaseHTTPRequestHandler):
             path.endswith('/approve') or path.endswith('/cancel')
         ):
             def action():
-                if not self.remote._consume_action_token(
-                    self.headers.get('X-Local-CSRF') or '',
-                ):
-                    raise RemoteApiError(403, 'csrf_invalid')
                 verb = 'approve' if path.endswith('/approve') else 'cancel'
                 task_id = path[
                     len('/local/confirmations/'):-len(verb) - 1
                 ]
+                if not self.remote._consume_action_token(
+                    self.headers.get('X-Local-CSRF') or '',
+                    task_id=task_id,
+                    action=verb,
+                ):
+                    raise RemoteApiError(403, 'csrf_invalid')
                 if verb == 'approve':
                     try:
                         result = self.remote.adapters.approve_task(task_id)

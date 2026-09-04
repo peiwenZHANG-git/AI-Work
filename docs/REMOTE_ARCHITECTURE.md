@@ -510,7 +510,7 @@ MVP 刻意保持模块少；不为未来功能预留空壳。
 
 - 3B-1 到 3B-4.1 的当前实现覆盖协议原语、loopback-only transport、pairing、
   设备注册/撤销、`health.read`、`task.status`、`session.revoke_self`、
-  TaskCenter staging、本地确认页和单次 action token。
+  TaskCenter staging、本地确认页和 task/action 绑定的单次 action token。
 - Remote mail draft 确认结果只暴露 staged 状态、邮箱标识和安全详情，不暴露
   本地两阶段发送引用。
 - Remote 不新增 MCP 表面；现有 MCP 公共接口保持不变。
