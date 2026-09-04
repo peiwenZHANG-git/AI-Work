@@ -74,8 +74,8 @@ def main(argv: list[str] | None = None) -> int:
             local_plane.start()
             print(
                 f'AI-Work Remote LAN TLS listening on '
-                f'{config.bind_ip}:{lan_server.port}; SPKI SHA-256='
-                f'{lan_server.tls_material.spki_sha256}',
+                f'{config.bind_ip}:{lan_server.port}; '
+                f'use the loopback local plane for pairing bootstrap',
                 flush=True,
             )
         threading.Event().wait()

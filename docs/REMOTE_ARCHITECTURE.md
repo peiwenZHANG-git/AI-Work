@@ -2,8 +2,9 @@
 
 状态：设计边界与实现说明。Phase 3B-1（协议与认证原语）、3B-2（loopback
 health server）、3B-3（pairing / device / revocation）、3B-4（TaskCenter
-staging 与本地确认页）和 3B-4.1（单次 action token 加固）已实现；
-3B-5（LAN opt-in）未获批准，不得实现。
+staging 与本地确认页）、3B-4.1/3B-4.2（单次 action token 加固与绑定竞态修复）
+和 3B-5（显式 private-LAN opt-in、TLS/SPKI pinning、pending pairing、审计与回滚）
+已实现。真实跨设备 smoke 尚未获批准、未执行。
 
 ## 1. Goals
 
@@ -218,8 +219,8 @@ method/function 分发、任意 selector、任意 JavaScript、任意文件读�
 - `/command` 每个请求：128-bit 随机 nonce + 客户端 timestamp（±90 秒窗口）
   + 显式绑定 device id 的 HMAC 签名。
 - 服务端有界 nonce 缓存（TTL = 时间窗，LRU 上限如 4096）；重复 nonce 固定拒绝。
-- 应用层签名在 TLS 之外仍然必需：它保护 LAN HTTP 场景与任何 TLS 终止代理，
-  并把重放防护与传输解耦。即使用了 TLS，mutating 命令也保留签名 + nonce；
+- 应用层签名在 TLS 之外仍然必需：它提供独立于传输加密的请求完整性、设备绑定和
+  重放防护；LAN 不允许 plaintext HTTP。即使用了 TLS，mutating 命令也保留签名 + nonce；
   命令信封中的客户端 `request_id` 以 `(device, request_id)` 为键进入
   有界幂等缓存。只有成功 mutating 结果会缓存；重复同一
   `(device, request_id)` 返回首次结果，不产生第二次副作用。
@@ -255,8 +256,12 @@ method/function 分发、任意 selector、任意 JavaScript、任意文件读�
 | 接口变化/VPN/热点 | 不受影响 | VPN/热点可能暴露到不受信网络——文档必须警告 |
 | 意外公网暴露 | 不可能 | 依赖配置正确 + TLS + 认证 + 速率限制 |
 
-**MVP 默认：loopback only，fail closed。** LAN 属 3B-5，需要用户明确批准、
-TLS（§13）与启动时的显著本地提示。
+**默认仍是 loopback only，fail closed。** LAN 只能由非秘密 JSON 配置显式启用，
+固定端口 8933，要求精确接口标识、接口上的 RFC 1918 IPv4 和允许的私网子网；禁止
+`0.0.0.0`、`::`、IPv6、loopback、公网和 reserved 地址。Windows 实时检查必须确认
+地址为 Preferred、profile 为 Private、adapter 为物理接口且不是 VPN/tunnel/virtual/
+Wi-Fi Direct/hotspot。任何接口、地址、状态或 profile 变化都会停止 listener，不自动
+选择接口或重新绑定。
 
 ## 12. Local confirmation UX（确认平面隔离）
 
@@ -265,21 +270,22 @@ TLS（§13）与启动时的显著本地提示。
   （domain、动作、时间、来源设备 opaque id）与批准/取消按钮。
 - 备选：扩展 mail assistant 页面（未来合并）。
 - Windows Toast 提醒有新待确认任务（复用摘要通知模式）。
-- **User-presence 边界评估（3B-4.1 结论）**：loopback 确认平面是本地信任边界，防远程设备与浏览器跨站请求；它不是强用户在场证明。更强的边界需要交互桌面会话内的原生 UI（Win32 对话框/tray/独立确认进程），属 LAN 批准前的后续安全选项。
+- **User-presence 边界评估（3B-4.1 结论）**：loopback 确认平面是本地信任边界，防远程设备与浏览器跨站请求；它不是强用户在场证明。更强的边界需要交互桌面会话内的原生 UI（Win32 对话框/tray/独立确认进程），仍是未来独立安全增强项。
 - **隔离不变量**：确认端点只接受 loopback 本地会话；它不参与 Remote 认证
   体系——Remote 凭据/HMAC 在确认端点上不被识别，携带与否都不构成确认。
-  本地页面与 Remote API 共用同一 TCP 端口但路径与认证域不同；如实现中发现
-  难以保证，则拆分为两个端口（确认面板独立 loopback 端口）。
+  LAN handler 根本不注册 `/local/...`。LAN API 固定使用 8933；本地 pairing、设备管理
+  和确认平面使用独立 `127.0.0.1:8934` listener。既有 loopback-only Remote 仍保留
+  原端口 8932 与兼容行为。
 
 ## 13. TLS 设计
 
 - **loopback MVP：HTTP 可接受。** 回环流量对网络攻击者不可见；残余风险是
   本机其他进程（已有认证防线）——明确记录。
-- **LAN：必须 TLS。** 自签名设备证书在 pairing 时生成并交付客户端 pinning
-  （指纹校验，不做主机名校验，规避 IP/主机名不匹配）；私钥存 Credential
-  Manager（DPAPI 保护）；证书轮换 = 重新配对；信任引导 = 首次配对在本机
-  确认面板完成（不存在引导劫持窗口，因为证书分发与 pairing code 一样
-  走本地信任面）。
+- **LAN：必须 TLS。** 服务端身份使用 ECDSA P-256 自签证书，TLS minimum 1.2（运行库
+  支持时自动优先 1.3）；客户端关闭系统 CA 身份判断并在发送 HTTP 前校验 SPKI SHA-256
+  pin 和证书有效期。私钥、证书、pin 元数据存 Credential Manager；非秘密配置、argv、
+  审计和请求日志均不包含这些值。证书到期前以同一密钥续签，pin 不变；接口地址变化会
+  以同一密钥重签 SAN。显式私钥轮换会改变 pin，旧客户端固定拒绝并需要新的本地可信引导。
 - 优先选择能防局域网抓包/token 盗取的组合：LAN = TLS + HMAC + 速率限制。
 
 ## 14. Protocol（草案）
@@ -307,8 +313,12 @@ TLS（§13）与启动时的显著本地提示。
 
 REST over HTTP(S)，JSON：
 
-- `POST /pairing/claim`（无认证；body: pairing code + 设备名 + 客户端证书指纹
-  [仅 LAN/TLS]）→ 设备凭据（仅此一次返回）。
+- `POST /pairing/pending`（LAN TLS；body: pairing code + 设备名）→ pending reference、
+  单次 claim token 和 client nonce；此步骤不创建 credential。
+- 本地 `POST /local/pairing/<request_id>/approve|deny` → 只有 approve 才创建设备
+  credential；未领取的已批准 credential 在 pending TTL 到期时撤销。
+- `POST /pairing/complete`（LAN TLS；pending reference + claim token + client nonce）
+  → 设备凭据，仅此一次返回。配对 code 单独不能完成注册。
 - `POST /session`（HMAC）→ session token。
 - `POST /command`（HMAC 绑定 device id + Bearer session；body: 命令枚举 +
   参数 + request_id）→ 统一响应 `{status, task_id?|data?}`；错误为固定
@@ -325,6 +335,9 @@ REST over HTTP(S)，JSON：
   `pairing_started/pairing_completed/pairing_failed`、`auth_failed`、
   `rate_limited`、`command_denied`、`task_staged`、`task_cancelled`、
   `task_confirmed_local`、`task_expired`、`device_revoked`。
+- LAN 扩展事件固定为 `pairing_pending`、`pairing_denied`、`lan_started`、
+  `lan_stopped`、`lan_bind_failed`、`lan_network_changed`；只接受固定 outcome/code/summary，
+  不记录原始请求、异常详情、证书材料、IP、pairing code、claim token 或 credential。
 - 允许字段：时间、设备 opaque id（对 device id 做 HMAC 哈希后记录）、固定码、
   成功/失败、任务 opaque id、固定 reason code。
 - 禁止字段：正文/主题/收件人/密码/Cookie/token/完整 URL/原始请求体/异常原文/DOM 内容。
@@ -453,12 +466,14 @@ MVP 刻意保持模块少；不为未来功能预留空壳。
   QQ 发送尝试在域层被拒；36 工具不变。
 - 回滚：撤销 staging 接入（域适配器开关），恢复纯本地流程。
 
-### 3B-5 LAN opt-in（需用户批准后才能开工）
+### 3B-5 LAN opt-in（已实现，真实跨设备 smoke 待单独批准）
 
 - 范围：TLS + 证书 pinning + 接口绑定参数 + 文档化防火墙指导。
 - 风险：高（网络暴露）。测试：抓包防护、pinning 失败拒绝、跨网段拒绝。
 - DoD：默认仍 loopback；LAN 仅显式参数启用且启动横幅提示。
-- 回滚：默认参数即回到 loopback。
+- 回滚：删除/禁用 LAN 配置并重启即可停止 LAN listener，loopback MVP 继续工作；
+  进程内 session 和 pending pairing 失效。设备 credential 与 TLS identity 默认保留，
+  可从 local plane 撤销设备；私钥轮换改变 pin 并要求重新配对。
 
 ## 24. Test plan（Phase 3B 测试矩阵）
 
@@ -483,7 +498,7 @@ MVP 刻意保持模块少；不为未来功能预留空壳。
 4. 域适配器最终权限：QQ 永不发送等规则不依赖 Remote policy。
 5. secret 只存 Credential Manager；URL/命令行/日志/明文配置零秘密。
 6. 命令固定枚举，未知即拒绝；每命令定义认证/级别/速率/审计。
-7. 默认绑定 loopback；LAN 仅 opt-in + TLS + 显式批准。
+7. 默认绑定 loopback；LAN 仅显式 opt-in + private physical interface + TLS/SPKI pinning。
 8. mutating 远程请求必须使用显式绑定 device id 的 HMAC 签名 + nonce +
    幂等 request_id；当前 `session.revoke_self` 只撤销当前 session。
 9. 审计与健康事件使用固定 allowlist，不记录调用方提供的细节。
@@ -491,14 +506,14 @@ MVP 刻意保持模块少；不为未来功能预留空壳。
 11. 本地确认 mail draft 后，Remote 响应只返回 staged 状态、邮箱标识和安全
     详情，永不返回本地两阶段发送引用（如 `pending_id`）。
 
-## 26. Open decisions requiring user approval before Phase 3B
+## 26. 已批准的 Phase 3B-5 决策
 
 | 编号 | 决策 | 推荐默认 |
 | --- | --- | --- |
 | D1 | MVP 绑定策略 | 仅 loopback（127.0.0.1） |
-| D2 | 是否提供 LAN opt-in（3B-5） | 保留为远期可选项，默认关闭 |
+| D2 | 是否提供 LAN opt-in（3B-5） | 已批准实现，默认关闭 |
 | D3 | Transport | HTTP REST + 轮询（loopback） |
-| D4 | LAN 必须 TLS（自签 + pinning） | 是（若 D2 批准） |
+| D4 | LAN 必须 TLS（自签 + pinning） | 是，已实现 |
 | D5 | Pairing 模型 | 一次性 code → 每设备凭据 + HMAC（B+C） |
 | D6 | 本地确认面板宿主 | Remote 服务自带 loopback 确认页（后续可并入助手页） |
 | D7 | 是否新增 MCP 工具 | 否（永久倾向） |
@@ -514,3 +529,11 @@ MVP 刻意保持模块少；不为未来功能预留空壳。
 - Remote mail draft 确认结果只暴露 staged 状态、邮箱标识和安全详情，不暴露
   本地两阶段发送引用。
 - Remote 不新增 MCP 表面；现有 MCP 公共接口保持不变。
+- 3B-4.2 修复 action token 绑定竞态：在同一锁内完成 expiry、task/action constant-time
+  匹配和匹配后消费；错误 task/action 固定 403 且不消费正确 token。
+- 3B-5 已实现 `config.py`、`network.py`、`tls.py`、`client.py`、`pairing.py`、
+  `lan_server.py` 和 `local_plane.py`。LAN 默认 disabled；8933 仅 TLS Remote API，
+  8934 仅 loopback local plane；Remote 仍无 confirm/execute/consume/complete，永不读取
+  verified_context，邮件发送权限没有扩展。
+- Windows Firewall 仅生成供人工审阅的 add/delete guidance，代码不会执行规则、请求
+  管理员权限或自动开放 LAN。真实跨设备 smoke 是下一次单独审批事项。

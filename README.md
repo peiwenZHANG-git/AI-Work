@@ -34,7 +34,7 @@
 安装依赖：
 
 ```powershell
-python -m pip install fastmcp pyautogui pywin32 pywinauto pillow requests keyring
+python -m pip install fastmcp pyautogui pywin32 pywinauto pillow requests keyring cryptography
 ```
 
 QQ / 网易 Browser DOM 摘要还需要可选依赖 `playwright`。该 adapter 只使用
@@ -72,6 +72,52 @@ DNS/私网边界；检查结果会移除 URL 查询串与片段，不返回 Cook
 `download_browser_element`、`stop_browser_session`。服务器当前固定注册 36 个工具。
 
 `pyautogui` 的故障保护已开启。把鼠标快速移动到屏幕左上角可中止 PyAutoGUI 操作。
+
+## Remote 与可选 LAN 模式
+
+Remote 默认仍只监听 `127.0.0.1:8932`，不需要防火墙规则。可选 LAN 模式默认关闭，
+只能通过显式 JSON 配置启用；配置必须给出固定物理接口、该接口上的 RFC 1918 IPv4
+地址、固定端口 `8933` 和允许的私网子网。`0.0.0.0`、IPv6、loopback、公网地址、
+Public/Unknown 网络、VPN、热点和虚拟接口都会 fail closed。接口、地址或网络 profile
+改变时 LAN listener 会停止，且不会自动重新绑定。
+
+LAN API 与本地管理平面使用不同 listener：LAN 只提供 TLS Remote API，完全不注册
+`/local/...`；配对审批、设备撤销和任务确认只在 `127.0.0.1:8934`。LAN 始终使用
+TLS 1.2+、ECDSA P-256 自签身份和客户端 SPKI SHA-256 pinning，同时保留原有 HMAC、
+nonce、timestamp、session 和 request_id 防护。服务端私钥、证书及 pin 元数据存入
+Windows Credential Manager，不进入 JSON 配置或命令行。
+
+示例配置（不含秘密）：
+
+```json
+{
+  "enabled": true,
+  "interface_id": "Ethernet",
+  "bind_ip": "192.168.10.20",
+  "port": 8933,
+  "allowed_remote_subnet": "192.168.10.0/24"
+}
+```
+
+Windows Firewall 永远不会由程序修改。以下命令只打印供管理员人工审阅的添加/删除
+规则，不启动任何 listener，也不请求提权：
+
+```powershell
+python scripts/remote_server.py --lan-config D:\secure\lan.json --print-firewall-commands
+```
+
+确认配置、网络 profile、证书 pin 和人工防火墙操作后，才可显式启动：
+
+```powershell
+python scripts/remote_server.py --lan-config D:\secure\lan.json
+```
+
+本机在 local plane 发起配对后会得到一次性 code、LAN endpoint 和 SPKI fingerprint。
+客户端必须先固定该 fingerprint，再通过 TLS 提交 pending claim；claim 只有经本机批准后
+才创建设备 credential，客户端随后完成领取。配对 code 本身不具备注册权限。禁用配置并
+重启会只保留 loopback Remote；LAN session 与 pending pairing 为进程内状态并失效，
+已有设备 credential 和 TLS identity 仍保留，直到从本地管理平面撤销设备或显式轮换身份。
+轮换 TLS 私钥会改变 pin，所有旧 pin 客户端都会拒绝连接，必须通过新的本地可信引导重新配对。
 
 ## 启动
 

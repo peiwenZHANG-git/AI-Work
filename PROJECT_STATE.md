@@ -12,7 +12,7 @@
 
 兼容性基线：保留 `windows_gui_mcp.py` stdio 入口、服务器名 `windows-gui` 和导出的 `mcp` 对象；经用户于 2026-09-02 明确批准扩展后，36 个 MCP 工具恰好注册一次；原有 28 个工具的签名和返回结构保持不变；PyAutoGUI `FAILSAFE` 开启；ASCII 文本走 PyAutoGUI，非 ASCII 文本走原生 `SendInput`。
 
-当前开发重点：邮箱能力已达用户可接受的成熟度，进入 maintenance mode；后续只接受 bug 修复、安全修复和真实使用反馈驱动的维护，不再作为主要功能扩展方向。Remote loopback MVP 与统一任务/确认中心核心已完成；在用户单独批准 Phase 3B-5 / LAN readiness 前，Remote 保持 loopback-only，不新增公共 MCP 接口。
+当前开发重点：邮箱能力已达用户可接受的成熟度，进入 maintenance mode；Remote loopback MVP、统一任务/确认中心和 Phase 3B-5 LAN readiness 已完成实现。LAN 默认关闭，真实跨设备 smoke 尚未获批准；下一步只在用户再次明确批准后进行受控跨设备验证。
 
 邮箱稳定边界：继续保留固定 Edge Profile、READ/DRAFT/SEND 最小权限流程；所有发送必须先创建草稿并获得显式确认，QQ 邮箱永不发送，身份或服务域名无法确认时立即停止处理。
 
@@ -75,14 +75,18 @@
 - Remote Phase 3B-3 收口已完成且不改变 36 个 MCP 工具接口：`/command` 现要求显式绑定 device id 的 HMAC 加 Bearer session 双重认证；`session.revoke_self` 只撤销当前 session，按 `(device, request_id)` 幂等，旧 session 的新请求固定拒绝；审计仍用固定事件码并只记录哈希设备标识。
 - Remote Phase 3B-4 已完成且不改变 36 个 MCP 工具接口：Remote 设备只能通过固定白名单向独立 TaskCenter stage browser click/download 或 mail draft 请求；设备只能查看、取消自己的任务，跨设备访问统一 fail closed；browser click 复用既有确认安全模型，download 限制在规定目录并脱敏本机路径，mail 只创建草稿且 QQ 永不发送；本地确认后响应不返回本地两阶段发送引用；撤销设备会取消其 STAGED 任务；Remote 仍无 confirm、execute、consume 或 complete API。
 - Remote Phase 3B-4.1 本地确认加固已完成：确认操作改用 task/action 绑定的单次 local action token，每操作签发、有界 TTL、验证即原子消费，重放、过期、伪造、跨任务/跨动作误用和并发重放固定拒绝；本地确认平面仍仅 loopback，可防远程设备和浏览器跨站请求，但不构成强用户在场证明。
+- Remote Phase 3B-4.2 已修复 action-token 绑定竞态：token 在锁内先校验 expiry，再以 constant-time 比较 task/action，完全匹配后才消费；错误 target/action 固定 403 且不会使正确 token 失效，确定性与并发回归测试均覆盖。
+- Remote Phase 3B-5 已实现且不改变 36 工具 MCP 接口：LAN 默认 disabled，仅接受显式物理接口、RFC 1918 IPv4、Private profile、固定 8933 和允许子网；拒绝 wildcard/IPv6/Public/Unknown/VPN/hotspot/virtual，接口/IP/profile 改变即停止且不自动 rebind。8933 LAN handler 只暴露 TLS Remote API，`/local/...` 在结构上不存在；local pairing/confirmation/device management 独立绑定 `127.0.0.1:8934`。
+- LAN TLS 使用 ECDSA P-256 自签身份、TLS 1.2 minimum、证书有效期检查和客户端 SPKI SHA-256 pinning；私钥、证书与 pin 元数据存 Credential Manager。HMAC、nonce、timestamp、session、request_id 与 TaskCenter/domain 权限边界不变。配对改为 pinned-TLS pending claim → 本地 approve → credential 创建 → 单次 complete；未批准不创建 credential，已批准但未领取的 credential 到期撤销。
+- LAN 审计仅使用固定白名单事件；不接收 caller detail，不记录请求、IP、证书材料或 credential。Windows Firewall 仅提供人工审阅的 add/delete guidance，程序从不执行规则或请求提权。禁用配置并重启即可回退 loopback；session/pending pairing 随进程失效，设备 credential/TLS identity 保留到本地撤销或显式轮换。
 2026-09-02 本机验收：助手已用 `--restart --no-refresh --no-open` 加载当前工作树，真实本地页面确认三个新入口存在，待办 API 返回 HTTP 200，AI 回复按钮默认禁用，搜索请求边界返回 400；未触发真实邮箱搜索、AI 生成、草稿保存、发送、删除、移动或标记。
 
 ## 4. 当前工作
 
 - `.vscode/mcp.json`：本机 GitHub MCP 配置，按既定决定保持本地修改，不提交、不还原。
 - 邮箱能力已进入 maintenance mode：没有进行中的邮箱功能扩展；后续变更仅由 bug、安全问题和真实使用反馈触发，并且必须继续满足既有邮箱安全边界。
-- Remote Phase 3B-4/3B-4.1 安全验收与收口已完成：staging 所有权、本地确认、task/action 绑定单次 action token、撤销/取消/过期竞态、执行边界和泄漏回归均已复验；当前没有进行中的 Remote 实现。Phase 3B-5 未获用户单独批准，不得开始。
-- 最新完整验证基线（2026-09-04 干净远端主分支隔离检出实测）：`python -m compileall -q windows_gui_mcp.py windows_gui tests` 通过；`python -m unittest discover -s tests -t . -v` 共 528 项全部通过；Remote focused tests 包含 mail 发送引用不泄漏、token 跨任务/跨动作拒绝回归并通过；独立 MCP 检查确认 36 个工具唯一注册；`git diff --check` 通过。全部单测继续 mock 网络、邮箱、AI、桌面和发送副作用，未读取真实邮箱、未调用真实 AI、未运行真实桌面 smoke。
+- Remote Phase 3B-5 代码、测试与文档已完成；真实 LAN 开放、防火墙变更和跨设备 smoke 均未执行，等待下一次用户明确批准。
+- 最新完整验证基线（2026-09-04 隔离 3B-5 worktree 实测）：`python -m compileall -q windows_gui_mcp.py windows_gui tests` 通过；`python -m unittest discover -s tests -t . -v` 共 558 项全部通过；新增 LAN/TLS/pending pairing/network focused tests 通过；独立 MCP 检查确认 36 个工具唯一注册；`git diff --check` 通过。全部测试使用 loopback、fake store/network 或临时证书，不读取真实邮箱、不调用真实 AI、不运行真实桌面或跨设备 smoke。
 
 ## 5. 已知问题与阻塞
 
@@ -112,7 +116,7 @@
 
 ## 7. 下一步
 
-1. Remote loopback MVP 已完成并验收：下一步是 LAN readiness review / Phase 3B-5 批准决策；在用户单独批准前不得开始 LAN、TLS、证书固定、防火墙或跨设备访问。任何公共 MCP 接口变更需单独批准。
+1. Remote Phase 3B-5 LAN readiness 已完成；下一步仅在用户明确批准后执行真实 private-LAN、防火墙人工配置和跨设备 TLS/pairing smoke。不得自动修改 Firewall、开放公网/云 relay，任何公共 MCP 接口变更仍需单独批准。
 2. 邮箱只进入 maintenance mode：遇到 bug、安全问题或真实使用反馈时先做影响评估；保持 QQ 永不发送、两阶段确认、只读约束和身份/域名校验不变。
 3. 每次提交前运行规定验证：compileall、完整单元测试、36 工具注册检查、`git diff --check`。
 4. 真实桌面验证仅在用户明确授权后运行 `python tests/smoke_test.py`；邮箱只读 smoke 仅在另行授权时使用 `--mailbox-readonly`。
