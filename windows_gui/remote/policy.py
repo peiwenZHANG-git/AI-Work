@@ -23,6 +23,10 @@ class RateLimit:
 LIMITS: dict[str, RateLimit] = {
     'pairing_claim_source': RateLimit('pairing_claim_source', 5, 600.0),
     'pairing_claim_global': RateLimit('pairing_claim_global', 20, 3600.0),
+    'pairing_pending_source': RateLimit('pairing_pending_source', 5, 600.0),
+    'pairing_pending_global': RateLimit('pairing_pending_global', 20, 3600.0),
+    'pairing_complete_source': RateLimit('pairing_complete_source', 20, 600.0),
+    'pairing_complete_global': RateLimit('pairing_complete_global', 60, 3600.0),
     'auth_failure_device': RateLimit('auth_failure_device', 10, 300.0),
     'auth_failure_global': RateLimit('auth_failure_global', 100, 3600.0),
     'health_read_device': RateLimit('health_read_device', 30, 60.0),

@@ -208,6 +208,18 @@ class RemoteAuthenticator:
             self._pairing_used = False
             self._pairing_expires_mono = 0.0
 
+    def active_pairing(self) -> tuple[str, float] | None:
+        """Return the active code and monotonic expiry without consuming it."""
+
+        with self._lock:
+            if (
+                not self._pairing_code
+                or self._pairing_used
+                or self._now() > self._pairing_expires_mono
+            ):
+                return None
+            return self._pairing_code, self._pairing_expires_mono
+
     def claim_pairing(
         self, code: str, device_name: str, *, now: float | None = None,
     ) -> tuple[str, str]:
