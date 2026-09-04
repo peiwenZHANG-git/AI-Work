@@ -284,4 +284,10 @@ class RemoteAdapters:
             }
         if command == 'browser.request_click':
             return {'status': result.get('status')}
+        if command == 'mail.request_draft':
+            return {
+                'status': 'DRAFT_STAGED',
+                'mailbox_id': result.get('mailbox_id'),
+                'detail': result.get('detail'),
+            }
         return dict(result)

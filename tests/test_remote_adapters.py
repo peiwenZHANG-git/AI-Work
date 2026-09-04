@@ -166,6 +166,25 @@ class LocalApprovalTests(unittest.TestCase):
         self.assertEqual('f.bin', result['filename'])
         self.assertEqual(4, result['size_bytes'])
 
+    def test_mail_approval_does_not_return_pending_send_reference(self):
+        params = {
+            'mailbox_id': 'master_mail', 'to': 't@example.edu',
+            'subject': 'Draft subject', 'body': 'Draft body',
+        }
+        staged = self.adapters.stage(
+            device_id='device-a', request_id='r1',
+            command='mail.request_draft', params=params,
+            fingerprint=fingerprint('mail.request_draft', params),
+        )
+        result = self.adapters.approve_task(staged['task_id'])
+        self.assertEqual({
+            'status': 'DRAFT_STAGED',
+            'mailbox_id': 'master_mail',
+            'detail': '草稿已保存',
+        }, result)
+        self.assertNotIn('pending_id', result)
+        self.assertNotIn('pending-ref', repr(result))
+
     def test_local_confirmations_expose_summary_not_params(self):
         self.adapters.stage(
             device_id='device-a', request_id='r1',
