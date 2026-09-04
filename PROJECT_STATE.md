@@ -3,7 +3,7 @@
 - 项目名称：AI-Work — 仅面向 Windows 的 FastMCP 桌面自动化服务器
 - 仓库路径：`D:\21781\Documents\Codex\AI-Work`
 - 远程仓库：`https://github.com/peiwenZHANG-git/AI-Work.git`（origin）
-- 状态基线：本文档内容核实于 2026-09-02；Git 当前 HEAD 与分支指向请实时查询（如 `git rev-parse main origin/main`），本文档不记录会随提交立即过时的动态 hash。
+- 状态基线：本文档内容核实于 2026-09-04；Git 当前 HEAD 与分支指向请实时查询（如 `git rev-parse main origin/main`），本文档不记录会随提交立即过时的动态 hash。
 - 维护规则：开始新的重要开发任务前先阅读本文档；完成影响项目状态的重要工作后更新本文档。只记录恢复上下文所需信息，不记录微小修改；记录前须用仓库、Git 历史和验证输出核实。
 
 ## 1. 当前目标
@@ -12,7 +12,7 @@
 
 兼容性基线：保留 `windows_gui_mcp.py` stdio 入口、服务器名 `windows-gui` 和导出的 `mcp` 对象；经用户于 2026-09-02 明确批准扩展后，36 个 MCP 工具恰好注册一次；原有 28 个工具的签名和返回结构保持不变；PyAutoGUI `FAILSAFE` 开启；ASCII 文本走 PyAutoGUI，非 ASCII 文本走原生 `SendInput`。
 
-当前开发重点：邮箱能力已达用户可接受的成熟度，进入 maintenance mode；后续只接受 bug 修复、安全修复和真实使用反馈驱动的维护，不再作为主要功能扩展方向。下一阶段优先考虑 Remote、Browser Agent 和统一任务/确认中心，同时保持既有 MCP 公共接口、身份边界与显式确认安全模型。
+当前开发重点：邮箱能力已达用户可接受的成熟度，进入 maintenance mode；后续只接受 bug 修复、安全修复和真实使用反馈驱动的维护，不再作为主要功能扩展方向。Remote loopback MVP 与统一任务/确认中心核心已完成；在用户单独批准 Phase 3B-5 / LAN readiness 前，Remote 保持 loopback-only，不新增公共 MCP 接口。
 
 邮箱稳定边界：继续保留固定 Edge Profile、READ/DRAFT/SEND 最小权限流程；所有发送必须先创建草稿并获得显式确认，QQ 邮箱永不发送，身份或服务域名无法确认时立即停止处理。
 
@@ -67,6 +67,11 @@
 - 助手重启可靠性已修复：端口等待现在正确区分“等待关闭”和“等待监听”，并会在有界时间内重试精确脚本 PID 的 WMI 查询；仍只终止命令行明确运行 `mail_assistant_server.py` 的进程。真实 `--restart --no-refresh --no-open` 验证一次成功，未刷新邮箱，随后 `/api/status` 与 `/api/health` 均返回 HTTP 200。
 - 通用浏览器真实验收已通过一次受控 smoke：使用专用 `browser-agent-profile` 启动非 headless Edge，访问 Selenium 公共 downloads 测试页，检查 URL/DOM 脱敏，点击普通只读链接，通过 `File 1` 完成登录态下载路径的 14 字节文件下载并核对 SHA-256，确认不覆盖已有文件；三个私网导航负例全部被拒绝，stop 后导航显式失败。未使用邮箱 Profile、未提交表单或执行生产副作用。
 - 邮箱工作流下一阶段已实现且不改变 36 工具 MCP 接口：摘要卡片携带本机渲染元数据和“AI 回复”入口，助手可根据最新本地摘要卡片生成可编辑回复草稿，但不会自动保存或发送；`/api/today-todos` 只解析最近一次本地摘要，提取截止、需办理、学校行政和高重要度事项，不访问或修改邮箱；`/api/mail-search` 把常见中文时间/关键词解析为参数后复用现有只读 `search_mailboxes()` 元数据搜索。QQ 发送仍然禁止，所有发送仍复用两阶段确认。
+- 统一任务/确认中心 Phase 1 已实现且不改变 36 个 MCP 工具接口：内部 TaskCenter 提供固定 domain/action 白名单、有界 TTL/容量、锁保护、单次消费、终态稳定和服务端专用 verified context；mail assistant 待发送引用已迁移为首个消费者。
+- 统一任务/确认中心 Phase 2（Browser Agent 内部强化）已实现且不改变 36 个 MCP 工具接口：浏览器 worker 具备有界恢复与停后不复活；确认式点击经 TaskCenter 暂存、元素标记/指纹、session/导航 epoch 校验和单次消费执行；DNS rebinding 防护覆盖私网、回环、reserved 与过渡地址并逐请求 fail closed。
+- Remote Phase 3A（架构与威胁模型）已完成并落库 `docs/REMOTE_ARCHITECTURE.md`：Remote 是传输层而非权限层，依赖方向为 Remote transport → auth/policy → TaskCenter stage → 本地确认平面 → domain adapter → 副作用原语；配对不等于确认，Remote 无 execute/consume/complete 能力且永不接触 verified_context。
+- Remote Phase 3B-1（协议与认证原语）已完成且无网络监听：包含一次性 pairing code、每设备 Credential Manager secret、HMAC-SHA256 请求签名、nonce/时间窗、有界会话与幂等缓存、固定命令白名单和滑动窗口限速。
+- Remote Phase 3B-2（loopback-only health server）已完成且不改变 36 个 MCP 工具接口：服务器只绑定 127.0.0.1，提供 session/health/command/status 入口，强制精确 Host、拒绝 Origin、限制请求体并使用固定错误码与安全响应头。
 - Remote Phase 3B-3 收口已完成且不改变 36 个 MCP 工具接口：`/command` 现要求显式绑定 device id 的 HMAC 加 Bearer session 双重认证；`session.revoke_self` 只撤销当前 session，按 `(device, request_id)` 幂等，旧 session 的新请求固定拒绝；审计仍用固定事件码并只记录哈希设备标识。
 - Remote Phase 3B-4 已完成且不改变 36 个 MCP 工具接口：Remote 设备只能通过固定白名单向独立 TaskCenter stage browser click/download 或 mail draft 请求；设备只能查看、取消自己的任务，跨设备访问统一 fail closed；browser click 复用既有确认安全模型，download 限制在规定目录并脱敏本机路径，mail 只创建草稿且 QQ 永不发送；本地确认后响应不返回本地两阶段发送引用；撤销设备会取消其 STAGED 任务；Remote 仍无 confirm、execute、consume 或 complete API。
 - Remote Phase 3B-4.1 本地确认加固已完成：确认操作改用单次使用 local action token，每操作签发、有界 TTL、验证即原子消费，重放、过期、伪造和并发重放固定拒绝；本地确认平面仍仅 loopback，可防远程设备和浏览器跨站请求，但不构成强用户在场证明。
@@ -76,7 +81,7 @@
 
 - `.vscode/mcp.json`：本机 GitHub MCP 配置，按既定决定保持本地修改，不提交、不还原。
 - 邮箱能力已进入 maintenance mode：没有进行中的邮箱功能扩展；后续变更仅由 bug、安全问题和真实使用反馈触发，并且必须继续满足既有邮箱安全边界。
-- 当前进行中工作是 Remote Phase 3B-4/3B-4.1 安全验收与收口：重点复核 staging 所有权、本地确认、CSRF/token、撤销竞态和执行边界；Phase 3B-5 未获用户单独批准，不得开始。
+- Remote Phase 3B-4/3B-4.1 安全验收与收口已完成：staging 所有权、本地确认、单次 action token、撤销/取消/过期竞态、执行边界和泄漏回归均已复验；当前没有进行中的 Remote 实现。Phase 3B-5 未获用户单独批准，不得开始。
 - 最新完整验证基线（2026-09-04 干净远端主分支隔离检出实测）：`python -m compileall -q windows_gui_mcp.py windows_gui tests` 通过；`python -m unittest discover -s tests -t . -v` 共 526 项全部通过；Remote focused tests 包含 mail 发送引用不泄漏回归并通过；独立 MCP 检查确认 36 个工具唯一注册；`git diff --check` 通过。全部单测继续 mock 网络、邮箱、AI、桌面和发送副作用，未读取真实邮箱、未调用真实 AI、未运行真实桌面 smoke。
 
 ## 5. 已知问题与阻塞
@@ -107,7 +112,7 @@
 
 ## 7. 下一步
 
-1. 完成 Remote Phase 3B-4/3B-4.1 安全验收与收口：复核 staging 所有权、本地确认、CSRF/token、撤销竞态和执行边界；完成前不开启新能力。Phase 3B-5（LAN/TLS/防火墙/跨设备）未获用户单独批准，不得开始；任何公共 MCP 接口变更需单独批准。
+1. Remote loopback MVP 已完成并验收：下一步是 LAN readiness review / Phase 3B-5 批准决策；在用户单独批准前不得开始 LAN、TLS、证书固定、防火墙或跨设备访问。任何公共 MCP 接口变更需单独批准。
 2. 邮箱只进入 maintenance mode：遇到 bug、安全问题或真实使用反馈时先做影响评估；保持 QQ 永不发送、两阶段确认、只读约束和身份/域名校验不变。
 3. 每次提交前运行规定验证：compileall、完整单元测试、36 工具注册检查、`git diff --check`。
 4. 真实桌面验证仅在用户明确授权后运行 `python tests/smoke_test.py`；邮箱只读 smoke 仅在另行授权时使用 `--mailbox-readonly`。
