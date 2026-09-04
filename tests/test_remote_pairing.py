@@ -629,10 +629,6 @@ class ActionTokenHardeningTests(ConfirmationPlaneTests):
         self.assertEqual([], self.click_calls)
 
         status, data = self._approve(server, task_one, token)
-        self.assertEqual(403, status)
-        self.assertEqual([], self.click_calls)
-        fresh = self._action_token(server, task_one)
-        status, _ = self._approve(server, task_one, fresh)
         self.assertEqual(200, status)
         self.assertEqual(1, len(self.click_calls))
 
@@ -654,8 +650,7 @@ class ActionTokenHardeningTests(ConfirmationPlaneTests):
         self.assertEqual({'error': 'csrf_invalid'}, json.loads(data))
         self.assertEqual([], self.click_calls)
 
-        fresh = self._action_token(server, task_id)
-        status, _ = self._approve(server, task_id, fresh)
+        status, _ = self._approve(server, task_id, token)
         self.assertEqual(200, status)
         self.assertEqual(1, len(self.click_calls))
 
@@ -702,7 +697,7 @@ class ActionTokenHardeningTests(ConfirmationPlaneTests):
         server = self._make_server()
         device_id, secret = self.enroll_named(server, 'phone')
         session_token = self._open_session(server, device_id, secret)
-        task_one, task_two = self._stage_two(
+        task_one, _ = self._stage_two(
             server, device_id, secret, session_token,
         )
         token = self._action_token(server, task_one)
@@ -716,7 +711,7 @@ class ActionTokenHardeningTests(ConfirmationPlaneTests):
 
         threads = [
             threading.Thread(target=approve, args=(task_one,)),
-            threading.Thread(target=approve, args=(task_two,)),
+            threading.Thread(target=approve, args=(task_one,)),
         ]
         for thread in threads:
             thread.start()

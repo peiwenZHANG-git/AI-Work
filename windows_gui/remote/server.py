@@ -289,13 +289,16 @@ class RemoteServer:
             ]
             for value in expired:
                 self._csrf_tokens.pop(value, None)
-            binding = self._csrf_tokens.pop(str(token), None)
+            binding = self._csrf_tokens.get(str(token))
             if binding is None:
                 return False
-            return (
+            matches = (
                 secrets.compare_digest(binding[0], task_id)
                 and secrets.compare_digest(binding[1], action)
             )
+            if matches:
+                self._csrf_tokens.pop(str(token), None)
+            return matches
 
     def handle_session(
         self,
