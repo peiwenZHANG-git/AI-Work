@@ -30,6 +30,16 @@ These instructions apply to the whole repository. This project is a Windows-only
 - Read dynamic Git facts (current HEAD, current branch, ahead/behind, dirty/clean, staged state, unpushed commits) in real time when needed; never infer them from an old `PROJECT_STATE.md`, chat history, or memory.
 - If the connector, local Git, Raw, or Web can complete the read automatically, do not ask the user to open GitHub, copy files, run Git commands, take screenshots, or manually confirm hashes; request user involvement only when tooling is genuinely insufficient.
 
+## Parallel agent development
+
+- When two or more Agent/Codex tasks may modify the repository in parallel, each task must run in its own Git branch and independent worktree. Multiple agents must never write to the same dirty working tree at the same time.
+- Treat a workspace with uncommitted changes as protected: other agents may inspect it read-only by default, and may write there only when the task explicitly belongs to that workspace.
+- Start each new parallel task from the latest trusted base: fetch and verify `origin/main` and the current project state before making changes. If `origin/main` moves while a task is running, re-fetch, re-evaluate, and integrate safely instead of continuing blindly from an old HEAD.
+- Never make room for parallel work with reset, clean, checkout-overwrite, implicit stash, force push, or history rewriting.
+- Never stage, commit, revert, or delete changes left by another agent or the user. Each parallel task may commit only task-related changes inside its own branch/worktree.
+- Before merge or push, re-verify the diff, required tests, and current remote state. If ownership of an uncommitted change cannot be determined safely, stop writing and report the conflict instead of guessing.
+- After a task completes, only the agent that created a temporary worktree may clean it up, and only in a way that cannot affect other worktrees or the main workspace.
+
 ## Compatibility requirements
 
 - Keep `windows_gui_mcp.py` as the backward-compatible stdio entry point.
