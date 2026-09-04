@@ -1,9 +1,9 @@
 # AI-Work Remote 架构与威胁模型（Phase 3A 设计文档）
 
 状态：设计边界与实现说明。Phase 3B-1（协议与认证原语）、3B-2（loopback
-health server）和 3B-3（pairing / device / revocation）已实现；3B-4
-（TaskCenter staging 与本地确认页）尚未实现；3B-5（LAN opt-in）未获批准，
-不得实现。
+health server）、3B-3（pairing / device / revocation）、3B-4（TaskCenter
+staging 与本地确认页）和 3B-4.1（单次 action token 加固）已实现；
+3B-5（LAN opt-in）未获批准，不得实现。
 
 ## 1. Goals
 
@@ -488,6 +488,8 @@ MVP 刻意保持模块少；不为未来功能预留空壳。
    幂等 request_id；当前 `session.revoke_self` 只撤销当前 session。
 9. 审计与健康事件使用固定 allowlist，不记录调用方提供的细节。
 10. 36 个 MCP 工具与现有确认语义不变；Remote 不新增 MCP 表面。
+11. 本地确认 mail draft 后，Remote 响应只返回 staged 状态、邮箱标识和安全
+    详情，永不返回本地两阶段发送引用（如 `pending_id`）。
 
 ## 26. Open decisions requiring user approval before Phase 3B
 
@@ -506,8 +508,9 @@ MVP 刻意保持模块少；不为未来功能预留空壳。
 
 ## 27. Implementation status
 
-- 3B-1 到 3B-3 的当前实现覆盖协议原语、loopback-only transport、pairing、
-  设备注册/撤销、`health.read`、`task.status` 和 `session.revoke_self`。
-- 3B-4 尚未开始：没有 domain adapter，没有 Remote 到 TaskCenter 的 staging，
-  也没有本地确认页。
+- 3B-1 到 3B-4.1 的当前实现覆盖协议原语、loopback-only transport、pairing、
+  设备注册/撤销、`health.read`、`task.status`、`session.revoke_self`、
+  TaskCenter staging、本地确认页和单次 action token。
+- Remote mail draft 确认结果只暴露 staged 状态、邮箱标识和安全详情，不暴露
+  本地两阶段发送引用。
 - Remote 不新增 MCP 表面；现有 MCP 公共接口保持不变。

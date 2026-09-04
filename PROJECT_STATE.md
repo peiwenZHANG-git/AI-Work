@@ -68,7 +68,7 @@
 - 通用浏览器真实验收已通过一次受控 smoke：使用专用 `browser-agent-profile` 启动非 headless Edge，访问 Selenium 公共 downloads 测试页，检查 URL/DOM 脱敏，点击普通只读链接，通过 `File 1` 完成登录态下载路径的 14 字节文件下载并核对 SHA-256，确认不覆盖已有文件；三个私网导航负例全部被拒绝，stop 后导航显式失败。未使用邮箱 Profile、未提交表单或执行生产副作用。
 - 邮箱工作流下一阶段已实现且不改变 36 工具 MCP 接口：摘要卡片携带本机渲染元数据和“AI 回复”入口，助手可根据最新本地摘要卡片生成可编辑回复草稿，但不会自动保存或发送；`/api/today-todos` 只解析最近一次本地摘要，提取截止、需办理、学校行政和高重要度事项，不访问或修改邮箱；`/api/mail-search` 把常见中文时间/关键词解析为参数后复用现有只读 `search_mailboxes()` 元数据搜索。QQ 发送仍然禁止，所有发送仍复用两阶段确认。
 - Remote Phase 3B-3 收口已完成且不改变 36 个 MCP 工具接口：`/command` 现要求显式绑定 device id 的 HMAC 加 Bearer session 双重认证；`session.revoke_self` 只撤销当前 session，按 `(device, request_id)` 幂等，旧 session 的新请求固定拒绝；审计仍用固定事件码并只记录哈希设备标识。
-- Remote Phase 3B-4 已完成且不改变 36 个 MCP 工具接口：Remote 设备只能通过固定白名单向独立 TaskCenter stage browser click/download 或 mail draft 请求；设备只能查看、取消自己的任务，跨设备访问统一 fail closed；browser click 复用既有确认安全模型，download 限制在规定目录并脱敏本机路径，mail 只创建草稿且 QQ 永不发送；撤销设备会取消其 STAGED 任务；Remote 仍无 confirm、execute、consume 或 complete API。
+- Remote Phase 3B-4 已完成且不改变 36 个 MCP 工具接口：Remote 设备只能通过固定白名单向独立 TaskCenter stage browser click/download 或 mail draft 请求；设备只能查看、取消自己的任务，跨设备访问统一 fail closed；browser click 复用既有确认安全模型，download 限制在规定目录并脱敏本机路径，mail 只创建草稿且 QQ 永不发送；本地确认后响应不返回本地两阶段发送引用；撤销设备会取消其 STAGED 任务；Remote 仍无 confirm、execute、consume 或 complete API。
 - Remote Phase 3B-4.1 本地确认加固已完成：确认操作改用单次使用 local action token，每操作签发、有界 TTL、验证即原子消费，重放、过期、伪造和并发重放固定拒绝；本地确认平面仍仅 loopback，可防远程设备和浏览器跨站请求，但不构成强用户在场证明。
 2026-09-02 本机验收：助手已用 `--restart --no-refresh --no-open` 加载当前工作树，真实本地页面确认三个新入口存在，待办 API 返回 HTTP 200，AI 回复按钮默认禁用，搜索请求边界返回 400；未触发真实邮箱搜索、AI 生成、草稿保存、发送、删除、移动或标记。
 
@@ -77,7 +77,7 @@
 - `.vscode/mcp.json`：本机 GitHub MCP 配置，按既定决定保持本地修改，不提交、不还原。
 - 邮箱能力已进入 maintenance mode：没有进行中的邮箱功能扩展；后续变更仅由 bug、安全问题和真实使用反馈触发，并且必须继续满足既有邮箱安全边界。
 - 当前进行中工作是 Remote Phase 3B-4/3B-4.1 安全验收与收口：重点复核 staging 所有权、本地确认、CSRF/token、撤销竞态和执行边界；Phase 3B-5 未获用户单独批准，不得开始。
-- 最新完整验证基线（2026-09-04 干净远端主分支隔离检出实测）：`python -m compileall -q windows_gui_mcp.py windows_gui tests` 通过；`python -m unittest discover -s tests -t . -v` 共 525 项全部通过；Remote focused tests 共 122 项全部通过，其中当前 4 项本地确认/CSRF focused tests 通过；独立 MCP 检查确认 36 个工具唯一注册；`git diff --check` 通过。全部单测继续 mock 网络、邮箱、AI、桌面和发送副作用，未读取真实邮箱、未调用真实 AI、未运行真实桌面 smoke。
+- 最新完整验证基线（2026-09-04 干净远端主分支隔离检出实测）：`python -m compileall -q windows_gui_mcp.py windows_gui tests` 通过；`python -m unittest discover -s tests -t . -v` 共 526 项全部通过；Remote focused tests 包含 mail 发送引用不泄漏回归并通过；独立 MCP 检查确认 36 个工具唯一注册；`git diff --check` 通过。全部单测继续 mock 网络、邮箱、AI、桌面和发送副作用，未读取真实邮箱、未调用真实 AI、未运行真实桌面 smoke。
 
 ## 5. 已知问题与阻塞
 
