@@ -69,13 +69,13 @@ DNS/私网边界；检查结果会移除 URL 查询串与片段，不返回 Cook
 
 新增 MCP 工具：`open_webpage`、`download_web_file`、`start_browser_session`、
 `navigate_browser`、`inspect_browser`、`click_browser_element`、
-`download_browser_element`、`stop_browser_session`。服务器当前固定注册 40 个工具。
+`download_browser_element`、`stop_browser_session`。服务器当前固定注册 42 个工具。
 
 `pyautogui` 的故障保护已开启。把鼠标快速移动到屏幕左上角可中止 PyAutoGUI 操作。
 
 ## v1 Goal A：本地文件与应用
 
-新增接口仅有 `inspect_path`、`open_path`、`manage_path`、`open_app`，总数 40。
+Goal A 新增 `inspect_path`、`open_path`、`manage_path`、`open_app`，阶段总数 40；Goal B 后总数为 42。
 共享路径策略在 `windows_gui/local_paths.py`，文件操作在 `files.py`，启动在 `applications.py`。
 依赖沿用现有 pywin32、FastMCP 及其 Pydantic 2；不需要新的服务、索引或后台任务。
 
@@ -164,6 +164,46 @@ python tests/smoke_test.py --local-files-open
 Goal A 保持 40 工具。用户已随后批准 Goal B 增加 clipboard/get_system_status 至 42，
 再进行 Goal C 的九项 demo 验收与 feature freeze；Browser/Mail/Remote 不扩张。
 
+## v1 Goal B：剪贴板与系统状态
+
+本阶段仅增加 `clipboard`、`get_system_status`，总数恰好 42；旧 36 个工具保持兼容。
+
+```json
+{"request":{"operation":"read","max_chars":16000}}
+```
+
+上例调用 `clipboard`，明确读取当前 Unicode 文本；最多 64,000 字符，返回 `truncated`。
+原生内存对象超过 256 KiB、二进制格式或无效 Unicode 会被拒绝。内容不进入服务端日志、
+audit、缓存或文件，但请求方客户端可能保留 tool result，因此不要无意读取密码或 token。
+
+```json
+{"request":{"operation":"write","text":"Harmless course note"}}
+```
+
+写入会替换剪贴板，只返回字符数与状态，不回显文本。上限 64,000 字符；拒绝 NUL 和
+无效 surrogate。先注册/准备内存，再清空剪贴板；先放置 Windows 的三个
+[历史与云同步排除格式](https://learn.microsoft.com/en-us/windows/win32/dataxchg/clipboard-formats)，
+再发布正文。标记失败时不发布正文；清空之后的失败可能留下空剪贴板。
+不会偷偷读取/备份旧内容，也不会自动粘贴、后台监听或清理用户历史。
+这些标记是 Windows 的排除机制，不能约束任意第三方 clipboard manager 或请求客户端。
+
+`get_system_status` 无参数，返回前台 HWND/最多 256 字符标题、电池状态、固定本地卷的
+free/total bytes、主屏和虚拟屏尺寸及鼠标位置。坐标沿用进程 DPI awareness。
+无电池是 `not_present`，未知/失败是 `unknown`/`query_failed`，整体返回 `partial`；
+不会把未知电量伪装成 0%。不聚焦窗口、不读剪贴板、不探测网络、不读凭据或命令行。
+结果是连续查询的观察值，不是原子快照；标题只返回给调用方，不进入日志。
+
+真实只读状态 smoke：
+
+```powershell
+python tests/smoke_test.py --system-status
+```
+
+该 smoke 只输出组件验证状态，不输出/保存窗口标题。剪贴板单元测试全部使用 fake/native
+API mocks，不冒充真实系统剪贴板测试。`python tests/smoke_test.py --clipboard-owner` 只验证真实隐藏 owner/锁定/关闭，不读取或写入内容，不能替代 read/write smoke。本机 Windows 拒绝创建独立 Window Station
+（Access denied），因此在取得替换当前剪贴板的明确确认前，不执行真实写入 smoke。
+九项真实 demo 和最终 freeze 属于下一阶段 Goal C；未执行的项目不标记 PASS。
+
 ## 启动
 
 在项目根目录运行：
@@ -198,10 +238,12 @@ Smoke test 只使用唯一命名的专用记事本文件，测试结果写入 `t
 
 ## MCP 工具
 
-当前服务器注册 40 个工具；Goal A 之前的 36 个工具的名称、参数和返回结构保持不变。
+当前服务器注册 42 个工具；Goal A 之前的 36 个工具的名称、参数和返回结构保持不变。
 
 | 工具 | 用途 |
 |---|---|
+| `clipboard` | 显式、仅文本的剪贴板 read/write；不记录内容，写入排除历史/云同步。 |
+| `get_system_status` | 只读聚合前台窗口、电池、固定本地磁盘空间、屏幕尺寸和鼠标。 |
 | `inspect_path` | Downloads/Documents 内有界 stat/list/search/read_text。 |
 | `open_path` | 打开允许的普通 PDF/文本/图片或目录。 |
 | `manage_path` | 单层 mkdir、普通文件 copy/同卷 move、basename rename；绝不覆盖。 |
@@ -295,7 +337,7 @@ Smoke test 只使用唯一命名的专用记事本文件，测试结果写入 `t
 
 - 运行 `python scripts/system_health.py` 查看文本报告，或加 `--json` 供自动化消费；必需检查失败时退出码为 1。
 - 使用 `--dashboard` 可输出与助手页“系统状态”一致的 `PASS` / `WARN` / `FAIL` / `UNKNOWN` 四态模型；默认模式继续保留严格的环境、计划任务定义和摘要新鲜度门禁。
-- 检查范围限于本机配置和运行状态：环境变量名存在性、Credential Manager 条目存在性、40 个 MCP 工具注册、计划任务、最近 `last-run.json` 状态和助手服务状态。
+- 检查范围限于本机配置和运行状态：环境变量名存在性、Credential Manager 条目存在性、42 个 MCP 工具注册、计划任务、最近 `last-run.json` 状态和助手服务状态。
 - 摘要健康检查要求邮箱状态全部为 `READY`/`EMPTY_TODAY`，且报告不超过 13 小时（覆盖每日 10:00/22:00 两次调度）；Toast 是否显示单独作为可选 INFO，不与邮件读取健康混在一起。
 - 摘要 HTML 和 `last-run.json` 使用临时文件加原子替换写入；状态包含 `ok`、邮箱读取结果、计数和 Toast 状态。状态写入失败会让任务显式失败，不会留下“任务成功但报告过期”的假信号。
 - `last-attempt.json` 记录运行阶段、邮箱状态/计数和错误类型；它不包含发件人、主题、正文、URL 或凭据，用于在任务失败但 `last-run.json` 未更新时定位阶段。

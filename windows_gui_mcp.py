@@ -3,6 +3,8 @@
 from windows_gui.keyboard import hotkey, press_key, type_text
 from windows_gui.files import inspect_path, manage_path
 from windows_gui.applications import open_path, open_app
+from windows_gui.clipboard import clipboard
+from windows_gui.system_status import get_system_status
 from windows_gui.browser_download import download_web_file, open_webpage
 from windows_gui.browser_session import (
     click_browser_element, download_browser_element, inspect_browser,
@@ -28,6 +30,7 @@ from windows_gui.windows import (
 )
 
 __all__ = [
+    "clipboard", "get_system_status",
     "inspect_path", "manage_path", "open_path", "open_app",
     "click_control", "click_menu_item", "click_mouse", "click_save_button",
     "double_click", "drag_mouse", "focus_and_press", "focus_window",

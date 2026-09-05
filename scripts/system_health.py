@@ -46,7 +46,7 @@ from windows_gui.system_health import collect_dashboard_health
 
 ASSISTANT_SERVER_PORT = 8931
 SCHEDULED_TASK_NAME = 'AI-Work Daily Mail Digest'
-EXPECTED_TOOL_COUNT = 40
+EXPECTED_TOOL_COUNT = 42
 ENVIRONMENT_VARIABLES = (
     'AI_WORK_QQ_IMAP_USERNAME',
     'AI_WORK_BACHELOR_IMAP_USERNAME',

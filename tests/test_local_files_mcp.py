@@ -17,7 +17,7 @@ class LocalMcpTests(unittest.IsolatedAsyncioTestCase):
             tools = {tool.name: tool for tool in await client.list_tools()}
             health = check_mcp_component('fixture-time', list_tools=lambda: list(tools.values()))
             self.assertEqual('PASS', health['status'])
-            self.assertEqual(40, health['details']['stable_tool_count'])
+            self.assertEqual(42, health['details']['stable_tool_count'])
             operations = tools['inspect_path'].inputSchema['properties']['request']['anyOf']
             self.assertEqual({'stat', 'list', 'search', 'read_text'},
                              {x['properties']['operation']['const'] for x in operations})

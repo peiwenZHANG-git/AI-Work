@@ -10,15 +10,15 @@
 
 维护一个轻量 Windows AI assistant，通过 MCP 控制应用、浏览网页、管理本地文件并协助邮件；保持已有公共接口兼容，不扩张为万能电脑 Agent。
 
-兼容性基线：保留 `windows_gui_mcp.py` stdio 入口、服务器名 `windows-gui` 和导出的 `mcp` 对象；Goal A 经用户批准新增 inspect_path/open_path/manage_path/open_app，当前恰好 40 个唯一工具；旧 36 个工具的签名、返回结构及实现保持兼容。PyAutoGUI `FAILSAFE` 开启；ASCII 走 PyAutoGUI，非 ASCII 走原生 SendInput。用户随后批准 v1 最终 42-tool scope，Goal B 仅再增加 clipboard/get_system_status，之后 Goal C 做九项 demo 验收与 freeze。
+兼容性基线：保留 `windows_gui_mcp.py` stdio 入口、服务器名 `windows-gui` 和导出的 `mcp` 对象；Goal A 新增 inspect_path/open_path/manage_path/open_app，Goal B 新增 clipboard/get_system_status，当前恰好 42 个唯一工具；旧 36 个工具的签名、返回结构及实现保持兼容。PyAutoGUI `FAILSAFE` 开启；ASCII 走 PyAutoGUI，非 ASCII 走原生 SendInput。v1 已批准的 public surface 上限为 42，之后 Goal C 做九项 demo 验收与 freeze。
 
-当前开发重点：按 Goal A → Goal B → Goal C 完成 v1 收口。Goal A 本地文件与应用基础已实现并完成下述验证；下一步是已批准的 Goal B。Browser 停止功能扩张，Mail 仅 maintenance，Remote 冻结；不推进 LAN smoke。不得新增 delete、任意 shell、自动发送或六个获批工具之外的公共接口。
+当前开发重点：按 Goal A → Goal B → Goal C 完成 v1 收口。Goal A 已交付；Goal B 两个接口及自动化验证已完成，真实剪贴板读写仍待明确覆盖授权，九项 demo/feature freeze 尚未完成。Browser 停止功能扩张，Mail 仅 maintenance，Remote 冻结；不推进 LAN smoke。不得新增 delete、任意 shell、自动发送或六个获批工具之外的公共接口。
 
 邮箱稳定边界：继续保留固定 Edge Profile、READ/DRAFT/SEND 最小权限流程；所有发送必须先创建草稿并获得显式确认，QQ 邮箱永不发送，身份或服务域名无法确认时立即停止处理。
 
 ## 2. 架构
 
-- `windows_gui_mcp.py` 是向后兼容入口并重导出全部公共工具；FastMCP 实例与进程级设置在 `windows_gui/server.py`；当前 40 个工具恰好注册一次。
+- `windows_gui_mcp.py` 是向后兼容入口并重导出全部公共工具；FastMCP 实例与进程级设置在 `windows_gui/server.py`；当前 42 个工具恰好注册一次。
 - 通用网页能力分为 `browser_download.py`（公共 URL/主机地址校验、逐跳重定向检查、Edge 启动、无登录态原子下载）和 `browser_session.py`（专用工作线程持有 Playwright 持久 Edge 上下文、网络路由守卫、DOM 检查、确认式点击、带上限的登录态原子下载）；会话使用独立 Agent Profile，不复用邮箱 Profile。
 - 模块职责遵循 `AGENTS.md`：鼠标/截图 `mouse.py`、键盘 `keyboard.py`、窗口 `windows.py`、UIA/菜单/保存对话框 `uia.py`；邮箱链路为 `mailboxes.py`（固定身份与 Edge 启动）、`mail_summary.py`（只读摘要与就绪校验）、`imap_mail.py`（QQ/网易 IMAP 只读传输）、`browser_mail.py`（可选 CDP/DOM 传输）、`mail_backends.py`（后端分发）、`mail_search.py`、`mail_draft.py`、`mail_send.py`。
 - 邮件后端优先级：Outlook（master_mail）优先 Microsoft Graph，失败回退经验证的 Edge 页面；QQ 与本科网易摘要优先 IMAP 只读后端，可选启用回环 CDP 浏览器 DOM 后端。
@@ -27,7 +27,9 @@
 
 ## 3. 已完成功能（已提交）
 
-- v1 Goal A：新增 `local_paths.py`（共享 Known Folders / Windows 句柄路径策略）、`files.py`（有界 stat/list/search/read_text 与 mkdir/copy/move/rename）、`applications.py`（固定应用别名和 PDF/文本/图片打开）。当前工具注册与 CLI/页面健康基线均为 40，旧 36 个函数签名快照已加入回归；旧工具实现模块经原始基线逐文件比对未改变。
+- v1 Goal B：新增 `clipboard.py`（显式 Unicode read/write，严格分支 schema、256 KiB 原生对象/64,000 字符上限、固定错误、无内容日志/audit/缓存/文件；写入先放 Windows history/cloud exclusion markers，成功只返回字符数）和 `system_status.py`（前台窗口、电池、固定本地卷空间、主/虚拟屏幕、鼠标；有界标题、unknown/not_present 与 partial 语义，无聚焦/网络/剪贴板/凭据读取）。注册、导出、CLI/页面健康基线和文档同步为 42，原 36 个签名不变。
+
+- v1 Goal A：新增 `local_paths.py`（共享 Known Folders / Windows 句柄路径策略）、`files.py`（有界 stat/list/search/read_text 与 mkdir/copy/move/rename）、`applications.py`（固定应用别名和 PDF/文本/图片打开）。Goal A 阶段工具注册与 CLI/页面健康基线均为 40，旧 36 个函数签名快照已加入回归；旧工具实现模块经原始基线逐文件比对未改变。
 - 新路径范围仅 Downloads/Documents，返回根相对路径；拒绝 UNC/device/NT object/ADS/展开/重解析点/hardlink。读取和启动持有实际读取权限的共享锁，文件管理逐组件相对句柄打开并禁止 reparse，发布使用 parent-relative native no-replace rename；没有全路径重试回退。copy 有 256 MiB/协作式 15 秒预算，仅清理本次临时对象；move 仅同卷普通文件，跨卷明确拒绝；mkdir 单层，rename 仅 basename；无 delete/overwrite/shell/递归管理。
 - inspect 扫描最多 10,000 项、深度 0–5、协作式 3 秒预算，先扫描排序后限制输出（最多 200）；partial 不声称最新。文本上限 1 MiB、最多返回 64,000 字符，显式 UTF-8/带 BOM UTF-16/GB18030，拒绝二进制，不缓存、无内容日志。open_app 固定 notepad/calculator/explorer/edge/vscode；仅已知安装位置，子进程 stdio 与 MCP 隔离；open_path 首版仅 PDF/文本/常用图片和目录。
 
@@ -83,10 +85,13 @@
 
 ## 4. 当前工作
 
+- Goal B 验证（2026-09-05）：compileall PASS，完整 612 项单元测试 PASS，42 tools / 42 unique names、旧 36 签名、diff check PASS。真实 `--system-status` smoke 的前台/电池/磁盘/屏幕/鼠标全部 PASS；`--clipboard-owner` 只验证真实隐藏 owner 的创建/锁定/关闭，PASS，未读取/清空/写入剪贴板，不等于读写 smoke。
+- 真实剪贴板 read/write/paste 尚未执行：Windows 拒绝独立 Window Station 创建（错误 5），已向用户请求是否允许用安全 fixture 替换当前剪贴板；未读取或备份原内容。课程网站/课件链接及草稿邮箱身份/导师地址/主题也已请求，真实 demo 5/7 待这些输入。不得据此宣布九项 demo 或 v1 freeze 完成。
+
 - 主工作树及其他 worktree 的未提交改动属于其他任务，Goal A 在自己的独立 worktree 完成，未触碰它们。
 - Goal A 交付验证（2026-09-05）：规定 compileall PASS；完整 `python -m unittest discover -s tests -t . -v` 最终 589 项全部 PASS；独立检查 40 tools / 40 unique names、旧 36 names/signatures/实现模块、FAILSAFE、CLI/页面健康工具集合均 PASS；`git diff --check` PASS。
 - Goal A 真实受控 smoke：`tests/smoke_test.py --local-files-open` 的注册、metadata、完整范围最新文件选择、mkdir/copy/move/rename、不覆盖、内容保留、打开无害文本、查找唯一 Notepad 窗口均自动 PASS。仅使用本 Goal 自建 artifacts 和内部根注入，没有操作用户 Downloads 或真实 PDF。Notepad 和 artifacts 保留；MANUAL CHECK：确认唯一 fixture 内容并保持窗口打开，不保存编辑。真实 VS Code/PDF viewer 未验收；VS Code 已通过已知安装位置及原生路径检查，无真实启动。
-- 最终 42-tool v1 尚未完成：Goal B 实现、Goal C 九项 demo 验收和 feature freeze 仍需继续，不得把 Goal A 的 40 工具结果当作最终 v1。
+- 最终 42-tool v1 尚未 feature-complete：工具实现已达 42，但真实剪贴板和 Goal C 九项 demo 验收/feature freeze 仍需继续。
 
 ## 5. 已知问题与阻塞
 
@@ -109,7 +114,7 @@
 
 ## 6. 重要技术决策
 
-- 公共接口冻结：服务器名 `windows-gui`、导出 `mcp`、当前 40 个工具（已批准 Goal B 后为 42）不得在授权范围外增删改名，不得修改签名或返回形状，除非用户明确批准；原有 28 个工具保持兼容。
+- 公共接口冻结：服务器名 `windows-gui`、导出 `mcp`、当前 42 个工具不得在授权范围外增删改名，不得修改签名或返回形状，除非用户明确批准；原有 28 个工具保持兼容。
 - 邮箱权限矩阵：`bachelor_mail`/`master_mail` = READ+DRAFT+SEND；`qq_mail` = READ+DRAFT（永不 SEND）；每次 SEND 必须先建草稿并获显式确认。
 - 身份绑定优先显式 `--profile-directory` 启动的运行时 HWND；进程重启后按 Edge PID 命令行找精确 Profile，必要时允许配置的 Profile 标题后缀回退；永不从页面 UIA 文本推断 Profile。
 - IMAP 只读约束：SSL、EXAMINE、UID、BODY.PEEK；禁止 STORE/MOVE/COPY/EXPUNGE。凭据只存 Windows Credential Manager `AI-Work/windows-gui/mailboxes`；本科 IMAP 用户名读 `AI_WORK_BACHELOR_IMAP_USERNAME`。
@@ -119,7 +124,7 @@
 
 ## 7. 下一步
 
-1. Goal A 完成后先报告验证与提交结果，再实施已批准 Goal B：仅 clipboard/get_system_status，最终 42；每阶段独立验证，不修改旧 36 接口。
+1. 保持已实现 42-tool surface；完成待授权的真实剪贴板 fixture 验证，再继续 Goal C 其余真实 demo。每阶段如实报告验证结果，不修改旧 36 接口。
 2. Goal C 完成九项 demo 的实际验收、文档同步与 feature freeze；明确记录模拟/真实/未执行结果，不能把未执行 smoke 记为 PASS。
 3. Browser 不扩张，Mail maintenance，Remote 冻结；不增加 delete、任意 shell、自动发送或未经批准的工具。
 4. 每次交付执行规定 compileall、完整单元测试、精确注册/兼容性检查、git diff --check，并同步本状态文件。真实测试只使用获批范围和专用 fixture，保留 MANUAL CHECK。

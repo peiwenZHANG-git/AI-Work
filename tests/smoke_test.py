@@ -62,6 +62,7 @@ except (ImportError, OSError) as error:
     IMPORT_ERROR = error
 
 EXPECTED_TOOLS = {
+    "clipboard", "get_system_status",
     "inspect_path", "open_path", "manage_path", "open_app",
     "search_mailboxes", "create_mail_draft", "send_mail_draft",
     "open_webpage", "download_web_file", "start_browser_session",
@@ -119,11 +120,37 @@ def check_registration() -> str:
         names = set(asyncio.run(mcp.get_tools()))
     missing = EXPECTED_TOOLS - names
     unexpected = names - EXPECTED_TOOLS
-    if missing or unexpected or len(names) != 40:
+    if missing or unexpected or len(names) != 42:
         raise AssertionError(
             f"missing={sorted(missing)}, unexpected={sorted(unexpected)}"
         )
     return f"registered {len(names)} tools"
+
+
+def system_status_smoke() -> int:
+    """Read-only real status; never print/persist foreground title or user content."""
+    from windows_gui.system_status import get_system_status
+    result = get_system_status()
+    step('42-tool registration', check_registration)
+    for component in ('foreground_window', 'battery', 'disks', 'screen', 'mouse'):
+        if result.get(component, {}).get('status') == 'ok':
+            pass_result('read-only ' + component)
+        else:
+            fail_result('read-only ' + component, 'unknown or unavailable')
+    print('FAIL: system status smoke' if failures else 'PASS: system status smoke', flush=True)
+    return 1 if failures else 0
+
+
+def clipboard_owner_smoke() -> int:
+    """Validate native hidden ownership/lock only: NO read, empty, or write call."""
+    from windows_gui.clipboard import NativeClipboard
+    def ownership():
+        with NativeClipboard().session(write=True):
+            pass
+        return 'owner created and closed; clipboard contents untouched'
+    step('native clipboard owner/lock only', ownership)
+    print('FAIL: clipboard ownership preflight' if failures else 'PASS: clipboard ownership preflight (not a read/write smoke)', flush=True)
+    return 1 if failures else 0
 
 
 def local_files_smoke(*, open_fixture: bool = False) -> int:
@@ -157,7 +184,7 @@ def local_files_smoke(*, open_fixture: bool = False) -> int:
             raise AssertionError(result.get('code', 'missing_code'))
         return result
 
-    step('40-tool registration', check_registration)
+    step('42-tool registration', check_registration)
     with patch.object(local_paths, 'PathPolicy', return_value=policy):
         step('inspect fixture metadata', lambda: expect(lambda: files.inspect_path({
             'operation': 'stat', 'path': fixture_ref}), 'ok'))
@@ -745,6 +772,10 @@ def uia_worker(arguments: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ['--clipboard-owner']:
+        raise SystemExit(clipboard_owner_smoke())
+    if sys.argv[1:] == ['--system-status']:
+        raise SystemExit(system_status_smoke())
     if sys.argv[1:] in (["--local-files"], ["--local-files-open"]):
         raise SystemExit(local_files_smoke(open_fixture=sys.argv[1] == '--local-files-open'))
     if len(sys.argv) >= 2 and sys.argv[1] == "--uia-worker":

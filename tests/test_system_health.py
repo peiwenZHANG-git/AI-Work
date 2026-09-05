@@ -293,7 +293,7 @@ class SystemHealthTests(unittest.TestCase):
         ), mock.patch.object(
             self.health,
             'check_mcp_tools',
-            return_value={'ok': True, 'count': 40, 'expected_count': 40, 'names': []},
+            return_value={'ok': True, 'count': 42, 'expected_count': 42, 'names': []},
         ), mock.patch.object(
             self.health,
             'check_scheduled_task',

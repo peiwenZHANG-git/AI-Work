@@ -96,6 +96,7 @@ _install_dependency_stubs()
 
 
 EXPECTED_TOOLS = {
+    "clipboard", "get_system_status",
     "inspect_path", "manage_path", "open_path", "open_app",
     "click_control", "click_menu_item", "click_mouse", "click_save_button",
     "double_click", "drag_mouse", "focus_and_press", "focus_window",
@@ -117,7 +118,7 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
         module = importlib.import_module('windows_gui_mcp')
         baseline = json.loads((Path(__file__).parent / 'fixtures/legacy_tool_signatures.json').read_text(encoding='utf-8'))
         self.assertEqual(36, len(baseline))
-        self.assertEqual(EXPECTED_TOOLS - {'inspect_path', 'open_path', 'manage_path', 'open_app'}, set(baseline))
+        self.assertEqual(EXPECTED_TOOLS - {'inspect_path', 'open_path', 'manage_path', 'open_app', 'clipboard', 'get_system_status'}, set(baseline))
         for name, signature in baseline.items():
             self.assertEqual(signature, str(inspect.signature(getattr(module, name))), name)
 
@@ -130,7 +131,7 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
             tools = await module.mcp.get_tools()
             names = {name for name in tools}
         self.assertEqual(EXPECTED_TOOLS, names)
-        self.assertEqual(40, len(tools))
+        self.assertEqual(42, len(tools))
         self.assertEqual(len(names), len(tools))
 
     def test_entrypoint_reexports_existing_functions(self):

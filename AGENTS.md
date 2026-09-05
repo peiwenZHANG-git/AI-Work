@@ -45,7 +45,7 @@ These instructions apply to the whole repository. This project is a Windows-only
 - Keep `windows_gui_mcp.py` as the backward-compatible stdio entry point.
 - Preserve the shared server name `windows-gui` and the exported `mcp` object.
 - Do not rename, remove, or change the signature or return shape of an existing `@mcp.tool()` without explicit user approval.
-- Import every tool module from the entry point so all 40 tools register exactly once.
+- Import every tool module from the entry point so all 42 tools register exactly once.
 - Keep PyAutoGUI `FAILSAFE` enabled.
 - Preserve the native `SendInput` Unicode path for non-ASCII text and the existing PyAutoGUI path for ASCII text.
 - Avoid unrelated formatting or refactors while fixing a targeted issue.
@@ -62,6 +62,15 @@ These instructions apply to the whole repository. This project is a Windows-only
 - `open_path` opens only directories or the documented PDF/text/image allowlist; reject scripts, executables and shortcuts. `open_app` accepts fixed aliases only, no path/argv/URL/interpreter. Launchers/resolvers must be injected or mocked in unit tests.
 - Native filesystem tests use owned TemporaryDirectory fixtures only. `tests/smoke_test.py --local-files` uses unique `tests/smoke_artifacts/` roots injected internally only for that run. `--local-files-open` additionally opens its harmless text fixture with known Notepad; leave it open for MANUAL CHECK. Never test on real Downloads files or follow a reparse point during fixture cleanup.
 - Goal A stops at 40 tools. Goal B (clipboard and system status only) and Goal C (nine-demo acceptance and freeze) are subsequently authorized, in that order. Mail/Browser/Remote expansion and LAN smoke remain outside scope.
+
+## Clipboard and System Status (v1 Goal B)
+
+- The final public surface is exactly 42 tools: the old 36 plus inspect_path/open_path/manage_path/open_app/clipboard/get_system_status. No additional public tools are authorized.
+- Put explicit Unicode clipboard read/write in `windows_gui/clipboard.py`; put foreground/battery/fixed-local-disk/display/cursor observations in `windows_gui/system_status.py`. Do not mix clipboard reads into system status.
+- Clipboard content is ephemeral server-side: never log, audit, cache, persist or echo it in errors/write results. Read results go only to the requesting client. Validate strict read/write branches and size before native access; reject NUL/binary/unpaired surrogates. No watcher or automatic paste.
+- Clipboard writes must register/publish all Windows history/cloud exclusion markers before publishing plaintext. Allocate before clearing; on failure never publish plaintext after a failed marker. Use an immediate-data hidden owner window, bounded OpenClipboard retries, correct HGLOBAL ownership, and guaranteed CloseClipboard/owner cleanup. A write failure after EmptyClipboard can leave it empty; never read/backup the prior clipboard as an implicit workaround.
+- System status is read-only. Only fixed local drives are queried for space. Bounded foreground titles are not logged; battery absence and unknown are distinct, and component failures cannot become invented zero values.
+- Unit tests must inject/mock clipboard and status APIs. A real clipboard smoke that replaces current user clipboard requires explicit authorization; do not read or persist its original content. Windows denied private Window Station creation in this environment, so isolation must not be assumed. All real desktop fixture validation stays in `tests/smoke_test.py`.
 
 ## Code organization
 
@@ -154,7 +163,7 @@ Run the complete side-effect-free test suite:
 python -m unittest discover -s tests -t . -v
 ```
 
-Confirm that FastMCP registers exactly the documented 40 tools. The unit tests must fail if a tool is missing or unexpectedly added.
+Confirm that FastMCP registers exactly the documented 42 tools. The unit tests must fail if a tool is missing or unexpectedly added.
 
 When the task authorizes real desktop testing, run:
 

@@ -40,6 +40,7 @@ STATUSES = {'PASS', 'WARN', 'FAIL', 'UNKNOWN'}
 ASSISTANT_SERVER_PORT = 8931
 SCHEDULED_TASK_NAME = 'AI-Work Daily Mail Digest'
 STABLE_TOOL_NAMES = {
+    'clipboard', 'get_system_status',
     'inspect_path', 'open_path', 'manage_path', 'open_app',
     'click_browser_element',
     'click_control', 'click_menu_item', 'click_mouse', 'click_save_button',
