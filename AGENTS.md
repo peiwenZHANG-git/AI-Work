@@ -45,10 +45,23 @@ These instructions apply to the whole repository. This project is a Windows-only
 - Keep `windows_gui_mcp.py` as the backward-compatible stdio entry point.
 - Preserve the shared server name `windows-gui` and the exported `mcp` object.
 - Do not rename, remove, or change the signature or return shape of an existing `@mcp.tool()` without explicit user approval.
-- Import every tool module from the entry point so all 36 tools register exactly once.
+- Import every tool module from the entry point so all 40 tools register exactly once.
 - Keep PyAutoGUI `FAILSAFE` enabled.
 - Preserve the native `SendInput` Unicode path for non-ASCII text and the existing PyAutoGUI path for ASCII text.
 - Avoid unrelated formatting or refactors while fixing a targeted issue.
+
+## Local Files and App Basics (v1 Goal A)
+
+- The user approved exactly four additional MCP tools: `inspect_path`, `open_path`, `manage_path`, `open_app` (36 to 40). Preserve every old tool name, signature, return shape, and behavior. The user subsequently approved Goal B to add only `clipboard` and `get_system_status` (final 42), after Goal A delivery; do not add any other tool.
+- Shared path validation and Windows handle operations belong in `windows_gui/local_paths.py`; inspection/management in `windows_gui/files.py`; application/document launch in `windows_gui/applications.py`.
+- Resolve only Downloads/Documents through Windows Known Folders. Public callers cannot inject roots. Return root-relative paths and fixed errors, never raw exceptions, content logs, or audit payloads.
+- Reject UNC/device/NT-object paths, ADS, traversal, expansion, executable wildcards, reparse points and file hardlinks. Compare canonical path components, never string prefixes. Keep validated root spelling and reject mismatched final handle paths.
+- Read/open leases must deny write/delete sharing with actual read-data/list-directory access (attribute-only handles do not enforce sharing). Mutation directories deny delete sharing; all child accesses use parent-relative `NtCreateFile` with `OBJ_DONT_REPARSE`; source handles deny write/delete sharing. Native parent-relative no-replace rename must not fall back to path-based operations or release leases to succeed.
+- `manage_path` supports only single-level mkdir, bounded regular-file copy, same-volume regular-file move, and basename-only rename. No overwrite/delete/recursive management/ACL/shell operations. Cross-volume move returns `cross_volume_not_supported`. Failure cleanup may delete only the handle-owned CREATE_NEW copy temporary, never an existing file.
+- Inspection has bounded entries/depth/time/output. Sort the entire successfully scanned scope before limiting results; partial scans cannot claim a verified latest file. Text reads have explicit encoding, size and character limits and reject binary content without persistence.
+- `open_path` opens only directories or the documented PDF/text/image allowlist; reject scripts, executables and shortcuts. `open_app` accepts fixed aliases only, no path/argv/URL/interpreter. Launchers/resolvers must be injected or mocked in unit tests.
+- Native filesystem tests use owned TemporaryDirectory fixtures only. `tests/smoke_test.py --local-files` uses unique `tests/smoke_artifacts/` roots injected internally only for that run. `--local-files-open` additionally opens its harmless text fixture with known Notepad; leave it open for MANUAL CHECK. Never test on real Downloads files or follow a reparse point during fixture cleanup.
+- Goal A stops at 40 tools. Goal B (clipboard and system status only) and Goal C (nine-demo acceptance and freeze) are subsequently authorized, in that order. Mail/Browser/Remote expansion and LAN smoke remain outside scope.
 
 ## Code organization
 
@@ -141,7 +154,7 @@ Run the complete side-effect-free test suite:
 python -m unittest discover -s tests -t . -v
 ```
 
-Confirm that FastMCP registers exactly the documented 36 tools. The unit tests must fail if a tool is missing or unexpectedly added.
+Confirm that FastMCP registers exactly the documented 40 tools. The unit tests must fail if a tool is missing or unexpectedly added.
 
 When the task authorizes real desktop testing, run:
 

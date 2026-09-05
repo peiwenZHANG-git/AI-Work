@@ -1,6 +1,9 @@
 """Unit tests that do not send real mouse or keyboard input."""
 
 import importlib
+import inspect
+import json
+from pathlib import Path
 import sys
 import types
 import unittest
@@ -93,6 +96,7 @@ _install_dependency_stubs()
 
 
 EXPECTED_TOOLS = {
+    "inspect_path", "manage_path", "open_path", "open_app",
     "click_control", "click_menu_item", "click_mouse", "click_save_button",
     "double_click", "drag_mouse", "focus_and_press", "focus_window",
     "focus_window_and_hotkey", "focus_window_and_press",
@@ -109,6 +113,14 @@ EXPECTED_TOOLS = {
 
 
 class InterfaceTests(unittest.IsolatedAsyncioTestCase):
+    def test_old_36_signatures_remain_unchanged(self):
+        module = importlib.import_module('windows_gui_mcp')
+        baseline = json.loads((Path(__file__).parent / 'fixtures/legacy_tool_signatures.json').read_text(encoding='utf-8'))
+        self.assertEqual(36, len(baseline))
+        self.assertEqual(EXPECTED_TOOLS - {'inspect_path', 'open_path', 'manage_path', 'open_app'}, set(baseline))
+        for name, signature in baseline.items():
+            self.assertEqual(signature, str(inspect.signature(getattr(module, name))), name)
+
     async def test_all_existing_tools_are_registered(self):
         module = importlib.import_module("windows_gui_mcp")
         if hasattr(module.mcp, "list_tools"):
@@ -118,7 +130,7 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
             tools = await module.mcp.get_tools()
             names = {name for name in tools}
         self.assertEqual(EXPECTED_TOOLS, names)
-        self.assertEqual(36, len(tools))
+        self.assertEqual(40, len(tools))
         self.assertEqual(len(names), len(tools))
 
     def test_entrypoint_reexports_existing_functions(self):

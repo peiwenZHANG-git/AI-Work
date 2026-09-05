@@ -62,6 +62,11 @@ except (ImportError, OSError) as error:
     IMPORT_ERROR = error
 
 EXPECTED_TOOLS = {
+    "inspect_path", "open_path", "manage_path", "open_app",
+    "search_mailboxes", "create_mail_draft", "send_mail_draft",
+    "open_webpage", "download_web_file", "start_browser_session",
+    "navigate_browser", "inspect_browser", "click_browser_element",
+    "download_browser_element", "stop_browser_session",
     "click_control", "click_menu_item", "click_mouse", "click_save_button",
     "double_click", "drag_mouse", "focus_and_press", "focus_window",
     "focus_window_and_hotkey", "focus_window_and_press",
@@ -114,11 +119,89 @@ def check_registration() -> str:
         names = set(asyncio.run(mcp.get_tools()))
     missing = EXPECTED_TOOLS - names
     unexpected = names - EXPECTED_TOOLS
-    if missing or unexpected:
+    if missing or unexpected or len(names) != 40:
         raise AssertionError(
             f"missing={sorted(missing)}, unexpected={sorted(unexpected)}"
         )
     return f"registered {len(names)} tools"
+
+
+def local_files_smoke(*, open_fixture: bool = False) -> int:
+    """Goal-owned artifacts only; no real Downloads/Documents reads or writes.
+
+    The internal policy injection maps the two aliases to this unique fixture;
+    it is not persisted, accepted by MCP, or enabled through an environment flag.
+    Optional opening uses known Notepad with only the dedicated fixture argument.
+    """
+    import uuid
+    from unittest.mock import patch
+    from windows_gui import applications, files, local_paths
+
+    artifact = PROJECT_ROOT / 'tests/smoke_artifacts' / ('local-files-' + uuid.uuid4().hex)
+    artifact.mkdir(parents=True, exist_ok=False)
+    downloads, documents = artifact / 'Downloads', artifact / 'Documents'
+    downloads.mkdir(); documents.mkdir()
+    fixture_name = 'AI-Work-' + artifact.name + '.txt'
+    fixture_ref = 'Downloads/' + fixture_name
+    fixture = downloads / fixture_name
+    with fixture.open('x', encoding='utf-8') as stream:
+        stream.write('AI-Work Goal A harmless fixture.\nNo user documents are used.\n')
+    # PDF-equivalent name for selection tests only; never opened as a PDF.
+    with (downloads / 'selection-only.pdf').open('xb') as stream:
+        stream.write(b'Harmless selection fixture; not a real PDF.\n')
+    policy = local_paths.PathPolicy({'Downloads': downloads, 'Documents': documents})
+
+    def expect(call, code):
+        result = call()
+        if result.get('code') != code:
+            raise AssertionError(result.get('code', 'missing_code'))
+        return result
+
+    step('40-tool registration', check_registration)
+    with patch.object(local_paths, 'PathPolicy', return_value=policy):
+        step('inspect fixture metadata', lambda: expect(lambda: files.inspect_path({
+            'operation': 'stat', 'path': fixture_ref}), 'ok'))
+        latest = step('find latest PDF in complete fixture scope', lambda: expect(lambda: files.inspect_path({
+            'operation': 'search', 'path': 'Downloads', 'extension': '.pdf',
+            'sort': 'modified_desc', 'limit': 1}), 'ok'))
+        if not latest or not latest['latest_in_scope_verified'] or len(latest['entries']) != 1:
+            fail_result('latest PDF complete scope', 'fixture scan was not complete')
+        else:
+            pass_result('latest PDF complete scope')
+        step('create HCI fixture directory', lambda: expect(lambda: files.manage_path({
+            'operation': 'mkdir', 'path': 'Documents/HCI'}), 'created'))
+        step('copy fixture', lambda: expect(lambda: files.manage_path({
+            'operation': 'copy', 'source': fixture_ref,
+            'destination': 'Documents/HCI/copy.txt'}), 'copied'))
+        step('reject existing destination', lambda: expect(lambda: files.manage_path({
+            'operation': 'copy', 'source': fixture_ref,
+            'destination': 'Documents/HCI/copy.txt'}), 'destination_exists'))
+        step('move fixture same volume', lambda: expect(lambda: files.manage_path({
+            'operation': 'move', 'source': 'Documents/HCI/copy.txt',
+            'destination': 'Documents/moved.txt'}), 'moved'))
+        step('rename fixture basename', lambda: expect(lambda: files.manage_path({
+            'operation': 'rename', 'source': 'Documents/moved.txt',
+            'new_name': 'renamed.txt'}), 'renamed'))
+        result = step('read fixture after operations', lambda: expect(lambda: files.inspect_path({
+            'operation': 'read_text', 'path': 'Documents/renamed.txt'}), 'ok'))
+        if not result or result.get('text') != fixture.read_bytes().decode('utf-8'):
+            fail_result('fixture content preserved', 'content mismatch')
+        else:
+            pass_result('fixture content preserved')
+        if open_fixture and not failures:
+            def notepad(path):
+                executable = applications.resolve_app('notepad')
+                with local_paths.pinned(executable, allow_links=True):
+                    applications._launch(executable, (str(path),))
+            opened = step('open harmless fixture in Notepad', lambda: expect(lambda: applications.open_local(
+                fixture_ref, policy=policy,
+                document_launcher=notepad), 'open_requested'))
+            if opened:
+                step('find uniquely named fixture window', lambda: wait_for_notepad_title(fixture_name))
+            manual_check(f'Confirm Notepad displays only {fixture_name}; leave it open. Do not save edits.')
+    print(f'Artifacts retained: {artifact}', flush=True)
+    print('FAIL: local files smoke' if failures else 'PASS: local files smoke', flush=True)
+    return 1 if failures else 0
 
 
 def wait_for_notepad_title(unique_name: str, timeout: float = 15.0) -> str:
@@ -662,6 +745,8 @@ def uia_worker(arguments: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] in (["--local-files"], ["--local-files-open"]):
+        raise SystemExit(local_files_smoke(open_fixture=sys.argv[1] == '--local-files-open'))
     if len(sys.argv) >= 2 and sys.argv[1] == "--uia-worker":
         raise SystemExit(uia_worker(sys.argv[2:]))
     raise SystemExit(main())

@@ -69,9 +69,100 @@ DNS/私网边界；检查结果会移除 URL 查询串与片段，不返回 Cook
 
 新增 MCP 工具：`open_webpage`、`download_web_file`、`start_browser_session`、
 `navigate_browser`、`inspect_browser`、`click_browser_element`、
-`download_browser_element`、`stop_browser_session`。服务器当前固定注册 36 个工具。
+`download_browser_element`、`stop_browser_session`。服务器当前固定注册 40 个工具。
 
 `pyautogui` 的故障保护已开启。把鼠标快速移动到屏幕左上角可中止 PyAutoGUI 操作。
+
+## v1 Goal A：本地文件与应用
+
+新增接口仅有 `inspect_path`、`open_path`、`manage_path`、`open_app`，总数 40。
+共享路径策略在 `windows_gui/local_paths.py`，文件操作在 `files.py`，启动在 `applications.py`。
+依赖沿用现有 pywin32、FastMCP 及其 Pydantic 2；不需要新的服务、索引或后台任务。
+
+以下是 MCP tool arguments，不是 shell 命令。路径使用 Windows Known Folders 的
+`Downloads/...`、`Documents/...` 别名，或这些根内的绝对路径；返回值只给根相对路径。
+不要硬编码用户 profile。采用 Windows 返回的实际文件名拼写；不接受路径大小写歧义。
+Desktop、网络共享、可移动盘、重解析/OneDrive 占位目录、hardlink 均不在此版本支持范围。
+
+| 任务 | Tool | Arguments |
+|---|---|---|
+| 打开 VS Code | `open_app` | `{"app":"vscode"}` |
+| 查找 Downloads 最新 PDF | `inspect_path` | `{"request":{"operation":"search","path":"Downloads","extension":".pdf","max_depth":0,"sort":"modified_desc","limit":1}}` |
+| 打开上一步返回路径 | `open_path` | `{"path":"Downloads/report.pdf"}` |
+| 创建课程目录 | `manage_path` | `{"request":{"operation":"mkdir","path":"Documents/HCI"}}` |
+| 同卷移动指定文件 | `manage_path` | `{"request":{"operation":"move","source":"Downloads/report.pdf","destination":"Documents/HCI/report.pdf"}}` |
+| 复制普通文件 | `manage_path` | `{"request":{"operation":"copy","source":"Downloads/report.pdf","destination":"Documents/report-copy.pdf"}}` |
+| 仅重命名 basename | `manage_path` | `{"request":{"operation":"rename","source":"Documents/report-copy.pdf","new_name":"reading.pdf"}}` |
+| 明确读取文本 | `inspect_path` | `{"request":{"operation":"read_text","path":"Documents/notes.txt","encoding":"utf-8","max_chars":16000}}` |
+
+`inspect_path` 的 request 是严格操作分支，拒绝不适用字段。`stat` 只返回类型、大小和
+修改时间；`list` 是单目录，`search` 的 `max_depth` 默认 2、范围 0–5，0 表示只搜索
+指定目录；扩展名过滤是 `.pdf` 形式的简单后缀，大小写不敏感，没有任意 glob。
+排序为 `name`（默认）或 `modified_desc`，`limit` 默认 100、最多 200。
+扫描最多 10,000 项，协作式时间预算 3 秒。先扫描并排序，再限制返回条数；
+`results_truncated=true` 仅表示输出数量裁剪，`partial=true`/`scan_complete=false`
+则表示扫描不完整（包括权限、重解析点、时间/数量边界），不得声称找到了全范围最新。
+`latest_in_scope_verified=true` 只代表完整观测范围内排序，不是并发文件系统事务快照。
+
+文本文件上限 1 MiB；默认返回最多 16,000 字符、可指定至 64,000。超字符限制返回
+`truncated=true`，超文件大小拒绝。UTF-8 严格解码且接受 BOM；UTF-16 必须有 BOM；
+GB18030 必须显式选择。会验证整个有界文件，拒绝二进制控制字符和无效编码，包括
+返回字符范围之外的尾部；不缓存、不记录正文、不写 audit。返回文本会进入调用客户端上下文。
+
+`manage_path` 的 `mkdir` 只创建一层，父目录必须存在。copy 上限 256 MiB、协作式
+15 秒预算，以独占创建临时对象加原子不替换发布实现；失败仅清理本次拥有的临时句柄。
+move 只接受同卷普通文件，跨卷固定返回 `cross_volume_not_supported`，不会 copy+delete。
+rename 只接受新 basename，不能借此改变父目录。所有目标已存在时失败，不接受
+`overwrite`、`replace`、`delete`、递归操作或 ACL 修改参数。
+
+`open_path` 首版只允许 `.pdf/.txt/.md/.png/.jpg/.jpeg/.bmp`，目录交给 Explorer。
+Office 文件暂未开放；可执行文件、脚本、`.lnk/.url` 等跳转类型一律拒绝。
+文档使用 Windows association API 的固定 `open` verb，应用通过 argv 列表、
+`shell=False` 启动；不拼 shell command string。`open_app` 仅接受
+`notepad/calculator/explorer/edge/vscode`，由系统目录/Known Folders 下固定安装位置解析。
+没有安装时返回 `app_not_installed`，不会搜索任意 PATH 或启动解释器。
+
+四个工具均返回固定 `status` 与 `code`，不返回原始异常；常见错误包括
+`invalid_request`、`invalid_path`、`outside_allowed_roots`、`not_found`、
+`reparse_point_not_supported`、`path_changed`、`destination_exists`、`file_busy`、
+`permission_denied`。打开/启动成功码是 `open_requested`/`launch_requested`，只确认
+操作已交给系统，不保证窗口已就绪。
+
+### 路径竞态与残余风险
+
+父链逐组件以句柄打开，不允许删除共享；源文件在读取/移动期间拒绝写/删共享。
+属性读取句柄不提供足够的 Windows 共享锁，所以实际加入 read-data/list-directory 权限。
+文件管理使用 parent-relative `NtCreateFile` + `OBJ_DONT_REPARSE`，发布使用
+parent-relative `NtSetInformationFile` 的 no-replace rename；原生失败直接停止，
+不松锁重试、不退回全路径 rename。原生 junction、检查后父目录替换、并发目标出现、
+最后一刻 reparse 修改均有专用 fixture 测试。
+
+安全实现参考 Microsoft 的 [NtCreateFile](https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntcreatefile)
+和 [NtSetInformationFile](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-ntsetinformationfile)
+契约。它不是对管理员、内核、恶意文件系统驱动或同用户进程的全面隔离。
+时间预算在循环边界检查，不能强制打断已经阻塞的内核 I/O；完整扫描也不是事务快照。
+原生行为在本机 Windows/NTFS 验证，其他文件系统/异常共享锁可能安全拒绝。
+文件关联程序与已知安装路径是本机信任配置，不能证明文档/应用内容无恶意。
+文件打开句柄只持有到系统分发完成，目标应用异步读取前仍可能发生后续变化；
+因此返回 requested，不宣称已验证应用读到的内容。不要自动打开不可信下载。
+
+### Goal A 专用 smoke
+
+先运行完整自动化验证，再在获得授权的桌面会话中执行：
+
+```powershell
+python tests/smoke_test.py --local-files
+python tests/smoke_test.py --local-files-open
+```
+
+两者只操作本次创建的 `tests/smoke_artifacts/local-files-<uuid>/`；测试专用根仅在进程内
+注入，不改变生产 Known Folders。前者验证查询、建目录、复制、移动、重命名、不覆盖与
+内容保留；后者另用固定 Notepad 打开自建无害文本，保留窗口供 `MANUAL CHECK`，
+不点击/输入/关闭应用。不操作用户 Downloads，不把选取用的 PDF-equivalent 文件当 PDF 打开。
+文档关联与应用解析/启动分别通过注入测试；这不声称真实 VS Code 或 PDF viewer 已验收。
+
+Goal A 保持 40 工具。用户已随后批准 Goal B 增加 clipboard/get_system_status 至 42，
+再进行 Goal C 的九项 demo 验收与 feature freeze；Browser/Mail/Remote 不扩张。
 
 ## 启动
 
@@ -107,10 +198,14 @@ Smoke test 只使用唯一命名的专用记事本文件，测试结果写入 `t
 
 ## MCP 工具
 
-当前服务器注册 36 个工具；原有 28 个工具的名称、参数和返回结构保持不变。
+当前服务器注册 40 个工具；Goal A 之前的 36 个工具的名称、参数和返回结构保持不变。
 
 | 工具 | 用途 |
 |---|---|
+| `inspect_path` | Downloads/Documents 内有界 stat/list/search/read_text。 |
+| `open_path` | 打开允许的普通 PDF/文本/图片或目录。 |
+| `manage_path` | 单层 mkdir、普通文件 copy/同卷 move、basename rename；绝不覆盖。 |
+| `open_app` | 按固定 alias 启动已安装的常用应用，不接收命令或参数。 |
 | `get_mouse_position` | 返回当前鼠标光标坐标。 |
 | `move_mouse` | 把鼠标移动到指定屏幕坐标。 |
 | `click_mouse` | 在当前位置单击左键、右键或中键。 |
@@ -200,7 +295,7 @@ Smoke test 只使用唯一命名的专用记事本文件，测试结果写入 `t
 
 - 运行 `python scripts/system_health.py` 查看文本报告，或加 `--json` 供自动化消费；必需检查失败时退出码为 1。
 - 使用 `--dashboard` 可输出与助手页“系统状态”一致的 `PASS` / `WARN` / `FAIL` / `UNKNOWN` 四态模型；默认模式继续保留严格的环境、计划任务定义和摘要新鲜度门禁。
-- 检查范围限于本机配置和运行状态：环境变量名存在性、Credential Manager 条目存在性、36 个 MCP 工具注册、计划任务、最近 `last-run.json` 状态和助手服务状态。
+- 检查范围限于本机配置和运行状态：环境变量名存在性、Credential Manager 条目存在性、40 个 MCP 工具注册、计划任务、最近 `last-run.json` 状态和助手服务状态。
 - 摘要健康检查要求邮箱状态全部为 `READY`/`EMPTY_TODAY`，且报告不超过 13 小时（覆盖每日 10:00/22:00 两次调度）；Toast 是否显示单独作为可选 INFO，不与邮件读取健康混在一起。
 - 摘要 HTML 和 `last-run.json` 使用临时文件加原子替换写入；状态包含 `ok`、邮箱读取结果、计数和 Toast 状态。状态写入失败会让任务显式失败，不会留下“任务成功但报告过期”的假信号。
 - `last-attempt.json` 记录运行阶段、邮箱状态/计数和错误类型；它不包含发件人、主题、正文、URL 或凭据，用于在任务失败但 `last-run.json` 未更新时定位阶段。
