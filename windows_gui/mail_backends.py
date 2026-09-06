@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+from html import unescape
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -132,6 +133,7 @@ class MailDraftResult:
     message: str
     draft_reference: str | None = None
     reference_kind: str = 'GRAPH_DRAFT_ID'
+    recovery_reference: str | None = None
 
 
 @dataclass(frozen=True)
@@ -178,6 +180,10 @@ class GraphBackendConfig:
         'id,subject,toRecipients,ccRecipients,bccRecipients,'
         'from,sender,isDraft'
     )
+    # Draft creation used by the master mailbox must verify the object that
+    # Graph persisted before exposing its reference.  Keep the default false
+    # for existing backend callers and enable it only for that flow.
+    verify_created_draft: bool = False
 
     @classmethod
     def from_environment(cls) -> 'GraphBackendConfig':
@@ -226,6 +232,50 @@ class WindowsCredentialManagerSecretStore:
 GraphTransport = Callable[[str, dict[str, str], float], Any]
 GraphDraftTransport = Callable[[str, dict[str, str], dict[str, Any], float], Any]
 GraphSendTransport = Callable[[str, dict[str, str], float], Any]
+
+
+def _graph_draft_matches_request(
+    payload: Any,
+    request: MailDraftRequest,
+    expected_mailbox: str | None,
+) -> bool:
+    """Check only fixed draft metadata; never expose message content."""
+    if not isinstance(payload, dict) or payload.get('isDraft') is not True:
+        return False
+    if str(payload.get('subject') or '') != request.subject:
+        return False
+    body = payload.get('body')
+    if not isinstance(body, dict) or _normalize_graph_body(body) != _normalize_graph_body({
+        'contentType': 'text', 'content': request.body,
+    }):
+        return False
+    recipients = payload.get('toRecipients')
+    if not isinstance(recipients, list) or len(recipients) != 1:
+        return False
+    address = recipients[0] if isinstance(recipients[0], dict) else {}
+    email = address.get('emailAddress') if isinstance(address, dict) else None
+    actual_to = str(email.get('address') or '') if isinstance(email, dict) else ''
+    if actual_to.casefold() != request.to.casefold():
+        return False
+    expected = str(expected_mailbox or '').casefold()
+    owner_addresses = []
+    for owner_field in ('from', 'sender'):
+        owner = payload.get(owner_field)
+        if not isinstance(owner, dict):
+            continue
+        email_data = owner.get('emailAddress')
+        if isinstance(email_data, dict) and email_data.get('address'):
+            owner_addresses.append(str(email_data['address']).casefold())
+    # Graph can omit from/sender on a newly created draft.  The caller has
+    # already verified /me against expected_mailbox before reaching here.
+    return not owner_addresses or all(address == expected for address in owner_addresses)
+
+
+def _normalize_graph_body(body: dict[str, Any]) -> str:
+    content = str(body.get('content') or '')
+    if str(body.get('contentType') or '').casefold() == 'html':
+        content = unescape(re.sub(r'(?is)<[^>]+>', ' ', content))
+    return ' '.join(content.split())
 
 
 @dataclass
@@ -366,16 +416,14 @@ class GraphReadonlyBackend:
                 )
 
             payload = {
-                'message': {
-                    'subject': request.subject,
-                    'body': {
-                        'contentType': 'Text',
-                        'content': request.body,
-                    },
-                    'toRecipients': [{
-                        'emailAddress': {'address': request.to},
-                    }],
+                'subject': request.subject,
+                'body': {
+                    'contentType': 'Text',
+                    'content': request.body,
                 },
+                'toRecipients': [{
+                    'emailAddress': {'address': request.to},
+                }],
             }
             draft_response = self.draft_transport(
                 self.config.endpoint, headers, payload, 10.0,
@@ -404,6 +452,42 @@ class GraphReadonlyBackend:
                     BackendStatus.REQUEST_FAILED,
                     'Graph 创建草稿响应缺少 draft id',
                 )
+            if self.config.verify_created_draft:
+                encoded_reference = quote(draft_id, safe='')
+                verify_url = (
+                    f'{self.config.endpoint}/{encoded_reference}?'
+                    + urlencode({
+                        '$select': 'id,isDraft,subject,toRecipients,body,from,sender',
+                    })
+                )
+                verify_response = self.transport(verify_url, headers, 10.0)
+                verify_status = getattr(verify_response, 'status_code', None)
+                if verify_status == 401:
+                    return MailDraftResult(
+                        BackendStatus.TOKEN_EXPIRED,
+                        'Graph 草稿校验令牌已失效，需要重新完成委托登录',
+                        recovery_reference=draft_id,
+                    )
+                if verify_status is None or verify_status < 200 or verify_status >= 300:
+                    return MailDraftResult(
+                        BackendStatus.REQUEST_FAILED,
+                        f'Graph 草稿校验失败：HTTP {verify_status or "unknown"}',
+                        recovery_reference=draft_id,
+                    )
+                try:
+                    verified = verify_response.json()
+                except Exception:
+                    return MailDraftResult(
+                        BackendStatus.INVALID_DRAFT,
+                        'Graph 草稿校验响应不是有效的 JSON 对象',
+                        recovery_reference=draft_id,
+                    )
+                if not _graph_draft_matches_request(verified, request, self.config.mailbox):
+                    return MailDraftResult(
+                        BackendStatus.INVALID_DRAFT,
+                        'Graph 草稿校验未确认草稿状态、收件人、主题或正文',
+                        recovery_reference=draft_id,
+                    )
             return MailDraftResult(
                 BackendStatus.READY,
                 'Graph 草稿已保存；未发送邮件',
@@ -414,6 +498,129 @@ class GraphReadonlyBackend:
             return MailDraftResult(
                 BackendStatus.REQUEST_FAILED,
                 f'Graph draft request failed: {type(error).__name__}',
+            )
+        finally:
+            del token
+
+    def recover_draft(self, request: MailDraftRequest) -> MailDraftResult:
+        """Recover one exact existing draft without creating or sending mail."""
+        if not self.config.is_configured:
+            return MailDraftResult(
+                BackendStatus.NOT_AUTHENTICATED,
+                'Graph 后端未完成 Azure 应用与 OAuth 配置',
+            )
+
+        token = self.token_store.get_access_token()
+        if not token:
+            return MailDraftResult(
+                BackendStatus.NOT_AUTHENTICATED,
+                'Graph 访问令牌不可用，需要完成委托登录',
+            )
+
+        headers = {'Authorization': f'Bearer {token}'}
+        try:
+            identity_response = self.transport(
+                self.config.identity_endpoint, headers, 10.0,
+            )
+            identity_status = getattr(identity_response, 'status_code', None)
+            if identity_status == 401:
+                return MailDraftResult(
+                    BackendStatus.TOKEN_EXPIRED,
+                    'Graph 访问令牌已失效，需要重新完成委托登录',
+                )
+            if identity_status is None or identity_status < 200 or identity_status >= 300:
+                return MailDraftResult(
+                    BackendStatus.REQUEST_FAILED,
+                    f'Graph 身份校验失败：HTTP {identity_status or "unknown"}',
+                )
+            try:
+                identity_payload = identity_response.json()
+            except Exception:
+                return MailDraftResult(
+                    BackendStatus.REQUEST_FAILED,
+                    'Graph 身份校验响应不是有效的 JSON 对象',
+                )
+            actual_identities = {
+                str(identity_payload.get(key) or '').casefold()
+                for key in ('userPrincipalName', 'mail')
+            }
+            expected_identity = self.config.mailbox.casefold()
+            if expected_identity not in actual_identities:
+                return MailDraftResult(
+                    BackendStatus.IDENTITY_MISMATCH,
+                    'Graph 登录账号与配置的硕士 Outlook 邮箱不一致',
+                )
+
+            recovery_url = self.config.endpoint + '?' + urlencode({
+                '$filter': 'isDraft eq true',
+                '$select': 'id,isDraft,subject,toRecipients,body,from,sender',
+                '$top': '100',
+            })
+            recovery_response = self.transport(recovery_url, headers, 10.0)
+            recovery_status = getattr(recovery_response, 'status_code', None)
+            if recovery_status == 401:
+                return MailDraftResult(
+                    BackendStatus.TOKEN_EXPIRED,
+                    'Graph 草稿恢复令牌已失效，需要重新完成委托登录',
+                )
+            if recovery_status is None or recovery_status < 200 or recovery_status >= 300:
+                return MailDraftResult(
+                    BackendStatus.REQUEST_FAILED,
+                    f'Graph 草稿恢复查询失败：HTTP {recovery_status or "unknown"}',
+                )
+            try:
+                recovery_payload = recovery_response.json()
+            except Exception:
+                return MailDraftResult(
+                    BackendStatus.REQUEST_FAILED,
+                    'Graph 草稿恢复响应不是有效的 JSON 对象',
+                )
+            if not isinstance(recovery_payload, dict):
+                return MailDraftResult(
+                    BackendStatus.REQUEST_FAILED,
+                    'Graph 草稿恢复响应不是有效的 JSON 对象',
+                )
+            if recovery_payload.get('@odata.nextLink'):
+                return MailDraftResult(
+                    BackendStatus.REQUEST_FAILED,
+                    'Graph 草稿恢复列表超过安全检查上限',
+                )
+            items = recovery_payload.get('value')
+            if not isinstance(items, list):
+                return MailDraftResult(
+                    BackendStatus.REQUEST_FAILED,
+                    'Graph 草稿恢复响应缺少可信列表',
+                )
+            matches = [
+                item for item in items
+                if _graph_draft_matches_request(item, request, self.config.mailbox)
+            ]
+            if not matches:
+                return MailDraftResult(
+                    BackendStatus.DRAFT_NOT_FOUND,
+                    '未找到唯一匹配的既有 Graph 草稿',
+                )
+            if len(matches) != 1:
+                return MailDraftResult(
+                    BackendStatus.INVALID_DRAFT,
+                    '匹配到多个 Graph 草稿，拒绝恢复不明确的引用',
+                )
+            draft_id = str(matches[0].get('id') or '')
+            if not draft_id:
+                return MailDraftResult(
+                    BackendStatus.INVALID_DRAFT,
+                    '唯一匹配的 Graph 草稿缺少稳定 id',
+                )
+            return MailDraftResult(
+                BackendStatus.READY,
+                '已只读恢复唯一匹配的 Graph 草稿引用；未发送邮件',
+                draft_id,
+                'GRAPH_DRAFT_ID',
+            )
+        except requests.RequestException as error:
+            return MailDraftResult(
+                BackendStatus.REQUEST_FAILED,
+                f'Graph draft recovery failed: {type(error).__name__}',
             )
         finally:
             del token

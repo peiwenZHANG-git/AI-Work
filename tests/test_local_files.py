@@ -453,7 +453,10 @@ class OpenTests(LocalFixture):
             launcher, resolver = Mock(), Mock(return_value=executable)
             self.assertCode(apps.launch_app(alias, resolver=resolver, launcher=launcher), 'launch_requested')
             resolver.assert_called_once_with(alias)
-            launcher.assert_called_once_with(executable)
+            if alias == 'vscode':
+                launcher.assert_called_once_with(executable, ('--new-window',))
+            else:
+                launcher.assert_called_once_with(executable)
 
     def test_unknown_app_paths_interpreters_and_injection_rejected(self):
         for alias in ['cmd','powershell','pwsh','wscript','cscript','C:\\app.exe',

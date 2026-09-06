@@ -121,6 +121,11 @@ def _imap_date(value: date) -> str:
 
 
 def _parse_internal_date(metadata: bytes) -> datetime | None:
+    # QQ sometimes emits an unpadded day; normalize only this observed variant.
+    metadata = re.sub(
+        rb'(INTERNALDATE ")(\d)(?=-)', rb'\g<1>0\2', metadata,
+        count=1, flags=re.IGNORECASE,
+    )
     parsed = imaplib.Internaldate2tuple(metadata)
     if parsed is None:
         return None

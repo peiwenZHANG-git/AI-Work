@@ -231,7 +231,7 @@ class MailSummaryTests(unittest.TestCase):
                 {"control_type": "ListItem", "name": "unstructured 10:30"},
             ]
         }, "READY")
-        result = _summarize_mailbox(MAILBOX_IDENTITIES["master_mail"])
+        result = _summarize_with_edge(MAILBOX_IDENTITIES["master_mail"])
         self.assertEqual("MAIL_ITEMS_NOT_PARSED", result["status"])
         self.assertEqual(1, result["diagnostics"]["row_candidate_count"])
         self.assertEqual(0, result["diagnostics"]["parsed_row_count"])
@@ -247,7 +247,7 @@ class MailSummaryTests(unittest.TestCase):
                 },
             ]
         }, "READY")
-        result = _summarize_mailbox(MAILBOX_IDENTITIES["master_mail"])
+        result = _summarize_with_edge(MAILBOX_IDENTITIES["master_mail"])
         self.assertEqual("EMPTY_TODAY", result["status"])
         self.assertEqual(1, result["diagnostics"]["parsed_row_count"])
 

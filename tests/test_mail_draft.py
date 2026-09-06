@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import requests
 import windows_gui.mail_draft as mail_draft
+import windows_gui.mail_send as mail_send
 from windows_gui.mail_backends import (
     BackendStatus,
     GraphBackendConfig,
@@ -61,16 +62,14 @@ class GraphDraftBackendTests(unittest.TestCase):
         self.assertEqual(GRAPH_MESSAGES_ENDPOINT, draft_transport.call_args.args[0])
         payload = draft_transport.call_args.args[2]
         self.assertEqual({
-            'message': {
-                'subject': 'Draft subject',
-                'body': {
-                    'contentType': 'Text',
-                    'content': 'Draft body',
-                },
-                'toRecipients': [{
-                    'emailAddress': {'address': 'alice@example.com'},
-                }],
+            'subject': 'Draft subject',
+            'body': {
+                'contentType': 'Text',
+                'content': 'Draft body',
             },
+            'toRecipients': [{
+                'emailAddress': {'address': 'alice@example.com'},
+            }],
         }, payload)
         self.assertNotIn('/send', draft_transport.call_args.args[0])
         self.assertEqual(('Mail.ReadWrite',), GRAPH_DRAFT_SCOPES)
@@ -111,6 +110,258 @@ class GraphDraftBackendTests(unittest.TestCase):
             to='alice@example.com', subject='Subject', body='Body',
         ))
         self.assertIs(BackendStatus.REQUEST_FAILED, result.status)
+
+    def test_verified_graph_draft_requires_persisted_metadata(self):
+        identity = MagicMock(
+            status_code=200,
+            json=lambda: {'userPrincipalName': 'master@example.com'},
+        )
+        created = MagicMock(status_code=201, json=lambda: {'id': 'draft-1'})
+        verified = MagicMock(status_code=200, json=lambda: {
+            'id': 'draft-1',
+            'isDraft': True,
+            'subject': 'Subject',
+            'body': {'contentType': 'html', 'content': '<div>Body</div>'},
+            'toRecipients': [{'emailAddress': {'address': 'alice@example.com'}}],
+            'from': {'emailAddress': {'address': 'master@example.com'}},
+        })
+        transport = MagicMock(side_effect=[identity, verified])
+        backend = GraphReadonlyBackend(
+            config=GraphBackendConfig(
+                tenant_id='tenant', client_id='client',
+                mailbox='master@example.com', verify_created_draft=True,
+            ),
+            token_store=SimpleNamespace(get_access_token=lambda: 'runtime-token'),
+            transport=transport,
+            draft_transport=MagicMock(return_value=created),
+        )
+        result = backend.create_draft(MailDraftRequest(
+            to='alice@example.com', subject='Subject', body='Body',
+        ))
+        self.assertIs(BackendStatus.READY, result.status)
+        self.assertEqual('draft-1', result.draft_reference)
+        self.assertEqual(2, transport.call_count)
+
+    def test_verified_graph_draft_rejects_non_draft_or_mismatched_metadata(self):
+        identity = MagicMock(
+            status_code=200,
+            json=lambda: {'userPrincipalName': 'master@example.com'},
+        )
+        created = MagicMock(status_code=201, json=lambda: {'id': 'draft-1'})
+        verified = MagicMock(status_code=200, json=lambda: {
+            'id': 'draft-1', 'isDraft': False, 'subject': 'Subject',
+        })
+        backend = GraphReadonlyBackend(
+            config=GraphBackendConfig(
+                tenant_id='tenant', client_id='client',
+                mailbox='master@example.com', verify_created_draft=True,
+            ),
+            token_store=SimpleNamespace(get_access_token=lambda: 'runtime-token'),
+            transport=MagicMock(side_effect=[identity, verified]),
+            draft_transport=MagicMock(return_value=created),
+        )
+        result = backend.create_draft(MailDraftRequest(
+            to='alice@example.com', subject='Subject', body='Body',
+        ))
+        self.assertIs(BackendStatus.INVALID_DRAFT, result.status)
+        self.assertIsNone(result.draft_reference)
+        self.assertEqual('draft-1', result.recovery_reference)
+
+    def test_verified_graph_draft_accepts_omitted_owner_after_me_verification(self):
+        identity = MagicMock(
+            status_code=200,
+            json=lambda: {'userPrincipalName': 'master@example.com'},
+        )
+        created = MagicMock(status_code=201, json=lambda: {'id': 'draft-1'})
+        verified = MagicMock(status_code=200, json=lambda: {
+            'id': 'draft-1', 'isDraft': True, 'subject': 'Subject',
+            'body': {'contentType': 'html', 'content': '<div>Body</div>'},
+            'toRecipients': [{'emailAddress': {'address': 'alice@example.com'}}],
+        })
+        backend = GraphReadonlyBackend(
+            config=GraphBackendConfig(
+                tenant_id='tenant', client_id='client',
+                mailbox='master@example.com', verify_created_draft=True,
+            ),
+            token_store=SimpleNamespace(get_access_token=lambda: 'runtime-token'),
+            transport=MagicMock(side_effect=[identity, verified]),
+            draft_transport=MagicMock(return_value=created),
+        )
+        result = backend.create_draft(MailDraftRequest(
+            to='alice@example.com', subject='Subject', body='Body',
+        ))
+        self.assertIs(BackendStatus.READY, result.status)
+        self.assertEqual('draft-1', result.draft_reference)
+
+    def test_verified_graph_draft_rejects_mismatched_owner_when_present(self):
+        identity = MagicMock(
+            status_code=200,
+            json=lambda: {'userPrincipalName': 'master@example.com'},
+        )
+        created = MagicMock(status_code=201, json=lambda: {'id': 'draft-1'})
+        verified = MagicMock(status_code=200, json=lambda: {
+            'id': 'draft-1', 'isDraft': True, 'subject': 'Subject',
+            'body': {'contentType': 'text', 'content': 'Body'},
+            'toRecipients': [{'emailAddress': {'address': 'alice@example.com'}}],
+            'sender': {'emailAddress': {'address': 'other@example.com'}},
+        })
+        backend = GraphReadonlyBackend(
+            config=GraphBackendConfig(
+                tenant_id='tenant', client_id='client',
+                mailbox='master@example.com', verify_created_draft=True,
+            ),
+            token_store=SimpleNamespace(get_access_token=lambda: 'runtime-token'),
+            transport=MagicMock(side_effect=[identity, verified]),
+            draft_transport=MagicMock(return_value=created),
+        )
+        result = backend.create_draft(MailDraftRequest(
+            to='alice@example.com', subject='Subject', body='Body',
+        ))
+        self.assertIs(BackendStatus.INVALID_DRAFT, result.status)
+        self.assertIsNone(result.draft_reference)
+
+    def test_master_graph_backend_refreshes_instead_of_stale_access_token(self):
+        with patch.object(
+            mail_draft, 'refresh_master_graph_token',
+            return_value={'access_token': 'fresh-token'},
+        ) as refresh:
+            backend = mail_draft._graph_backend()
+            token = backend.token_store.get_access_token()
+        refresh.assert_called_once_with(
+            'https://graph.microsoft.com/Mail.ReadWrite offline_access',
+        )
+        self.assertEqual('fresh-token', token)
+        self.assertTrue(backend.config.verify_created_draft)
+
+
+class GraphDraftRecoveryTests(unittest.TestCase):
+    @staticmethod
+    def _response(status_code, payload=None):
+        response = MagicMock(status_code=status_code)
+        if payload is None:
+            response.json.side_effect = ValueError('no JSON body')
+        else:
+            response.json.return_value = payload
+        return response
+
+    @staticmethod
+    def _candidate(**changes):
+        candidate = {
+            'id': 'existing-draft-id',
+            'isDraft': True,
+            'subject': 'Subject',
+            'body': {'contentType': 'html', 'content': '<div>Body</div>'},
+            'toRecipients': [{
+                'emailAddress': {'address': 'alice@example.com'},
+            }],
+        }
+        candidate.update(changes)
+        return candidate
+
+    def _backend(self, candidates, *, identity='master@example.com'):
+        transport = MagicMock(side_effect=[
+            self._response(200, {'userPrincipalName': identity}),
+            self._response(200, {'value': candidates}),
+        ])
+        draft_transport = MagicMock()
+        send_transport = MagicMock()
+        backend = GraphReadonlyBackend(
+            config=GraphBackendConfig(
+                tenant_id='tenant', client_id='client',
+                mailbox='master@example.com', verify_created_draft=True,
+            ),
+            token_store=SimpleNamespace(get_access_token=lambda: 'runtime-token'),
+            transport=transport,
+            draft_transport=draft_transport,
+            send_transport=send_transport,
+        )
+        return backend, transport, draft_transport, send_transport
+
+    @staticmethod
+    def _request():
+        return MailDraftRequest(
+            to='alice@example.com', subject='Subject', body='Body',
+        )
+
+    def test_unique_exact_draft_recovers_stable_reference_read_only(self):
+        backend, transport, post, send = self._backend([self._candidate()])
+
+        result = backend.recover_draft(self._request())
+
+        self.assertIs(BackendStatus.READY, result.status)
+        self.assertEqual('existing-draft-id', result.draft_reference)
+        self.assertEqual('GRAPH_DRAFT_ID', result.reference_kind)
+        self.assertEqual(2, transport.call_count)
+        self.assertIn('isDraft+eq+true', transport.call_args.args[0])
+        post.assert_not_called()
+        send.assert_not_called()
+
+    def test_zero_or_multiple_exact_matches_fail_closed(self):
+        for candidates, expected in (
+            ([], BackendStatus.DRAFT_NOT_FOUND),
+            ([self._candidate(), self._candidate(id='second')],
+             BackendStatus.INVALID_DRAFT),
+        ):
+            with self.subTest(count=len(candidates)):
+                backend, _, post, send = self._backend(candidates)
+                result = backend.recover_draft(self._request())
+                self.assertIs(expected, result.status)
+                self.assertIsNone(result.draft_reference)
+                post.assert_not_called()
+                send.assert_not_called()
+
+    def test_metadata_mismatches_and_non_draft_fail_closed(self):
+        variants = (
+            self._candidate(isDraft=False),
+            self._candidate(toRecipients=[{
+                'emailAddress': {'address': 'other@example.com'},
+            }]),
+            self._candidate(subject='Other'),
+            self._candidate(body={'contentType': 'text', 'content': 'Other'}),
+        )
+        for candidate in variants:
+            with self.subTest(candidate=candidate):
+                backend, _, post, send = self._backend([candidate])
+                result = backend.recover_draft(self._request())
+                self.assertIs(BackendStatus.DRAFT_NOT_FOUND, result.status)
+                self.assertIsNone(result.draft_reference)
+                post.assert_not_called()
+                send.assert_not_called()
+
+    def test_mailbox_identity_mismatch_stops_before_lookup(self):
+        backend, transport, post, send = self._backend(
+            [self._candidate()], identity='other@example.com',
+        )
+        result = backend.recover_draft(self._request())
+        self.assertIs(BackendStatus.IDENTITY_MISMATCH, result.status)
+        self.assertEqual(1, transport.call_count)
+        post.assert_not_called()
+        send.assert_not_called()
+
+    def test_acceptance_recovery_returns_create_contract_without_post(self):
+        recovered = MailDraftResult(
+            BackendStatus.READY, 'Recovered',
+            'existing-draft-id', 'GRAPH_DRAFT_ID',
+        )
+        backend = SimpleNamespace(recover_draft=lambda request: recovered)
+        with patch.object(mail_draft, '_graph_backend', return_value=backend):
+            result = mail_draft._recover_master_draft_after_known_failure(
+                self._request(),
+            )
+        self.assertEqual('READY', result['status'])
+        self.assertEqual('GRAPH_API', result['backend'])
+        self.assertEqual('existing-draft-id', result['draft_reference'])
+        self.assertEqual('GRAPH_DRAFT_ID', result['reference_kind'])
+        self.assertFalse(result['sent'])
+        self.assertFalse(result['send_attempted'])
+
+        with patch.object(mail_send, '_send_existing_draft') as send:
+            confirmation = mail_send.send_mail_draft(
+                'master_mail', result['draft_reference'], False,
+            )
+        send.assert_not_called()
+        self.assertEqual('CONFIRMATION_REQUIRED', confirmation['status'])
+        self.assertFalse(confirmation['send_attempted'])
 
 
 class EdgeDraftTests(unittest.TestCase):
@@ -252,7 +503,6 @@ class DraftDispatchTests(unittest.TestCase):
         for status in (
             BackendStatus.NOT_AUTHENTICATED,
             BackendStatus.TOKEN_EXPIRED,
-            BackendStatus.REQUEST_FAILED,
         ):
             graph = SimpleNamespace(create_draft=lambda request: MailDraftResult(
                 status, 'Graph unavailable',
@@ -278,6 +528,36 @@ class DraftDispatchTests(unittest.TestCase):
             self.assertEqual('READY', result['status'])
             self.assertIn('Graph draft unavailable', result['message'])
             self.assertFalse(result['sent'])
+
+    def test_graph_request_failure_fails_closed_without_edge_side_effect(self):
+        graph = SimpleNamespace(create_draft=lambda request: MailDraftResult(
+            BackendStatus.REQUEST_FAILED, 'Graph request failed',
+        ))
+        with (
+            patch.object(mail_draft, '_backend_for_identity', return_value=graph),
+            patch.object(mail_draft, '_create_with_edge') as edge,
+        ):
+            result = mail_draft._create_draft_mailbox(
+                MAILBOX_IDENTITIES['master_mail'],
+                MailDraftRequest(to='alice@example.com', subject='Subject', body='Body'),
+            )
+        edge.assert_not_called()
+        self.assertEqual('ERROR', result['status'])
+        self.assertFalse(result['sent'])
+
+    def test_invalid_graph_draft_maps_to_error_without_exception(self):
+        graph = SimpleNamespace(create_draft=lambda request: MailDraftResult(
+            BackendStatus.INVALID_DRAFT, 'Draft metadata mismatch',
+        ))
+        with patch.object(
+            mail_draft, '_backend_for_identity', return_value=graph,
+        ):
+            result = mail_draft._create_draft_mailbox(
+                MAILBOX_IDENTITIES['master_mail'],
+                MailDraftRequest(to='alice@example.com', subject='Subject', body='Body'),
+            )
+        self.assertEqual('ERROR', result['status'])
+        self.assertIsNone(result['draft_reference'])
 
     def test_outlook_graph_identity_mismatch_does_not_fall_back(self):
         graph = SimpleNamespace(create_draft=lambda request: MailDraftResult(

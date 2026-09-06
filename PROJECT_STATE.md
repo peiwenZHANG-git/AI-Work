@@ -3,7 +3,7 @@
 - 项目名称：AI-Work — 仅面向 Windows 的 FastMCP 桌面自动化服务器
 - 仓库路径：`D:\21781\Documents\Codex\AI-Work`
 - 远程仓库：`https://github.com/peiwenZHANG-git/AI-Work.git`（origin）
-- 状态基线：本文档内容核实于 2026-09-05；Git 当前 HEAD 与分支指向请实时查询（如 `git rev-parse main origin/main`），本文档不记录会随提交立即过时的动态 hash。
+- 状态基线：本文档内容核实于 2026-09-06；Git 当前 HEAD 与分支指向请实时查询（如 `git rev-parse main origin/main`），本文档不记录会随提交立即过时的动态 hash。
 - 维护规则：开始新的重要开发任务前先阅读本文档；完成影响项目状态的重要工作后更新本文档。只记录恢复上下文所需信息，不记录微小修改；记录前须用仓库、Git 历史和验证输出核实。
 
 ## 1. 当前目标
@@ -12,7 +12,7 @@
 
 兼容性基线：保留 `windows_gui_mcp.py` stdio 入口、服务器名 `windows-gui` 和导出的 `mcp` 对象；Goal A 新增 inspect_path/open_path/manage_path/open_app，Goal B 新增 clipboard/get_system_status，当前恰好 42 个唯一工具；旧 36 个工具的签名、返回结构及实现保持兼容。PyAutoGUI `FAILSAFE` 开启；ASCII 走 PyAutoGUI，非 ASCII 走原生 SendInput。v1 已批准的 public surface 上限为 42，之后 Goal C 做九项 demo 验收与 freeze。
 
-当前开发重点：按 Goal A → Goal B → Goal C 完成 v1 收口。Goal A 已交付；Goal B 两个接口及自动化验证已完成，真实剪贴板读写仍待明确覆盖授权，九项 demo/feature freeze 尚未完成。Browser 停止功能扩张，Mail 仅 maintenance，Remote 冻结；不推进 LAN smoke。不得新增 delete、任意 shell、自动发送或六个获批工具之外的公共接口。
+当前开发重点：Goal A/B/C 已完成 v1 验收，九项 demo 全部 PASS，公共 surface 冻结为 42 tools；等待单独批准 main merge。Browser 停止功能扩张，Mail 仅 maintenance，Remote 冻结；不推进 LAN smoke。不得新增 delete、任意 shell、自动发送或六个获批工具之外的公共接口。
 
 邮箱稳定边界：继续保留固定 Edge Profile、READ/DRAFT/SEND 最小权限流程；所有发送必须先创建草稿并获得显式确认，QQ 邮箱永不发送，身份或服务域名无法确认时立即停止处理。
 
@@ -86,12 +86,12 @@
 ## 4. 当前工作
 
 - Goal B 验证（2026-09-05）：compileall PASS，完整 612 项单元测试 PASS，42 tools / 42 unique names、旧 36 签名、diff check PASS。真实 `--system-status` smoke 的前台/电池/磁盘/屏幕/鼠标全部 PASS；`--clipboard-owner` 只验证真实隐藏 owner 的创建/锁定/关闭，PASS，未读取/清空/写入剪贴板，不等于读写 smoke。
-- 真实剪贴板 read/write/paste 尚未执行：Windows 拒绝独立 Window Station 创建（错误 5），已向用户请求是否允许用安全 fixture 替换当前剪贴板；未读取或备份原内容。课程网站/课件链接及草稿邮箱身份/导师地址/主题也已请求，真实 demo 5/7 待这些输入。不得据此宣布九项 demo 或 v1 freeze 完成。
+- 真实剪贴板固定文本 write/read/paste 已在用户授权下完成，原剪贴板内容未读取或备份；课程网页/PDF与导师草稿也已按受控字段完成验收。九项 demo 的最终事实以 `docs/V1_ACCEPTANCE.md` 为准。
 
 - 主工作树及其他 worktree 的未提交改动属于其他任务，Goal A 在自己的独立 worktree 完成，未触碰它们。
 - Goal A 交付验证（2026-09-05）：规定 compileall PASS；完整 `python -m unittest discover -s tests -t . -v` 最终 589 项全部 PASS；独立检查 40 tools / 40 unique names、旧 36 names/signatures/实现模块、FAILSAFE、CLI/页面健康工具集合均 PASS；`git diff --check` PASS。
 - Goal A 真实受控 smoke：`tests/smoke_test.py --local-files-open` 的注册、metadata、完整范围最新文件选择、mkdir/copy/move/rename、不覆盖、内容保留、打开无害文本、查找唯一 Notepad 窗口均自动 PASS。仅使用本 Goal 自建 artifacts 和内部根注入，没有操作用户 Downloads 或真实 PDF。Notepad 和 artifacts 保留；MANUAL CHECK：确认唯一 fixture 内容并保持窗口打开，不保存编辑。真实 VS Code/PDF viewer 未验收；VS Code 已通过已知安装位置及原生路径检查，无真实启动。
-- 最终 42-tool v1 尚未 feature-complete：工具实现已达 42，但真实剪贴板和 Goal C 九项 demo 验收/feature freeze 仍需继续。
+- 42-tool v1 已完成九项 demo 验收并进入 feature freeze；最终状态和逐项证据见 `docs/V1_ACCEPTANCE.md`。
 
 ## 5. 已知问题与阻塞
 
@@ -124,11 +124,25 @@
 
 ## 7. 下一步
 
-1. 保持已实现 42-tool surface；完成待授权的真实剪贴板 fixture 验证，再继续 Goal C 其余真实 demo。每阶段如实报告验证结果，不修改旧 36 接口。
-2. Goal C 完成九项 demo 的实际验收、文档同步与 feature freeze；明确记录模拟/真实/未执行结果，不能把未执行 smoke 记为 PASS。
-3. Browser 不扩张，Mail maintenance，Remote 冻结；不增加 delete、任意 shell、自动发送或未经批准的工具。
-4. 每次交付执行规定 compileall、完整单元测试、精确注册/兼容性检查、git diff --check，并同步本状态文件。真实测试只使用获批范围和专用 fixture，保留 MANUAL CHECK。
+1. 保持冻结的 42-tool public surface 和旧 36 接口兼容；等待用户单独批准是否 merge main。
+2. Browser 不扩张，Mail maintenance，Remote 冻结；不增加 delete、任意 shell、自动发送或未经批准的工具。
+3. Remote LAN smoke 仍未完成且不属于 v1 acceptance；既有并发竞态保留为 residual risk。
+4. 后续交付继续执行规定 compileall、完整单元测试、精确注册/兼容性检查、git diff --check，并同步本状态文件。
 
 ## 8. 最近一次更新
 
-2026-09-05（Europe/Paris）
+2026-09-06（Europe/Paris）
+
+## Goal C 验收历程（2026-09-05 至 2026-09-06）
+
+复用已有 42-tool 实现；VS Code 固定 --new-window，新增受控 demo smoke，不扩展 Browser/Mail/Remote。Demo 1–4、5、8、9 自动步骤通过；1/2/5/8 的人工显示确认待完成，6/7 缺邮箱选择与导师草稿字段，未执行。详见 docs/V1_ACCEPTANCE.md，feature freeze 尚未达成。保留所有 fixture，未发送邮件，未 commit/push/merge。Goal B 已通过 612 项回归及授权剪贴板固定文本匹配。
+
+Goal C latest automated verification (2026-09-05): compileall PASS; complete 612 tests PASS; 42 unique registrations PASS; original 36 signatures and implementation modules unchanged PASS; FAILSAFE PASS; git diff --check PASS. This does not resolve pending real-mail prerequisites or manual checks.
+
+Goal C Demo 6 首次只读验收为 bachelor_mail=EMPTY_TODAY、master_mail=MAIL_LIST_NOT_FOUND、qq_mail=MAIL_ITEMS_NOT_PARSED。C.1 修复两个维护性回归：master 摘要接入既有带锁 refresh-token 生命周期并在读取列表前校验 Graph 身份；QQ 对真实出现的单数字日 INTERNALDATE 做限定规范化，继续使用 EXAMINE/UID/BODY.PEEK。确定性回归覆盖身份不匹配、刷新失败、畸形 Graph 列表和 QQ 日期格式。第二次真实只读验收三邮箱均通过：bachelor/QQ=EMPTY_TODAY，master=READY，均为今日0封；没有草稿、发送或邮件状态修改。最终完整 619 项单测通过；既有 Remote 并发用例隔离8次中1次失败，未修改冻结的 Remote。Demo 1/2/5/8 已获用户人工 PASS。
+
+Goal C.2 对 master_mail 草稿路径的最小修复复用了既有带锁 refresh-token 生命周期，移除了旧 access-token Credential Manager 读取，增加 Graph 草稿只读元数据校验（isDraft、发件人、收件人、主题、正文）并让 Graph 请求失败 fail closed，不进入未验证 Edge fallback。聚焦草稿测试 18/18 通过。授权的真实重试返回 GRAPH_API/ERROR、无 draft reference、sent=false、send_attempted=false；前后两次只读重复检查均为 15 个草稿、零精确匹配，未留下可验证草稿；未调用 send。Demo 7 仍 FAIL/BLOCKED，v1 freeze 尚未完成。
+
+Goal C.3 确认真实 refresh token 可取得 Graph audience 的 Mail.ReadWrite delegated token，授权能力不是阻塞。Graph create-message 的请求体曾错误复用 sendMail 的 `{message: ...}` 外层，已改为直接 Message JSON；确定性 regression 先失败后通过。授权重试实际创建了一个精确匹配草稿，但新草稿省略 from/sender，导致本地校验返回 INVALID_DRAFT，随后缺失的状态映射触发 KeyError，工具最终仍返回 ERROR 且没有 reference。只读复核确认 16 个草稿中恰有一个目标对象，isDraft/收件人/主题/正文匹配且稳定 Graph id 存在；校验器现只在已完成 /me 身份验证的前提下接受 owner 字段缺失，若字段存在仍必须匹配，并补齐 INVALID_DRAFT→ERROR 映射。聚焦草稿测试 21/21、最终完整 626/626 通过，compileall、42/42、旧36签名、windows-gui、FAILSAFE、diff check 均通过。此前一次完整回归及首次隔离复跑仅命中已冻结 Remote 并发竞态，隔离8次6 PASS/2 FAIL，未修改 Remote。未再次 POST，未调用 send，草稿 NOT SENT；因真实工具调用没有返回 reference，Demo 7 继续 FAIL/BLOCKED。
+
+Goal C.4 通过私有、非 MCP 的严格只读恢复路径收口同一草稿：先验证 master Graph `/me` 身份，只读取最多100个草稿并拒绝分页，要求 exactly one isDraft/收件人/主题/正文匹配且 stable Graph id 存在；0个、多个、身份/元数据不匹配均 fail closed。普通 `create_mail_draft` 不自动调用恢复逻辑，不获得宽泛 dedupe 语义。真实恢复返回 READY/GRAPH_API/GRAPH_DRAFT_ID；恢复前后草稿总数均为16，目标精确匹配仍为1，reference fingerprint 一致。未 POST、未 send，sent=false、send_attempted=false，NOT SENT。Demo 7 因此 PASS，九项 demo 全部通过，v1 feature freeze 达成。最终 compileall、完整631/631、恢复/发送聚焦41/41、42/42 unique、旧36签名、windows-gui、FAILSAFE、diff check 均通过。

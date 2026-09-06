@@ -60,7 +60,10 @@ def launch_app(alias: str, *, resolver: Callable = resolve_app,
         executable = resolver(alias)
         with paths.pinned(executable, allow_links=True) as lease:
             paths.require_file(lease)
-            launcher(executable)
+            if alias == 'vscode':
+                launcher(executable, ('--new-window',))
+            else:
+                launcher(executable)
         return {'status': 'ok', 'code': 'launch_requested', 'app': alias}
     except Exception as error:
         return paths.error_result(error)
@@ -107,7 +110,8 @@ def open_path(path: SkipValidation[str]) -> dict:
 def open_app(app: SkipValidation[str]) -> dict:
     """Launch a fixed installed alias: notepad, calculator, explorer, edge, vscode.
 
-    No executable paths, arguments, URLs or interpreters. Returns launch requested,
+    No caller executable paths, arguments, URLs or interpreters. VS Code uses a
+    fixed --new-window flag to avoid restoring an existing editor session. Returns launch requested,
     not a claim that an application window is ready.
     """
     return launch_app(app)

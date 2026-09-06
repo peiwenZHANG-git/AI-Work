@@ -18,8 +18,8 @@ from .mail_backends import (
     GraphReadonlyBackend,
     MailDraftRequest,
     MailDraftResult,
-    WindowsCredentialManagerTokenStore,
 )
+from .mail_digest import refresh_master_graph_token
 from .mail_summary import _ensure_mailbox_page
 from .mailboxes import (
     MAILBOX_IDENTITIES,
@@ -37,7 +37,6 @@ _MAX_BODY_LENGTH = 100_000
 _GRAPH_FALLBACK_STATUSES = {
     BackendStatus.NOT_AUTHENTICATED,
     BackendStatus.TOKEN_EXPIRED,
-    BackendStatus.REQUEST_FAILED,
 }
 _STATUS_MAP = {
     BackendStatus.READY: 'READY',
@@ -47,6 +46,8 @@ _STATUS_MAP = {
     BackendStatus.FALLBACK_REQUIRED: 'NOT_READY',
     BackendStatus.FORBIDDEN: 'ERROR',
     BackendStatus.IDENTITY_MISMATCH: 'IDENTITY_MISMATCH',
+    BackendStatus.INVALID_DRAFT: 'ERROR',
+    BackendStatus.DRAFT_NOT_FOUND: 'ERROR',
 }
 _COMPOSE_SELECTORS = {
     'master_mail': {
@@ -74,6 +75,17 @@ _COMPOSE_SELECTORS = {
 _ACTIVATION_TYPES = {'button', 'splitbutton', 'menuitem', 'toolbaritem'}
 _INPUT_TYPES = {'edit', 'document', 'custom'}
 _MAX_UIA_CONTROLS = 750
+
+
+class _RefreshingMasterGraphTokenStore:
+    """Obtain a short-lived Graph token through the existing refresh flow."""
+
+    def get_access_token(self) -> str | None:
+        payload = refresh_master_graph_token(
+            'https://graph.microsoft.com/Mail.ReadWrite offline_access',
+        )
+        token = payload.get('access_token') if isinstance(payload, dict) else None
+        return token if isinstance(token, str) and token else None
 
 
 def _recipient_address(value: str) -> str:
@@ -245,11 +257,20 @@ def _create_with_edge(
 
 def _graph_backend() -> GraphReadonlyBackend:
     config = GraphBackendConfig.from_environment()
+    config = GraphBackendConfig(
+        tenant_id=config.tenant_id,
+        client_id=config.client_id,
+        mailbox=config.mailbox,
+        token_service=config.token_service,
+        token_username=config.token_username,
+        endpoint=config.endpoint,
+        identity_endpoint=config.identity_endpoint,
+        draft_select_fields=config.draft_select_fields,
+        verify_created_draft=True,
+    )
     return GraphReadonlyBackend(
         config=config,
-        token_store=WindowsCredentialManagerTokenStore(
-            config.token_service, config.token_username,
-        ),
+        token_store=_RefreshingMasterGraphTokenStore(),
     )
 
 
@@ -262,6 +283,43 @@ def _backend_for_identity(identity: MailboxIdentity) -> Any:
             identity, request,
         ),
     )
+
+
+def _recover_master_draft_after_known_failure(
+    request: MailDraftRequest,
+) -> dict[str, Any]:
+    """Read-only recovery for the known v1 acceptance post-create failure."""
+    identity = MAILBOX_IDENTITIES['master_mail']
+    try:
+        result = _graph_backend().recover_draft(request)
+        return {
+            'mailbox_id': identity.mailbox_id,
+            'display_name': identity.display_name,
+            'backend': 'GRAPH_API',
+            'status': _STATUS_MAP[result.status],
+            'message': result.message,
+            'to': request.to,
+            'subject': request.subject,
+            'draft_reference': result.draft_reference,
+            'reference_kind': result.reference_kind,
+            'sent': False,
+            'send_attempted': False,
+        }
+    except Exception as error:
+        LOGGER.exception('%s: draft recovery ERROR', identity.mailbox_id)
+        return {
+            'mailbox_id': identity.mailbox_id,
+            'display_name': identity.display_name,
+            'backend': 'GRAPH_API',
+            'status': 'ERROR',
+            'message': f'{type(error).__name__}: {error}',
+            'to': request.to,
+            'subject': request.subject,
+            'draft_reference': None,
+            'reference_kind': None,
+            'sent': False,
+            'send_attempted': False,
+        }
 
 
 def _create_draft_mailbox(

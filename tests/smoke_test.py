@@ -153,6 +153,171 @@ def clipboard_owner_smoke() -> int:
     return 1 if failures else 0
 
 
+def v1_remaining_local_demos() -> int:
+    """Demos 5, 8 and 9: public fixture and fixed harmless text only."""
+    import hashlib
+    import uuid
+    from windows_gui import applications
+    from windows_gui.browser_session import start_browser_session, navigate_browser, inspect_browser
+    from windows_gui.browser_download import download_web_file
+    from windows_gui.clipboard import clipboard
+    from windows_gui.system_status import get_system_status
+    artifact = PROJECT_ROOT / 'tests/smoke_artifacts' / ('v1-extra-' + uuid.uuid4().hex)
+    artifact.mkdir(parents=True, exist_ok=False)
+    url = 'https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf'
+    def browser_demo():
+        start_browser_session()
+        navigate_browser(url)
+        inspect_browser(max_chars=1000)
+        result = download_web_file(url, str(artifact), filename='w3c-dummy.pdf')
+        raw = (artifact / 'w3c-dummy.pdf').read_bytes()
+        assert result['status'] == 'DOWNLOADED' and raw.startswith(b'%PDF-')
+        assert result['sha256'] == hashlib.sha256(raw).hexdigest()
+        return 'public W3C PDF; bytes=' + str(len(raw)) + '; sha256=' + result['sha256']
+    step('demo 5 browser navigation and verified PDF download', browser_demo)
+    def notepad_demo():
+        fixture = 'AI-Work clipboard smoke test'
+        written = clipboard({'operation': 'write', 'text': fixture})
+        assert written.get('code') == 'written', 'write failed; read skipped'
+        read = clipboard({'operation': 'read'})
+        assert read.get('code') == 'read' and read.get('text') == fixture, 'unexpected content omitted'
+        name = 'AI-Work-' + artifact.name + '.txt'
+        target = artifact / name
+        with target.open('x', encoding='utf-8'):
+            pass
+        executable = applications.resolve_app('notepad')
+        applications._launch(executable, (str(target),))
+        wait_for_notepad_title(name)
+        focus_window_and_type(name, read['text'])
+        return name + '; fixed clipboard text read and typed; unsaved'
+    step('demo 8 clipboard to dedicated Notepad', notepad_demo)
+    result = get_system_status()
+    for component in ('foreground_window', 'battery', 'disks', 'screen', 'mouse'):
+        value = result.get(component, {})
+        if value.get('status') == 'ok':
+            pass_result('demo 9 ' + component, str(value) if component != 'foreground_window' else 'foreground observed; title omitted')
+        else:
+            fail_result('demo 9 ' + component, 'unknown/unavailable')
+    manual_check('Confirm new Notepad shows exactly AI-Work clipboard smoke test. Leave it unsaved and open. Confirm dedicated browser displays the W3C test PDF.')
+    print(f'Artifacts retained: {artifact}', flush=True)
+    return 1 if failures else 0
+
+
+def v1_local_demos() -> int:
+    """Real demos 1-4 on owned files; no existing editor/document is a test target."""
+    import hashlib
+    import os
+    import uuid
+    from unittest.mock import patch
+    from windows_gui import applications, files, local_paths
+
+    artifact = PROJECT_ROOT / 'tests/smoke_artifacts' / ('v1-local-' + uuid.uuid4().hex)
+    artifact.mkdir(parents=True, exist_ok=False)
+    downloads, documents = artifact / 'Downloads', artifact / 'Documents'
+    downloads.mkdir(); documents.mkdir()
+    name = 'AI-Work-' + artifact.name + '.pdf'
+
+    def pdf_bytes():
+        # Tiny real one-page PDF, no JS, annotations, actions, attachments or links.
+        stream = b'BT /F1 20 Tf 50 700 Td (AI-Work v1 controlled PDF fixture) Tj ET\n'
+        objects = [b'<< /Type /Catalog /Pages 2 0 R >>',
+                   b'<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+                   b'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>',
+                   b'<< /Length ' + str(len(stream)).encode() + b' >>\nstream\n' + stream + b'endstream',
+                   b'<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>']
+        data = bytearray(b'%PDF-1.4\n'); offsets = [0]
+        for number, value in enumerate(objects, 1):
+            offsets.append(len(data))
+            data.extend(str(number).encode() + b' 0 obj\n' + value + b'\nendobj\n')
+        xref = len(data)
+        data.extend(b'xref\n0 6\n0000000000 65535 f \n')
+        for offset in offsets[1:]:
+            data.extend(f'{offset:010d} 00000 n \n'.encode())
+        data.extend(b'trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n' + str(xref).encode() + b'\n%%EOF\n')
+        return bytes(data)
+
+    payload = pdf_bytes()
+    for filename in ('move-fixture.pdf', 'collision-fixture.pdf', name):
+        with (downloads / filename).open('xb') as stream:
+            stream.write(payload)
+    for filename in ('move-fixture.pdf', 'collision-fixture.pdf'):
+        os.utime(downloads / filename, (1_600_000_000, 1_600_000_000))
+    policy = local_paths.PathPolicy({'Downloads': downloads, 'Documents': documents})
+
+    def visible_matching(fragment):
+        found = set()
+        def collect(hwnd, _):
+            if win32gui.IsWindowVisible(hwnd) and fragment.casefold() in win32gui.GetWindowText(hwnd).casefold():
+                found.add(hwnd)
+        win32gui.EnumWindows(collect, None)
+        return found
+
+    def wait_match(fragment, previous=frozenset()):
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            matches = visible_matching(fragment) - set(previous)
+            if len(matches) == 1:
+                return next(iter(matches))
+            time.sleep(0.2)
+        raise TimeoutError('unique owned fixture window was not observed')
+
+    def expect(call, code):
+        result = call()
+        if result.get('code') != code:
+            raise AssertionError(result.get('code', 'missing_code'))
+        return result
+
+    step('42-tool registration', check_registration)
+    previous = visible_matching('Visual Studio Code')
+    opened = step('demo 1 open_app vscode', lambda: expect(lambda: applications.open_app('vscode'), 'launch_requested'))
+    if opened:
+        step('demo 1 distinct new VS Code window', lambda: wait_match('Visual Studio Code', previous))
+    else:
+        fail_result('demo 1 distinct new VS Code window', 'launch prerequisite failed')
+    with patch.object(local_paths, 'PathPolicy', return_value=policy):
+        latest = step('demo 2 complete latest-PDF selection', lambda: expect(lambda: files.inspect_path({
+            'operation': 'search', 'path': 'Downloads', 'extension': '.pdf',
+            'max_depth': 0, 'sort': 'modified_desc', 'limit': 1}), 'ok'))
+        if (latest and latest['latest_in_scope_verified']
+                and latest['entries'][0]['path'] == 'Downloads/' + name):
+            opened_pdf = step('demo 2 open_path real owned PDF', lambda: expect(
+                lambda: applications.open_path(latest['entries'][0]['path']), 'open_requested'))
+            if opened_pdf:
+                hwnd = step('demo 2 unique PDF viewer window', lambda: wait_match(name))
+                if hwnd:
+                    def capture_fixture():
+                        focus_window(name)
+                        time.sleep(1)
+                        if win32gui.GetForegroundWindow() != hwnd:
+                            raise RuntimeError('fixture did not gain foreground')
+                        left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+                        image_path = artifact / 'pdf-view.png'
+                        pyautogui.screenshot(region=(left + 8, top + 80, right - left - 16,
+                                                    bottom - top - 88)).save(image_path)
+                        return str(image_path)
+                    step('demo 2 owned PDF rendering evidence', capture_fixture)
+        else:
+            fail_result('demo 2 latest PDF identity', 'scan incomplete or wrong latest fixture')
+        step('demo 4 create course folder', lambda: expect(lambda: files.manage_path({
+            'operation': 'mkdir', 'path': 'Documents/HCI'}), 'created'))
+        step('demo 3 move specified PDF without overwrite', lambda: expect(lambda: files.manage_path({
+            'operation': 'move', 'source': 'Downloads/move-fixture.pdf',
+            'destination': 'Documents/HCI/move-fixture.pdf'}), 'moved'))
+        step('demo 3 reject concurrent/existing destination', lambda: expect(lambda: files.manage_path({
+            'operation': 'move', 'source': 'Downloads/collision-fixture.pdf',
+            'destination': 'Documents/HCI/move-fixture.pdf'}), 'destination_exists'))
+        def check_preserved():
+            assert hashlib.sha256((documents / 'HCI/move-fixture.pdf').read_bytes()).digest() == hashlib.sha256(payload).digest()
+            assert (downloads / 'collision-fixture.pdf').exists()
+            assert not (downloads / 'move-fixture.pdf').exists()
+            return 'destination hash preserved; collision source preserved'
+        step('demo 3 file contents and source state', check_preserved)
+    manual_check('Inspect the controlled PDF marker and new empty VS Code window. Leave fixture windows and artifacts open; no cleanup was performed.')
+    print(f'Artifacts retained: {artifact}', flush=True)
+    print('FAIL: v1 local demos' if failures else 'PASS: v1 local demos automated steps', flush=True)
+    return 1 if failures else 0
+
+
 def local_files_smoke(*, open_fixture: bool = False) -> int:
     """Goal-owned artifacts only; no real Downloads/Documents reads or writes.
 
@@ -772,6 +937,10 @@ def uia_worker(arguments: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ['--v1-extra-demos']:
+        raise SystemExit(v1_remaining_local_demos())
+    if sys.argv[1:] == ['--v1-local-demos']:
+        raise SystemExit(v1_local_demos())
     if sys.argv[1:] == ['--clipboard-owner']:
         raise SystemExit(clipboard_owner_smoke())
     if sys.argv[1:] == ['--system-status']:

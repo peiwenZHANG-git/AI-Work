@@ -302,7 +302,7 @@ Smoke test 只使用唯一命名的专用记事本文件，测试结果写入 `t
 
 - `create_mail_draft(mailbox_id, to, subject, body)` 是第 27 个工具；原 26 个工具的名称、参数和返回结构保持不变。
 - 草稿创建工具只保存，不发送；返回包含邮箱、状态、draft reference、收件人和主题，不返回正文。
-- 硕士 Outlook 在 Graph 可用时先调用 `/me` 校验登录账号，再用 `/me/messages` 创建草稿；Graph 未配置、未认证、token 失效或请求失败时回退已验证 Edge Profile。
+- 硕士 Outlook 在 Graph 可用时先调用 `/me` 校验登录账号，再用 `/me/messages` 创建并只读复核草稿；未配置、未认证或 token 失效可回退已验证 Edge Profile，Graph 请求失败则 fail closed，避免不明确的重复草稿。
 - 本科网易和 QQ 邮箱复用现有 Edge Profile / 服务域名校验，再通过 UIA 查找显式的新建邮件、收件人、主题、正文和存草稿控件；找不到必需控件时失败，不会改用发送或关闭窗口动作。
 - QQ 邮箱权限更新为 READ + DRAFT，但仍不允许 SEND。当前未实现 Reply、Forward 或带附件的草稿/发送；摘要只显示附件名称、MIME 类型和大小，不下载或解码附件。Send 只能通过 `send_mail_draft` 发送已有草稿。
 - Graph 草稿路径需要委托 token 具备 `Mail.ReadWrite`；项目已提供一次性 authorization code + PKCE 登录命令。源码和普通配置不会保存授权码、密码、cookie、sid 或 token，refresh token 只写入 Windows Credential Manager。
@@ -396,3 +396,7 @@ CDP endpoint 必须分别通过 `AI_WORK_BACHELOR_CDP_ENDPOINT` 和 `AI_WORK_QQ_
 - 真实 GUI 验证应只使用 `tests/smoke_test.py` 创建的专用文件和窗口。
 - 默认 Smoke test 只操作专用 Notepad fixture。显式追加 `--mailbox-readonly` 时只调用一次统一窗口管理层，优先复用或恢复现有 Profile 窗口，并验证运行时窗口绑定及服务域名；它不会每次额外创建三个邮箱窗口，也不会关闭用户原有窗口或打开邮件。
 - 截图、Python 缓存和 smoke artifacts 已由 `.gitignore` 排除。
+
+## v1 acceptance and freeze
+
+The v1 public surface is frozen at 42 tools. All nine demos are accepted in [the v1 acceptance record](docs/V1_ACCEPTANCE.md), including read-only recovery of the single Graph draft created during Demo 7 without a duplicate POST or send. Goal C adds no public tools. VS Code launches in a fixed new window. Main merge requires separate user approval.

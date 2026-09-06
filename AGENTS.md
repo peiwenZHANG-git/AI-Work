@@ -189,3 +189,10 @@ Do not commit or rely on generated runtime files:
 - `*.pyc`, `*.pyo`, or other `*.py[cod]` files
 
 Do not remove existing smoke artifacts or screenshots unless the user explicitly requests cleanup.
+
+## Goal C acceptance boundary
+
+- Keep the frozen v1 public surface at 42. Only safety-blocking maintenance and acceptance/documentation corrections are in scope.
+- Record each demo input/result/status/limitations/manual check in docs/V1_ACCEPTANCE.md. Unexecuted or manually unconfirmed demos are not PASS.
+- Use only owned smoke fixtures; preserve windows and artifacts. Real mailbox selection and mentor draft fields require explicit user input. Never send for demo acceptance.
+- Goal C's nine demos are accepted. Do not merge main without separate user approval.

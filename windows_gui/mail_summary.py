@@ -471,10 +471,86 @@ def _browser_backend_for_identity(
     )
 
 
+class SummaryGraphBackend(GraphReadonlyBackend):
+    """Summary-only refresh integration; retain the existing cross-process token lock."""
+
+    def summarize_today(self, max_emails: int) -> MailBackendResult:
+        from types import SimpleNamespace
+        from .mail_digest import refresh_master_graph_token
+
+        if not self.config.is_configured:
+            return MailBackendResult(
+                BackendStatus.NOT_AUTHENTICATED,
+                'Graph configuration unavailable',
+            )
+        try:
+            payload = refresh_master_graph_token(
+                scope='https://graph.microsoft.com/Mail.Read offline_access'
+            )
+            token = payload.get('access_token')
+            payload = None
+            if not isinstance(token, str) or not token:
+                return MailBackendResult(
+                    BackendStatus.NOT_AUTHENTICATED,
+                    'Graph refresh unavailable',
+                )
+            response = self.transport(
+                self.config.identity_endpoint,
+                {'Authorization': 'Bearer ' + token},
+                10.0,
+            )
+            if response.status_code == 401:
+                return MailBackendResult(
+                    BackendStatus.TOKEN_EXPIRED, 'Graph token rejected'
+                )
+            if response.status_code != 200:
+                return MailBackendResult(
+                    BackendStatus.REQUEST_FAILED,
+                    'Graph identity query failed',
+                )
+            identity = response.json()
+            if not isinstance(identity, dict):
+                return MailBackendResult(
+                    BackendStatus.REQUEST_FAILED,
+                    'Graph identity response invalid',
+                )
+            if self.config.mailbox.casefold() not in {
+                str(identity.get(key) or '').casefold()
+                for key in ('mail', 'userPrincipalName')
+            }:
+                return MailBackendResult(
+                    BackendStatus.IDENTITY_MISMATCH,
+                    'Graph identity mismatch',
+                )
+
+            def checked_transport(url, headers, timeout):
+                reply = self.transport(url, headers, timeout)
+                if reply.status_code == 200:
+                    data = reply.json()
+                    if not isinstance(data, dict) or not isinstance(data.get('value'), list):
+                        raise ValueError('invalid list')
+                    for item in data['value']:
+                        if not isinstance(item, dict):
+                            raise ValueError('invalid item')
+                        self._parse_received_datetime(item.get('receivedDateTime', ''))
+                return reply
+
+            backend = GraphReadonlyBackend(
+                config=self.config,
+                token_store=SimpleNamespace(get_access_token=lambda: token),
+                transport=checked_transport,
+            )
+            return backend.summarize_today(max_emails)
+        except Exception:
+            return MailBackendResult(BackendStatus.REQUEST_FAILED, 'Graph summary unavailable')
+        finally:
+            token = None
+
+
 def _backend_for_identity(identity: MailboxIdentity) -> Any:
     if identity.mailbox_id == 'master_mail':
         config = GraphBackendConfig.from_environment()
-        return GraphReadonlyBackend(
+        return SummaryGraphBackend(
             config=config,
             token_store=WindowsCredentialManagerTokenStore(
                 config.token_service, config.token_username
