@@ -449,6 +449,9 @@ partial 或内部 200 条截断会明确显示 partial，计数限于观察范�
 系统组件失败显示 unknown，电池不存在显示 not_present。组件降级不阻止其他区块及晨报生成；
 运行 `ok` 表示 artifact 成功生成，不代表全部依赖健康。Toast 只显示固定标题和计数，失败单独标记 degraded。
 
-部署时必须保留安装命令使用的工作目录与 Python。若迁移目录，先在新目录完成验证，再用同一
-`--computer-brief` 安装入口更新并 `--check`；不要删除仍被任务引用的 worktree。
+部署时使用独立、detached 的 `D:\21781\Documents\Codex\AI-Work-runtime` Git worktree，
+并由该目录中的同一 `--computer-brief --root <runtime>` 安装入口更新和 `--check`。
+该 runtime 固定检出已验证的 `origin/main`，不占用 feature 分支，也不要求修改用户的脏 main checkout；
+升级时先在独立开发 worktree 完成验证和 main 合并，再将干净 runtime 更新到新的已验证 main 并重新安装、检查和触发。
+不得删除仍被计划任务引用的 runtime 目录。
 本地 Windows scheduler 为主要实现，外部 ChatGPT 08:00 automation 可能重复提醒，需用户自行选择停用；本实现不修改它。
