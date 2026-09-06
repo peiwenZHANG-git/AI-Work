@@ -12,7 +12,7 @@
 
 兼容性基线：保留 `windows_gui_mcp.py` stdio 入口、服务器名 `windows-gui` 和导出的 `mcp` 对象；Goal A 新增 inspect_path/open_path/manage_path/open_app，Goal B 新增 clipboard/get_system_status，当前恰好 42 个唯一工具；旧 36 个工具的签名、返回结构及实现保持兼容。PyAutoGUI `FAILSAFE` 开启；ASCII 走 PyAutoGUI，非 ASCII 走原生 SendInput。v1 已批准的 public surface 上限为 42，之后 Goal C 做九项 demo 验收与 freeze。
 
-当前开发重点：Goal A/B/C 已完成 v1 验收，九项 demo 全部 PASS，公共 surface 冻结为 42 tools；等待单独批准 main merge。Browser 停止功能扩张，Mail 仅 maintenance，Remote 冻结；不推进 LAN smoke。不得新增 delete、任意 shell、自动发送或六个获批工具之外的公共接口。
+当前开发重点：v1 已完成九项验收并合入 main，公共 surface 冻结为 42 tools。v1.1 Agent Productization 在不增加 MCP 工具的前提下完成统一入口、五个有界工作流和隐私安全活动历史，等待 feature branch review/merge。Daily Computer Brief 已由另一独立 Goal 合入 main，不属于 Agent 的工作流 registry。Browser 停止功能扩张，Mail 仅 maintenance，Remote 冻结；不推进 LAN smoke。
 
 邮箱稳定边界：继续保留固定 Edge Profile、READ/DRAFT/SEND 最小权限流程；所有发送必须先创建草稿并获得显式确认，QQ 邮箱永不发送，身份或服务域名无法确认时立即停止处理。
 
@@ -23,6 +23,8 @@
 - 模块职责遵循 `AGENTS.md`：鼠标/截图 `mouse.py`、键盘 `keyboard.py`、窗口 `windows.py`、UIA/菜单/保存对话框 `uia.py`；邮箱链路为 `mailboxes.py`（固定身份与 Edge 启动）、`mail_summary.py`（只读摘要与就绪校验）、`imap_mail.py`（QQ/网易 IMAP 只读传输）、`browser_mail.py`（可选 CDP/DOM 传输）、`mail_backends.py`（后端分发）、`mail_search.py`、`mail_draft.py`、`mail_send.py`。
 - 邮件后端优先级：Outlook（master_mail）优先 Microsoft Graph，失败回退经验证的 Edge 页面；QQ 与本科网易摘要优先 IMAP 只读后端，可选启用回环 CDP 浏览器 DOM 后端。
 - 摘要与助手：`mail_digest.py` + `scripts/daily_mail_digest.py` 由计划任务触发；`mail_assistant.py` + `mail_assistant_page.py` + `scripts/mail_assistant_server.py` 提供本机 8931 网页。助手 Web 层校验 `Host`、`Origin` 和 JSON Content-Type；本科 SMTP 发送前先保存 IMAP 草稿。
+- v1.1 本地 Agent：同一 8931 宿主提供 command palette、tray 和 `Win+Alt+A`；`workflows.py` 只编译 study workspace、coding workspace、file cleanup、course download、mail draft 五类最多8步计划，`orchestrator.py` 复用 TaskCenter 确认和短时请求去重，`mcp_executor.py` 以单执行器/8项队列持有长期 stdio MCP 子进程。副作用中断不重放。
+- `activity_history.py` 使用独立有界 JSONL：固定模板、最多2000事件/30天、约1 MiB/文件及3个轮转；页面按最近50个任务展开。记录不含剪贴板内容、邮件字段、绝对路径、完整URL、凭据或异常原文。
 - Outlook 一次性登录：`master_oauth.py` + `scripts/authenticate_master_mail.py` 提供 authorization code + PKCE、回环回调、state 校验和 refresh token 专用写入。
 
 ## 3. 已完成功能（已提交）
@@ -85,6 +87,9 @@
 
 ## 4. 当前工作
 
+- v1.1 Agent Productization 已实现但尚未合入 main：统一自然语言入口保留原邮件助手兼容路由，并为所有变异请求增加 CSRF；tray 在固定快捷键被占用时继续可用并显示固定提示。启动任务只提供定义、dry-run/check/显式 install，本 feature branch 未持久安装。
+- v1.1 自动验证：compileall PASS；基于最新 main 的完整 678 项单元测试 PASS；42/42 unique、旧36与v1 42签名快照、`windows-gui`、FAILSAFE 和 diff hygiene 均纳入最终交付门禁。受控 productization smoke 的长期 MCP 子进程、学习/代码自有 fixture、文件 preview→confirm→单次移动、脱敏历史、临时 loopback 宿主、command palette、tray 生命周期和关闭均自动 PASS；`Win+Alt+A` 当时被外部程序占用，按设计显示固定冲突提示，tray 保持可用。自有窗口保留供 MANUAL CHECK。
+
 - Goal B 验证（2026-09-05）：compileall PASS，完整 612 项单元测试 PASS，42 tools / 42 unique names、旧 36 签名、diff check PASS。真实 `--system-status` smoke 的前台/电池/磁盘/屏幕/鼠标全部 PASS；`--clipboard-owner` 只验证真实隐藏 owner 的创建/锁定/关闭，PASS，未读取/清空/写入剪贴板，不等于读写 smoke。
 - 真实剪贴板固定文本 write/read/paste 已在用户授权下完成，原剪贴板内容未读取或备份；课程网页/PDF与导师草稿也已按受控字段完成验收。九项 demo 的最终事实以 `docs/V1_ACCEPTANCE.md` 为准。
 
@@ -96,6 +101,7 @@
 ## 5. 已知问题与阻塞
 
 - 本次一次完整回归出现既有 Remote `test_concurrent_replay_has_single_winner` 失败：现有 `_consume_action_token` 在验证 task/action 前 pop token，错误绑定请求先到时可能导致两个请求都拒绝。单独复验及随后完整回归通过，但竞态未修复；Remote 代码/测试未改动，不把偶发通过等同已解决。Remote 保持冻结。
+- v1.1 受控 smoke 时固定 `Win+Alt+A` 已被其他本机程序占用；产品按规定保留 tray 并显示固定可理解提示，未覆盖对方注册。实际热键触发仍依赖用户释放该组合键，属于环境残余限制。
 - 新文件能力不构成对管理员/内核/恶意驱动的隔离。测试使用本机 Windows/NTFS；异常共享锁或其他原生文件系统行为可 fail closed。时间预算在循环边界检查，无法强制中断已阻塞内核 I/O；目录扫描不是并发事务快照。文件名使用实际拼写，路径大小写歧义安全拒绝。文档/应用关联是本机信任配置；open_requested/launch_requested 不保证窗口就绪，分发后应用异步读取仍可能发生后续对象变化。
 
 - Outlook 一次性登录命令已具备，但本会话未执行真实 Microsoft 登录或用真实租户验证端到端授权。已有 refresh token 时，摘要/助手会安全刷新并轮换。摘要/搜索需要 `Mail.Read` 凭据，草稿需要 `Mail.ReadWrite`，发送还需要 `Mail.Send`。
@@ -124,9 +130,9 @@
 
 ## 7. 下一步
 
-1. 保持冻结的 42-tool public surface 和旧 36 接口兼容；等待用户单独批准是否 merge main。
-2. Browser 不扩张，Mail maintenance，Remote 冻结；不增加 delete、任意 shell、自动发送或未经批准的工具。
-3. Remote LAN smoke 仍未完成且不属于 v1 acceptance；既有并发竞态保留为 residual risk。
+1. Review v1.1 Agent Productization feature branch；获单独批准后再合入 main。main 合并后才可显式安装 current-user Agent startup task。
+2. 保持冻结的 42-tool public surface；Browser 不扩张，Mail maintenance，Remote 冻结，不增加 delete、任意 shell或自动发送。
+3. 已合入的 Daily Computer Brief 保持独立，不加入 Agent 工作流；Remote LAN smoke 仍在 v1/v1.1 验收范围外，既有并发竞态保留为 residual risk。
 4. 后续交付继续执行规定 compileall、完整单元测试、精确注册/兼容性检查、git diff --check，并同步本状态文件。
 
 ## 8. 最近一次更新

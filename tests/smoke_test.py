@@ -318,6 +318,151 @@ def v1_local_demos() -> int:
     return 1 if failures else 0
 
 
+def agent_productization_smoke() -> int:
+    """Controlled v1.1 host/workflow smoke using only owned fixtures."""
+    import importlib.util
+    import threading
+    import urllib.request
+    import uuid
+    from http.server import ThreadingHTTPServer
+    from unittest.mock import patch
+
+    from windows_gui import applications, files, local_paths
+    from windows_gui.activity_history import read_activity_history, record_activity
+    from windows_gui.mcp_executor import PersistentMcpExecutor
+    from windows_gui.orchestrator import AgentOrchestrator
+    from windows_gui.tray import TrayController
+
+    artifact = PROJECT_ROOT / 'tests/smoke_artifacts' / ('agent-' + uuid.uuid4().hex)
+    artifact.mkdir(parents=True, exist_ok=False)
+    downloads, documents = artifact / 'Downloads', artifact / 'Documents'
+    downloads.mkdir(); documents.mkdir()
+    study_name = 'HCI-' + artifact.name[-8:]
+    coding_name = 'VR-' + artifact.name[-8:]
+    (documents / study_name).mkdir(); (documents / coding_name).mkdir()
+    source = downloads / 'owned-lecture.pdf'
+    source.write_bytes(b'%PDF-1.4\n% AI-Work owned productization fixture\n')
+    destination = documents / 'HCI'
+    destination.mkdir()
+    policy = local_paths.PathPolicy({'Downloads': downloads, 'Documents': documents})
+    history_path = artifact / 'activity-history.jsonl'
+
+    class ControlledExecutor:
+        def submit(self, tool, arguments):
+            with patch.object(local_paths, 'PathPolicy', return_value=policy):
+                if tool == 'inspect_path':
+                    return files.inspect_path(arguments['request'])
+                if tool == 'manage_path':
+                    return files.manage_path(arguments['request'])
+                if tool == 'open_path':
+                    return applications.open_local(arguments['path'], policy=policy)
+                if tool == 'open_app':
+                    return applications.open_app(arguments['app'])
+            raise AssertionError('unexpected productization smoke tool')
+        def close(self):
+            return None
+
+    def writer(*args, **kwargs):
+        kwargs['path'] = history_path
+        return record_activity(*args, **kwargs)
+
+    orchestrator = AgentOrchestrator(
+        ControlledExecutor(), history_writer=writer,
+        history_reader=lambda **kwargs: read_activity_history(history_path, **kwargs),
+    )
+
+    def workspace(instruction):
+        result = orchestrator.submit(instruction)
+        assert result['status'] == 'SUCCEEDED', result
+        return result['workflow']
+
+    step('42-tool registration', check_registration)
+    def persistent_child():
+        executor = PersistentMcpExecutor()
+        try:
+            result = executor.submit('get_system_status', {}, timeout=20)
+            assert result.get('status') in {'ok', 'partial'}
+            return 'persistent stdio child listed 42 tools and completed read-only status'
+        finally:
+            executor.close()
+    step('persistent MCP child', persistent_child)
+    step('study workspace owned fixture', lambda: workspace(f'打开 {study_name} 学习环境'))
+    step('coding workspace owned fixture', lambda: workspace(f'继续 {coding_name} 项目'))
+
+    def cleanup():
+        staged = orchestrator.submit('把今天下载的 PDF 放到 HCI')
+        assert staged['status'] == 'WAITING_CONFIRMATION', staged
+        assert staged['plan']['preview'] == ['owned-lecture.pdf → Documents/HCI']
+        assert source.exists() and not (destination / source.name).exists()
+        result = orchestrator.confirm(staged['task_id'], staged['confirmation_id'])
+        assert result['status'] == 'SUCCEEDED', result
+        assert not source.exists() and (destination / source.name).is_file()
+        return 'preview confirmed; owned fixture moved once'
+
+    step('file cleanup preview and confirmation', cleanup)
+
+    def history():
+        result = read_activity_history(history_path)
+        raw = history_path.read_text(encoding='utf-8')
+        assert result['events'] and str(artifact) not in raw
+        assert 'owned productization fixture' not in raw
+        return f"{len(result['events'])} sanitized events"
+
+    step('bounded sanitized activity history', history)
+
+    server_path = PROJECT_ROOT / 'scripts' / 'mail_assistant_server.py'
+    spec = importlib.util.spec_from_file_location('agent_smoke_server', server_path)
+    server_module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(server_module)
+    server = None; tray = None; server_thread = None
+    try:
+        # Use a temporary loopback port so an existing 8931 assistant is never
+        # stopped, replaced, or reached accidentally by this fixture.
+        server = ThreadingHTTPServer(('127.0.0.1', 0), server_module.MailAssistantHandler)
+        server_module.PORT = int(server.server_address[1])
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+        base_url = f'http://127.0.0.1:{server_module.PORT}/'
+        tray = TrayController(shutdown=server.shutdown, base_url=base_url)
+        def tray_start():
+            try:
+                tray.start()
+                return 'tray active; Win+Alt+A registered'
+            except server_module.HotkeyUnavailable as error:
+                # Occupancy is an external desktop condition. The required
+                # behavior is a fixed error while the tray stays available.
+                return 'tray active; fixed hotkey conflict reported: ' + str(error)
+        step('tray and Win+Alt+A lifecycle', tray_start)
+
+        def host_page():
+            with urllib.request.urlopen(f'http://127.0.0.1:{server_module.PORT}/api/status', timeout=5) as response:
+                assert json.loads(response.read())['status'] == 'ok'
+            with urllib.request.urlopen(f'http://127.0.0.1:{server_module.PORT}/', timeout=5) as response:
+                html = response.read().decode('utf-8')
+            assert 'id="agent-command"' in html and 'id="agent-plan"' in html
+            return 'loopback health and command palette rendered'
+
+        step('assistant host and command palette', host_page)
+    except Exception as error:
+        fail_result('assistant host/tray lifecycle', error)
+    finally:
+        if server is not None:
+            if server_thread is not None and server_thread.is_alive():
+                server.shutdown()
+            server.server_close()
+        if server_thread is not None:
+            server_thread.join(timeout=5)
+        if tray is not None:
+            tray.stop()
+    step('assistant shutdown', lambda: 'server and tray stopped' if not (server_thread and server_thread.is_alive()) else (_ for _ in ()).throw(RuntimeError('server still running')))
+    orchestrator.close()
+    manual_check('Confirm the owned HCI and VR fixture folders opened and VS Code launched in new windows. No user files were modified.')
+    print(f'Artifacts retained: {artifact}', flush=True)
+    print('FAIL: agent productization smoke' if failures else 'PASS: agent productization smoke automated steps', flush=True)
+    return 1 if failures else 0
+
+
 def local_files_smoke(*, open_fixture: bool = False) -> int:
     """Goal-owned artifacts only; no real Downloads/Documents reads or writes.
 
@@ -937,6 +1082,8 @@ def uia_worker(arguments: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ['--agent-productization']:
+        raise SystemExit(agent_productization_smoke())
     if sys.argv[1:] == ['--v1-extra-demos']:
         raise SystemExit(v1_remaining_local_demos())
     if sys.argv[1:] == ['--v1-local-demos']:

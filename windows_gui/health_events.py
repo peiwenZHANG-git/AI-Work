@@ -19,7 +19,7 @@ MAX_ROTATED_FILES = 3
 MAX_READ_EVENTS = 200
 ALLOWED_COMPONENTS = {
     'mail_digest', 'mail_assistant', 'browser_session', 'mail_cdp', 'mcp',
-    'remote',
+    'remote', 'activity_history',
 }
 ALLOWED_OUTCOMES = {'success', 'warning', 'error'}
 EVENT_SUMMARIES = {
@@ -32,6 +32,7 @@ EVENT_SUMMARIES = {
     'draft_remote_failed': 'Remote AI draft generation failed.',
     'reply_draft_remote_failed': 'Remote AI reply draft generation failed.',
     'assistant_request_failed': 'Mail assistant request failed.',
+    'activity_history_corrupt': 'Invalid activity history entries were skipped.',
     'digest_notification_warning': 'Digest completed but notification was not shown.',
     'worker_recovered': 'Browser session worker auto-recovered.',
     'worker_recovery_failed': 'Browser session worker auto-recovery failed.',

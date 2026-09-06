@@ -90,6 +90,9 @@ These instructions apply to the whole repository. This project is a Windows-only
 - Shared health events must use fixed component/outcome/code allowlists and fixed summaries. Never accept or persist caller-provided detail, exception text, sender, recipient, subject, body, URL, or credential material in the event log.
 - Put one-time Outlook authorization-code login, PKCE, and loopback callback validation in `windows_gui/master_oauth.py`; expose it through `scripts/authenticate_master_mail.py`, not a FastMCP tool.
 - Put natural-language draft generation and local assistant draft/SMTP actions in `windows_gui/mail_assistant.py`; put the loopback HTTP UI in `scripts/mail_assistant_server.py`.
+- Put the fixed five-intent compiler in `windows_gui/workflows.py`, task lifecycle in `windows_gui/orchestrator.py`, the single persistent stdio client in `windows_gui/mcp_executor.py`, and bounded activity records in `windows_gui/activity_history.py`.
+- The local agent may orchestrate only study workspace, coding workspace, file cleanup, course download, and mail draft. Plans are capped at 8 steps; mutation confirmations are TaskCenter-bound and no workflow may compile `send_mail_draft`.
+- Activity history must use fixed templates and sanitized resources. Never persist clipboard content, mail fields, credentials, tokens, cookies, raw exceptions, absolute user paths, full URLs, query strings, fragments, or document contents.
 - The local assistant HTTP server must guard background refresh startup with a lock, return generic details for unexpected failures, and send `nosniff`, `no-referrer`, frame protection, and CSP headers for HTML responses.
 - Put interactive whitelisted credential setup in `scripts/configure_mail_credentials.py`; secrets must arrive only through hidden prompts and must never be accepted from argv, environment, logs, JSON, or test output.
 - Put idempotent scheduled-task recovery in `scripts/install_scheduled_tasks.py`; unit tests must inject the process runner, and actual registration may happen only through an explicit CLI invocation.
@@ -154,7 +157,7 @@ Use the same Python interpreter that has `fastmcp`, `pyautogui`, `pywin32`, `pyw
 Run syntax checks:
 
 ```powershell
-python -m compileall -q windows_gui_mcp.py windows_gui tests
+python -m compileall -q windows_gui_mcp.py windows_gui tests scripts
 ```
 
 Run the complete side-effect-free test suite:
@@ -163,7 +166,7 @@ Run the complete side-effect-free test suite:
 python -m unittest discover -s tests -t . -v
 ```
 
-Confirm that FastMCP registers exactly the documented 42 tools. The unit tests must fail if a tool is missing or unexpectedly added.
+Confirm that FastMCP registers exactly the documented 42 tools. The unit tests must fail if a tool is missing or unexpectedly added, and the v1 42-signature snapshot must remain unchanged.
 
 When the task authorizes real desktop testing, run:
 
@@ -175,6 +178,12 @@ Run explicit mailbox launch and read-only identity/domain smoke coverage only wh
 
 ```powershell
 python tests/smoke_test.py --mailbox-readonly
+```
+
+Run the v1.1 productization smoke only with real-desktop authorization:
+
+```powershell
+python tests/smoke_test.py --agent-productization
 ```
 
 Report every automated `PASS` and `FAIL` and preserve all `MANUAL CHECK` instructions. A timeout, skipped prerequisite, or native UIA worker exit is a failure and must not be described as success.

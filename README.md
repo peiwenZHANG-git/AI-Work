@@ -19,11 +19,14 @@
 - `mail_summary.py`：邮箱身份和页面验证、只读列表解析、今日摘要及重要事项分类。
 - `mail_digest.py`：计划任务摘要、Outlook refresh 轮换、GLM 摘要/翻译和本地 HTML 渲染。
 - `master_oauth.py` / `scripts/authenticate_master_mail.py`：一次性 Outlook OAuth 登录和 refresh token 安全写入。
-- `mail_assistant.py` / `scripts/mail_assistant_server.py`：本机 AI 草稿助手和 `127.0.0.1:8931` 页面。
+- `mail_assistant.py` / `scripts/mail_assistant_server.py`：本机 AI-Work 统一入口和兼容的邮件助手页面，只绑定 `127.0.0.1:8931`。
+- `workflows.py` / `orchestrator.py` / `mcp_executor.py`：五类固定意图、有界任务编排、单执行器和长期 stdio MCP 子进程。
+- `activity_history.py` / `tray.py`：有界脱敏活动历史、托盘入口和固定 `Win+Alt+A` 快捷键。
 - `health_events.py` / `system_health.py`：有界脱敏健康事件和助手页面共享的四态只读健康模型。
 - `scripts/configure_mail_credentials.py`：交互式写入白名单凭据；输入不回显，密钥不从命令行或日志传递。
 - `scripts/system_health.py`：本机只读健康检查，验证配置/凭据存在性、MCP 注册、计划任务、助手服务和最近摘要运行状态。
 - `scripts/install_scheduled_tasks.py`：幂等恢复每日摘要计划任务；只注册任务，不自动触发邮件读取。
+- `scripts/install_agent_startup.py`：生成、只读核对或显式安装当前用户的 AI-Work 登录启动定义。
 
 ## 环境要求
 
@@ -225,7 +228,7 @@ python -m unittest discover -s tests -t . -v
 运行语法编译检查：
 
 ```powershell
-python -m compileall -q windows_gui_mcp.py windows_gui tests
+python -m compileall -q windows_gui_mcp.py windows_gui tests scripts
 ```
 
 运行真实 Windows GUI smoke test：
@@ -314,6 +317,42 @@ Smoke test 只使用唯一命名的专用记事本文件，测试结果写入 `t
 - 硕士 Outlook 是当前唯一实际支持的发送后端：Graph 先校验 `/me` 身份，再读取草稿元数据并核对单一收件人、主题、草稿状态和归属，最后才调用 Graph send endpoint。发送失败不会回退到 Edge。
 - Graph send 响应不返回 message id，因此成功结果的 `sent_reference` 为空；后续如需已发送邮件引用，必须另建 READ-only 查询能力。
 - 本科网易暂不提供 Edge 发送实现，因为现有 Edge draft hash 不能稳定定位和校验已有草稿；QQ 邮箱保持禁止 SEND。Edge draft reference 传入发送工具时返回不可发送状态。
+
+### AI-Work 统一任务入口（v1.1）
+
+运行 `python scripts/mail_assistant_server.py --no-refresh --open` 会在现有
+`127.0.0.1:8931` 宿主中提供统一 command palette、托盘菜单和 `Win+Alt+A`。
+如果快捷键已被其他程序占用，托盘仍可用，并显示固定冲突提示。
+
+入口只接受五类任务：打开学习环境、整理文件、课程下载、打开代码项目和创建邮件草稿。
+自然语言先映射为固定 intent/slots，再由本地编译器生成最多 8 步的计划；用户不能提供
+工具名或任意步骤。目录有多个精确匹配、邮件缺少明确邮箱/收件人或网页目标不唯一时，
+任务会要求补充信息而不会猜测。
+
+文件 mkdir/copy/move/rename、网页确认点击/下载和保存邮件草稿均先显示计划并使用
+TaskCenter 的短时、单次、任务/计划绑定确认。邮件预览会显示在当前页面，但不会进入活动
+历史；邮件工作流只会创建草稿，永远不会调用发送。相同请求在短时间内复用当前任务，
+进程重启后不恢复或重放未完成副作用。
+
+宿主持有一个长期 `windows_gui_mcp.py` stdio 子进程，所有调用经单执行器和最多 8 项等待
+队列串行化。只读步骤可在子进程故障后安全重连并重试一次；副作用步骤中断后固定停止为
+未知结果，绝不自动重放。
+
+活动历史位于 LocalAppData 的 `AI-Work/activity-history.jsonl`，最多保留 2000 项、30 天、
+每文件约 1 MiB 和 3 个轮转文件。它只保存固定摘要及脱敏资源，不保存剪贴板内容、邮件字段、
+绝对路径、完整 URL、凭据或异常原文；页面默认按最近 50 个任务展开步骤。
+
+登录启动定义在 feature branch 阶段不会持久安装：
+
+```powershell
+python scripts/install_agent_startup.py --dry-run
+python scripts/install_agent_startup.py --check
+```
+
+进入主分支后如需启用，再显式运行 `python scripts/install_agent_startup.py --install`。
+该任务只启动同一 8931 宿主，禁止并发实例，不触发邮件刷新。Daily Computer Brief
+由独立模块和调度任务实现，不加入 Agent 工作流；Remote/LAN 扩张及新的 Browser/Mail
+能力不属于本次 Agent Productization。
 
 ### 本地 AI 摘要与草稿助手
 

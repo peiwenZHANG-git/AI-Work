@@ -155,6 +155,7 @@ class MailAssistantServerSecurityTests(unittest.TestCase):
                 handler.headers = {
                     'Host': '127.0.0.1:8931',
                     'Content-Type': 'application/json',
+                    'X-AI-Work-CSRF': self.server.CSRF_TOKEN,
                     'Content-Length': header,
                 }
                 handler.rfile = io.BytesIO(b'{"must_not_read":true}')
@@ -176,6 +177,7 @@ class MailAssistantServerSecurityTests(unittest.TestCase):
         handler.headers = {
             'Host': '127.0.0.1:8931',
             'Content-Type': 'application/json',
+            'X-AI-Work-CSRF': self.server.CSRF_TOKEN,
             'Content-Length': str(len(b'{"instruction":"private instruction"}')),
         }
         handler.rfile = io.BytesIO(b'{"instruction":"private instruction"}')
@@ -204,6 +206,7 @@ class MailAssistantServerSecurityTests(unittest.TestCase):
         handler.headers = {
             'Host': '127.0.0.1:8931',
             'Content-Type': 'application/json',
+            'X-AI-Work-CSRF': self.server.CSRF_TOKEN,
             'Content-Length': str(len(b'{"keys":["safe-hash"]}')),
         }
         handler.rfile = io.BytesIO(b'{"keys":["safe-hash"]}')
@@ -238,14 +241,18 @@ class MailAssistantServerSecurityTests(unittest.TestCase):
 
         def capture_urlopen(request, timeout=None):
             captured.append(request)
+            if isinstance(request, str):
+                return mock.Mock(read=lambda: b'{"token":"csrf-test"}')
+            return mock.Mock()
 
         startup = _load_startup_module()
         with mock.patch.object(startup.urllib.request, 'urlopen', capture_urlopen):
             startup.trigger_refresh()
 
-        self.assertEqual(1, len(captured))
-        self.assertEqual(b'{}', captured[0].data)
-        self.assertEqual('application/json', captured[0].headers.get('Content-type'))
+        self.assertEqual(2, len(captured))
+        self.assertEqual(b'{}', captured[1].data)
+        self.assertEqual('application/json', captured[1].headers.get('Content-type'))
+        self.assertEqual('csrf-test', captured[1].headers.get('X-ai-work-csrf'))
         self.assertFalse(self.server.is_local_request('attacker.example:8931'))
         self.assertFalse(
             self.server.is_local_request(
@@ -270,6 +277,7 @@ class MailAssistantSendFlowTests(unittest.TestCase):
             handler.headers = {
                 'Host': '127.0.0.1:8931',
                 'Content-Type': 'application/json',
+                'X-AI-Work-CSRF': self.server.CSRF_TOKEN,
                 'Content-Length': str(len(payload)),
             }
             handler.rfile = io.BytesIO(payload)
@@ -307,6 +315,7 @@ class MailAssistantSendFlowTests(unittest.TestCase):
         handler.headers = {
             'Host': '127.0.0.1:8931',
             'Content-Type': 'application/json',
+            'X-AI-Work-CSRF': self.server.CSRF_TOKEN,
             'Content-Length': str(len(body)),
         }
         handler.rfile = io.BytesIO(body)
@@ -349,6 +358,7 @@ class MailAssistantSendFlowTests(unittest.TestCase):
             handler.headers = {
                 'Host': '127.0.0.1:8931',
                 'Content-Type': 'application/json',
+                'X-AI-Work-CSRF': self.server.CSRF_TOKEN,
                 'Content-Length': '66',
             }
             body = (

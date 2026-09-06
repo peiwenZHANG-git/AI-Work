@@ -114,6 +114,18 @@ EXPECTED_TOOLS = {
 
 
 class InterfaceTests(unittest.IsolatedAsyncioTestCase):
+    def test_v1_42_signatures_remain_unchanged(self):
+        module = importlib.import_module('windows_gui_mcp')
+        baseline = json.loads(
+            (Path(__file__).parent / 'fixtures/v1_tool_signatures.json').read_text(
+                encoding='utf-8'
+            )
+        )
+        self.assertEqual(42, len(baseline))
+        self.assertEqual(EXPECTED_TOOLS, set(baseline))
+        for name, signature in baseline.items():
+            self.assertEqual(signature, str(inspect.signature(getattr(module, name))), name)
+
     def test_old_36_signatures_remain_unchanged(self):
         module = importlib.import_module('windows_gui_mcp')
         baseline = json.loads((Path(__file__).parent / 'fixtures/legacy_tool_signatures.json').read_text(encoding='utf-8'))

@@ -2,8 +2,10 @@
 
 import json
 import argparse
+import secrets
 import sys
 import threading
+import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -31,13 +33,51 @@ from windows_gui.mail_digest import remove_dismissed_from_latest_digest
 from windows_gui.mail_digest import run_digest_update
 from windows_gui.mail_search import natural_language_mail_search
 from windows_gui.health_events import record_health_event
+from windows_gui.mcp_executor import PersistentMcpExecutor
+from windows_gui.orchestrator import AgentOrchestrator
 from windows_gui.system_health import collect_dashboard_health
+from windows_gui.tray import HotkeyUnavailable, TrayController
 
 
 PORT = 8931
 MAX_JSON_BODY_BYTES = 256 * 1024
+CSRF_TOKEN = secrets.token_urlsafe(32)
+CSRF_HEADER = 'X-AI-Work-CSRF'
+RATE_LIMIT_COUNT = 30
+RATE_LIMIT_WINDOW_SECONDS = 60.0
 REFRESH_STATE = {'running': False, 'last_finished': None, 'last_ok': None}
 _REFRESH_LOCK = threading.Lock()
+_AGENT_LOCK = threading.Lock()
+_AGENT_ORCHESTRATOR = None
+
+
+class RateLimiter:
+    def __init__(self, limit=RATE_LIMIT_COUNT, window=RATE_LIMIT_WINDOW_SECONDS, now=time.monotonic):
+        self.limit = int(limit)
+        self.window = float(window)
+        self.now = now
+        self._lock = threading.Lock()
+        self._requests = []
+
+    def allow(self) -> bool:
+        current = self.now()
+        with self._lock:
+            self._requests = [stamp for stamp in self._requests if current - stamp < self.window]
+            if len(self._requests) >= self.limit:
+                return False
+            self._requests.append(current)
+            return True
+
+
+RATE_LIMITER = RateLimiter()
+
+
+def get_agent_orchestrator():
+    global _AGENT_ORCHESTRATOR
+    with _AGENT_LOCK:
+        if _AGENT_ORCHESTRATOR is None:
+            _AGENT_ORCHESTRATOR = AgentOrchestrator(PersistentMcpExecutor())
+        return _AGENT_ORCHESTRATOR
 
 
 def is_local_request(host: str | None, origin: str | None = None) -> bool:
@@ -57,6 +97,10 @@ def is_json_request(content_type: str | None) -> bool:
     """Require a CORS preflight before mutating assistant requests."""
     media_type = (content_type or '').split(';', 1)[0].strip().casefold()
     return media_type == 'application/json'
+
+
+def is_valid_csrf(value: str | None) -> bool:
+    return bool(value) and secrets.compare_digest(str(value), CSRF_TOKEN)
 
 
 def parse_content_length(
@@ -148,6 +192,17 @@ class MailAssistantHandler(BaseHTTPRequestHandler):
         if path == '/api/status':
             self._send_json({'status': 'ok'})
             return
+        if path == '/api/csrf':
+            self._send_json({'token': CSRF_TOKEN})
+            return
+        if path == '/api/agent/history':
+            self._send_json(get_agent_orchestrator().recent())
+            return
+        if path.startswith('/api/agent/tasks/'):
+            task_id = path.rsplit('/', 1)[-1]
+            task = get_agent_orchestrator().get(task_id)
+            self._send_json(task or {'error': 'task_not_found'}, 200 if task else 404)
+            return
         if path == '/api/health':
             try:
                 report = collect_dashboard_health(assistant_running=True)
@@ -222,10 +277,16 @@ class MailAssistantHandler(BaseHTTPRequestHandler):
                 413 if length_error == 'content_too_large' else 400,
             )
             return
+        if not is_valid_csrf(self.headers.get(CSRF_HEADER)):
+            self._send_json({'error': 'csrf_invalid'}, 403)
+            return
         try:
             payload = json.loads(self.rfile.read(length) or b'{}')
         except ValueError:
             self._send_json({'error': '请求不是有效的 JSON'}, 400)
+            return
+        if not isinstance(payload, dict):
+            self._send_json({'error': 'request must be a JSON object'}, 400)
             return
         handlers = {
             '/api/refresh': self._handle_refresh,
@@ -236,8 +297,12 @@ class MailAssistantHandler(BaseHTTPRequestHandler):
             '/api/stage-draft': self._handle_stage_draft,
             '/api/dismiss': self._handle_dismiss,
             '/api/send-mail': self._handle_send_mail,
+            '/api/agent/tasks': self._handle_agent_task,
         }
-        handler = handlers.get(path)
+        if path.startswith('/api/agent/tasks/') and path.endswith('/confirm'):
+            handler = self._handle_agent_confirm
+        else:
+            handler = handlers.get(path)
         if handler is None:
             self._send_json({'error': 'unknown endpoint'}, 404)
             return
@@ -251,6 +316,33 @@ class MailAssistantHandler(BaseHTTPRequestHandler):
                 'mail_assistant', 'error', 'assistant_request_failed'
             )
             self._send_json({'error': 'internal_server_error'}, 500)
+
+    def _handle_agent_task(self, payload: dict) -> None:
+        if not RATE_LIMITER.allow():
+            self._send_json({'error': 'rate_limited'}, 429)
+            return
+        text = payload.get('text')
+        slots = payload.get('slots')
+        if not isinstance(text, str) or (slots is not None and not isinstance(slots, dict)):
+            self._send_json({'error': 'invalid_task_request'}, 400)
+            return
+        result = get_agent_orchestrator().submit(text, slots)
+        self._send_json(result, 429 if result.get('code') == 'queue_full' else 200)
+
+    def _handle_agent_confirm(self, payload: dict) -> None:
+        if not RATE_LIMITER.allow():
+            self._send_json({'error': 'rate_limited'}, 429)
+            return
+        parts = urlparse(self.path).path.strip('/').split('/')
+        if len(parts) != 5 or parts[:3] != ['api', 'agent', 'tasks'] or parts[4] != 'confirm':
+            self._send_json({'error': 'unknown endpoint'}, 404)
+            return
+        confirmation_id = payload.get('confirmation_id')
+        if not isinstance(confirmation_id, str):
+            self._send_json({'error': 'confirmation_invalid'}, 400)
+            return
+        result = get_agent_orchestrator().confirm(parts[3], confirmation_id)
+        self._send_json(result, 429 if result.get('code') == 'queue_full' else 200)
 
     def _handle_ai_draft(self, payload: dict) -> None:
         draft = ai_generate_draft(str(payload.get('instruction') or ''))
@@ -346,7 +438,21 @@ def main(argv: list[str] | None = None) -> int:
         start_refresh()
     if args.open:
         webbrowser.open(f'http://127.0.0.1:{PORT}/')
-    server.serve_forever()
+    tray = TrayController(shutdown=server.shutdown)
+    try:
+        tray.start()
+    except HotkeyUnavailable:
+        print('AI-Work hotkey unavailable: Win+Alt+A is already in use.', file=sys.stderr)
+    except Exception:
+        print('AI-Work tray unavailable.', file=sys.stderr)
+    try:
+        server.serve_forever()
+    finally:
+        tray.stop()
+        orchestrator = _AGENT_ORCHESTRATOR
+        if orchestrator is not None:
+            orchestrator.close()
+        server.server_close()
     return 0
 
 

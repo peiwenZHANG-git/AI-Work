@@ -24,11 +24,18 @@ def port_in_use() -> bool:
 
 def trigger_refresh() -> None:
     try:
+        response = urllib.request.urlopen(
+            f'http://127.0.0.1:{PORT}/api/csrf', timeout=5
+        )
+        token = json.loads(response.read().decode('utf-8'))['token']
         urllib.request.urlopen(
             urllib.request.Request(
                 f'http://127.0.0.1:{PORT}/api/refresh',
                 data=b'{}',
-                headers={'Content-Type': 'application/json'},
+                headers={
+                    'Content-Type': 'application/json',
+                    'X-AI-Work-CSRF': token,
+                },
                 method='POST',
             ),
             timeout=5,

@@ -6,7 +6,7 @@ ASSISTANT_PAGE_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>邮件助手 · 今日摘要</title>
+<title>AI-Work · 本地助手</title>
 <style>
 * { box-sizing: border-box; }
 body { margin: 0; font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; background: #eef1f5; color: #1f2430; }
@@ -91,6 +91,10 @@ button:disabled { opacity: 0.55; cursor: wait; }
 .health-errors { margin-top: 16px; }
 .health-error { padding: 9px 0; border-bottom: 1px solid #edf0f3; font-size: 13px; }
 .health-empty { color: #64748b; font-size: 13px; }
+.agent-command { min-height: 92px; }
+.agent-plan { display: grid; gap: 8px; margin-top: 14px; }
+.agent-step { border-left: 3px solid #93c5fd; background: #f8fafc; padding: 8px 10px; font-size: 13px; }
+.agent-history { margin-top: 18px; display: grid; gap: 8px; }
 @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } .tiles { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width: 700px) { .search-grid { grid-template-columns: 1fr; } }
 @media (max-width: 700px) { .health-grid { grid-template-columns: 1fr; } }
@@ -98,8 +102,9 @@ button:disabled { opacity: 0.55; cursor: wait; }
 </head>
 <body>
 <div class="topbar"><div class="inner">
-  <div class="brand"><span class="dot"></span>邮件助手</div>
+  <div class="brand"><span class="dot"></span>AI-Work</div>
   <nav class="tabs">
+    <button class="tab" data-tab="agent">AI-Work</button>
     <button class="tab active" data-tab="digest">今日摘要</button>
     <button class="tab" data-tab="todo">今日待办</button>
     <button class="tab" data-tab="ai">AI 写邮件</button>
@@ -112,6 +117,27 @@ button:disabled { opacity: 0.55; cursor: wait; }
   </div>
 </div></div>
 <div class="wrap">
+  <section id="tab-agent" class="tab-panel">
+    <div class="card">
+      <h2>告诉 AI-Work 你要做什么</h2>
+      <p class="hint">支持学习环境、项目启动、文件整理、课程下载和邮件草稿。操作计划固定且有界。</p>
+      <textarea id="agent-command" class="agent-command" maxlength="4000" placeholder="例如：打开 HCI 学习环境"></textarea>
+      <div class="examples">
+        <span data-agent-example="打开 HCI 学习环境">打开学习环境</span>
+        <span data-agent-example="继续 VR 项目">继续项目</span>
+        <span data-agent-example="把今天下载的 PDF 放到 HCI">整理课件</span>
+      </div>
+      <button class="act primary" id="agent-submit" style="margin-top:14px">开始</button>
+      <div id="agent-state" class="notice" style="display:none"></div>
+      <div id="agent-plan" class="agent-plan"></div>
+      <pre id="agent-draft" class="agent-step" style="display:none;white-space:pre-wrap"></pre>
+      <button class="act primary" id="agent-confirm" style="display:none">确认执行预览操作</button>
+    </div>
+    <section class="card agent-history">
+      <div class="tool-head"><h2>最近任务</h2><button class="mini-button" id="agent-history-refresh">刷新</button></div>
+      <div id="agent-history" class="empty-note">尚未加载。</div>
+    </section>
+  </section>
   <section id="tab-digest" class="tab-panel active">
     <div class="digest-bar">
       <span>下方为最近一次生成的摘要页面，点击上方"刷新摘要"获取最新邮件。</span>
@@ -211,16 +237,26 @@ document.querySelectorAll('.tab').forEach((tab) => {
     document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
     if (tab.dataset.tab === 'health') { loadHealth(); }
     if (tab.dataset.tab === 'todo') { loadTodos(); }
+    if (tab.dataset.tab === 'agent') { loadAgentHistory(); }
   });
 });
+let csrfToken = '';
+async function getCsrfToken() {
+  if (csrfToken) return csrfToken;
+  const response = await fetch('/api/csrf', { cache: 'no-store' });
+  const data = await response.json();
+  csrfToken = data.token || '';
+  return csrfToken;
+}
 async function api(path, payload, timeoutMs = 30000) {
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
+    const token = await getCsrfToken();
     const response = await fetch(path, {
       method: 'POST',
       cache: 'no-store',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-AI-Work-CSRF': token },
       body: JSON.stringify(payload || {}),
       signal: controller.signal,
     });
@@ -234,6 +270,77 @@ async function api(path, payload, timeoutMs = 30000) {
     window.clearTimeout(timer);
   }
 }
+let currentAgentTask = null;
+function renderAgentTask(task) {
+  currentAgentTask = task;
+  const state = $('agent-state'); state.style.display = 'block';
+  state.textContent = task.summary || task.status;
+  const plan = $('agent-plan'); plan.replaceChildren();
+  ((task.plan && task.plan.steps) || []).forEach((item, index) => {
+    const row = document.createElement('div'); row.className = 'agent-step';
+    row.textContent = (index + 1) + '. ' + item.label + (item.automatic ? ' · 自动' : ' · 需确认');
+    plan.appendChild(row);
+  });
+  const confirm = $('agent-confirm');
+  confirm.style.display = task.status === 'WAITING_CONFIRMATION' ? '' : 'none';
+  confirm.disabled = false;
+  const draft = $('agent-draft');
+  if (task.draft_preview) {
+    draft.style.display = '';
+    draft.textContent = '邮箱：' + task.draft_preview.mailbox_id + '\n收件人：' +
+      task.draft_preview.to + '\n主题：' + task.draft_preview.subject +
+      '\n\n' + task.draft_preview.body + '\n\n只保存草稿，不发送。';
+  } else { draft.style.display = 'none'; draft.textContent = ''; }
+}
+async function submitAgentTask() {
+  const button = $('agent-submit'); button.disabled = true;
+  try { renderAgentTask(await api('/api/agent/tasks', { text: $('agent-command').value }, 60000)); }
+  catch (error) { $('agent-state').style.display = 'block'; $('agent-state').textContent = '任务提交失败：' + error.message; }
+  button.disabled = false;
+  loadAgentHistory();
+}
+async function confirmAgentTask() {
+  if (!currentAgentTask || !currentAgentTask.confirmation_id) return;
+  $('agent-confirm').disabled = true;
+  try {
+    renderAgentTask(await api('/api/agent/tasks/' + encodeURIComponent(currentAgentTask.task_id) + '/confirm', {
+      confirmation_id: currentAgentTask.confirmation_id,
+    }, 60000));
+  } catch (error) { $('agent-state').textContent = '确认失败：' + error.message; }
+  loadAgentHistory();
+}
+async function loadAgentHistory() {
+  const box = $('agent-history');
+  try {
+    const data = await (await fetch('/api/agent/history', { cache: 'no-store' })).json();
+    box.replaceChildren();
+    const tasks = new Map();
+    (data.events || []).forEach((event) => {
+      if (!tasks.has(event.task_id)) tasks.set(event.task_id, []);
+      tasks.get(event.task_id).push(event);
+    });
+    Array.from(tasks.values()).reverse().forEach((events) => {
+      const group = document.createElement('details'); group.className = 'agent-step';
+      const summary = document.createElement('summary');
+      const latest = events[events.length - 1];
+      summary.textContent = latest.summary + ' · ' + latest.workflow;
+      group.appendChild(summary);
+      events.forEach((event) => {
+        const row = document.createElement('div');
+        row.textContent = '步骤 ' + event.step + ' · ' + event.summary;
+        group.appendChild(row);
+      });
+      box.appendChild(group);
+    });
+    if (!tasks.size) box.textContent = '暂无任务历史。';
+  } catch (error) { box.textContent = '活动历史暂时不可用。'; }
+}
+$('agent-submit').addEventListener('click', submitAgentTask);
+$('agent-confirm').addEventListener('click', confirmAgentTask);
+$('agent-history-refresh').addEventListener('click', loadAgentHistory);
+document.querySelectorAll('[data-agent-example]').forEach((item) => {
+  item.addEventListener('click', () => { $('agent-command').value = item.dataset.agentExample; });
+});
 function switchTab(name) {
   const tab = document.querySelector('.tab[data-tab="' + name + '"]');
   if (tab) tab.click();
@@ -476,7 +583,7 @@ document.getElementById('copy').addEventListener('click', async () => {
 document.getElementById('refresh').addEventListener('click', async () => {
   $('refresh').disabled = true;
   $('refresh-status').textContent = '后台刷新中…';
-  await fetch('/api/refresh', { method: 'POST' });
+  await api('/api/refresh', {});
   const timer = setInterval(async () => {
     const state = await (await fetch('/api/refresh-status')).json();
     if (!state.running) { clearInterval(timer); location.reload(); }
