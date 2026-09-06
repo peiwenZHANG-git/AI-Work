@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, tzinfo
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -324,13 +325,26 @@ def complete_cleanup_plan(
     destination_inspection: dict[str, Any],
     *,
     today: str,
+    local_timezone: tzinfo | None = None,
 ) -> Plan:
     """Create a bounded, confirmation-only move plan from a completed scan."""
     if inspection.get('partial'):
         raise ClarificationRequired()
+    timezone = local_timezone or datetime.now().astimezone().tzinfo
+
+    def modified_today(item: dict[str, Any]) -> bool:
+        try:
+            modified = datetime.fromisoformat(str(item.get('modified_time') or ''))
+            return (
+                modified.tzinfo is not None
+                and modified.astimezone(timezone).date().isoformat() == today
+            )
+        except (TypeError, ValueError):
+            return False
+
     entries = [
         item for item in inspection.get('entries', [])
-        if str(item.get('modified_time') or '').startswith(today)
+        if modified_today(item)
         and str(item.get('path') or '').lower().endswith('.pdf')
     ]
     destination = str(plan.slots['destination']).strip()

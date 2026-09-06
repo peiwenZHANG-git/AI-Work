@@ -12,7 +12,7 @@ import types
 import unittest
 import uuid
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import tempfile
 from unittest import mock
@@ -106,6 +106,19 @@ class WorkflowRouterTests(unittest.TestCase):
         self.assertFalse(completed.steps[2].automatic)
         self.assertFalse(completed.steps[2].arguments['request'].get('overwrite', False))
         self.assertNotIn('delete', json.dumps(completed.steps[2].arguments))
+
+    def test_cleanup_uses_local_date_for_utc_file_timestamp(self):
+        plan = compile_workflow('把今天下载的 PDF 放到 HCI')
+        completed = complete_cleanup_plan(plan, {
+            'entries': [{
+                'path': 'Downloads/midnight.pdf', 'type': 'file',
+                'modified_time': '2026-09-06T23:30:00+00:00',
+            }], 'partial': False,
+        }, {'status': 'ok', 'type': 'directory'}, today='2026-09-07',
+            local_timezone=timezone(timedelta(hours=2)))
+        self.assertEqual(
+            ['midnight.pdf → Documents/HCI'], completed.public()['preview']
+        )
 
     def test_download_and_mail_boundaries(self):
         direct = compile_workflow('下载 https://example.org/course.pdf')
@@ -499,6 +512,23 @@ class TrayTests(unittest.TestCase):
 
 
 class StartupDefinitionTests(unittest.TestCase):
+    def test_scheduler_folder_lookup_omits_invalid_trailing_separator(self):
+        module = _load_startup_installer()
+
+        class Service:
+            def __init__(self): self.paths = []
+            def Connect(self): pass
+            def GetFolder(self, path):
+                self.paths.append(path)
+                if path.endswith('\\') and path != '\\':
+                    raise OSError('invalid folder path')
+                return object()
+
+        service = Service()
+        adapter = module.TaskSchedulerAdapter(lambda _name: service)
+        adapter._folder(False)
+        self.assertEqual(['\\', '\\AI-Work'], service.paths)
+
     def test_definition_is_fixed_and_check_is_read_only(self):
         module = _load_startup_installer()
         desired = module.startup_definition(Path(__file__))

@@ -44,7 +44,7 @@ class TaskSchedulerAdapter:
     def _folder(self, create: bool):
         root = self.service.GetFolder('\\')
         try:
-            return self.service.GetFolder(TASK_PATH)
+            return self.service.GetFolder(TASK_PATH.rstrip('\\'))
         except Exception:
             if not create:
                 raise
