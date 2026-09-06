@@ -146,3 +146,17 @@ Goal C.2 对 master_mail 草稿路径的最小修复复用了既有带锁 refres
 Goal C.3 确认真实 refresh token 可取得 Graph audience 的 Mail.ReadWrite delegated token，授权能力不是阻塞。Graph create-message 的请求体曾错误复用 sendMail 的 `{message: ...}` 外层，已改为直接 Message JSON；确定性 regression 先失败后通过。授权重试实际创建了一个精确匹配草稿，但新草稿省略 from/sender，导致本地校验返回 INVALID_DRAFT，随后缺失的状态映射触发 KeyError，工具最终仍返回 ERROR 且没有 reference。只读复核确认 16 个草稿中恰有一个目标对象，isDraft/收件人/主题/正文匹配且稳定 Graph id 存在；校验器现只在已完成 /me 身份验证的前提下接受 owner 字段缺失，若字段存在仍必须匹配，并补齐 INVALID_DRAFT→ERROR 映射。聚焦草稿测试 21/21、最终完整 626/626 通过，compileall、42/42、旧36签名、windows-gui、FAILSAFE、diff check 均通过。此前一次完整回归及首次隔离复跑仅命中已冻结 Remote 并发竞态，隔离8次6 PASS/2 FAIL，未修改 Remote。未再次 POST，未调用 send，草稿 NOT SENT；因真实工具调用没有返回 reference，Demo 7 继续 FAIL/BLOCKED。
 
 Goal C.4 通过私有、非 MCP 的严格只读恢复路径收口同一草稿：先验证 master Graph `/me` 身份，只读取最多100个草稿并拒绝分页，要求 exactly one isDraft/收件人/主题/正文匹配且 stable Graph id 存在；0个、多个、身份/元数据不匹配均 fail closed。普通 `create_mail_draft` 不自动调用恢复逻辑，不获得宽泛 dedupe 语义。真实恢复返回 READY/GRAPH_API/GRAPH_DRAFT_ID；恢复前后草稿总数均为16，目标精确匹配仍为1，reference fingerprint 一致。未 POST、未 send，sent=false、send_attempted=false，NOT SENT。Demo 7 因此 PASS，九项 demo 全部通过，v1 feature freeze 达成。最终 compileall、完整631/631、恢复/发送聚焦41/41、42/42 unique、旧36签名、windows-gui、FAILSAFE、diff check 均通过。
+
+
+## v1.1 Daily Computer Brief（2026-09-06）
+
+- 新增非 MCP 工作流 `windows_gui/computer_brief.py` / `scripts/daily_computer_brief.py`：直接复用三邮箱 Graph/IMAP 元数据后端、Downloads 内部安全扫描、system_status，确定性生成最多3条建议与本地 HTML/JSON。没有浏览器回退、LLM、邮件变更、剪贴板或下载正文读取；保持全部42工具签名/返回形状与旧实现模块不变。
+- 专用输出 `%LOCALAPPDATA%\AI-Work\computer-brief\latest.html`、`latest.json`、`last-attempt.json`。仅保留安全摘要，诊断只有时间/阶段/固定状态与计数；异常原文不落盘。沿用 fsync + 同目录临时文件模式，严格原子替换，不使用非原子 copy fallback；本机 Codex 打包环境将 LocalAppData 重定向到另一卷，已通过目录句柄解析真实父目录解决原始 WinError 17，真实重试成功。
+- EMPTY_TODAY 是已确认空；失败计数为 null，并区分 auth/config error、unavailable、parser/backend failure。READY 是最多100条元数据的有界计数，不是完整邮箱总量；重要邮件按主题关键词规则识别。Downloads 顶层最近24小时、最多10项，沿用既有扫描预算，扫描不完整或内部结果截断明确 partial。系统组件未知不伪造零。生成成功 `ok=true` 与组件健康分开；Toast 不可用只降级。
+- 现有计划任务安装器增加 `--computer-brief` 选择器，默认仍保持邮件摘要10:00/22:00语义。已安装 `AI-Work Daily Computer Brief`：每天本机08:00、当前用户 Interactive/Limited、IgnoreNew、PT15M、允许电池运行、错过后补跑。真实 `--computer-brief --check` 所有字段匹配，包括每日触发类型/间隔、当前用户SID；原邮件任务安装前后XML哈希一致。外部ChatGPT automation未改动，可能产生重复提醒。
+- 当前晨报运行目录为 `D:\21781\Documents\Codex\AI-Work-v1.1-morning-brief`，任务直接引用该目录及已安装的Python310/pythonw。保留此目录；迁移时从新的已验证目录重新安装本任务并check。任务需要用户已登录和电脑可运行，不依赖ChatGPT、MCP、浏览器或助手页面；未到下一次08:00，不能把任务注册成功说成已观察到定时触发。Toast真实展示未测试（授权smoke使用--no-notify）。
+- 真实 `--no-notify` smoke：三邮箱状态均ok，本科0、硕士3、QQ0；Downloads/system均ok；三个artifact生成且结构校验通过。未创建/发送/标记邮件，未修改Downloads或用户文档，未打开浏览器；仅写入专用artifact及既有OAuth refresh-token安全轮换。
+- 回归期间一次完整648项仅命中既有冻结Remote `test_concurrent_replay_has_single_winner` 竞态；跨任务请求先pop token可能使两请求都被拒绝，隔离复验通过，未修改Remote。初轮新scheduler断言格式错误已修正；首次真实artifact发布失败已修正；SID规范化消除了短用户名误报。上述历史失败不被最终通过覆盖或宣称根因全部消失。
+- 后续保持42-tool freeze与Browser/Mail/Remote边界；电脑晨报仅进入维护。feature branch交付不授权main merge。
+
+- v1.1最终交付验证：compileall（含scripts）PASS；完整648/648单元测试PASS；晨报与scheduler聚焦30/30 PASS；独立42/42唯一工具、旧42实现模块/签名/返回形状不变、windows-gui、FAILSAFE True、artifact结构、实际任务check与git diff --check均PASS。delivery-check结果PASS；既有Remote偶发竞态保留为剩余风险，Toast展示与未来08:00触发未声称已实测。

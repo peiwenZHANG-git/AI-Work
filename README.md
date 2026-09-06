@@ -400,3 +400,55 @@ CDP endpoint 必须分别通过 `AI_WORK_BACHELOR_CDP_ENDPOINT` 和 `AI_WORK_QQ_
 ## v1 acceptance and freeze
 
 The v1 public surface is frozen at 42 tools. All nine demos are accepted in [the v1 acceptance record](docs/V1_ACCEPTANCE.md), including read-only recovery of the single Graph draft created during Demo 7 without a duplicate POST or send. Goal C adds no public tools. VS Code launches in a fixed new window. Main merge requires separate user approval.
+
+
+## Daily Computer Brief（v1.1 电脑晨报）
+
+电脑晨报是独立的、非 MCP 本地 scheduled workflow，公共工具仍为 42。
+它不依赖 ChatGPT、MCP stdio、Edge 或邮件助手页面运行。直接复用内部
+Graph/IMAP 只读元数据摘要、Downloads 安全扫描、system_status，并用确定性规则生成最多 3 条建议；不调用远程 LLM。
+没有草稿、发送、邮件标记/移动/归档/删除、下载内容读取或文件管理动作。
+Graph OAuth 刷新仍使用既有跨进程锁与 Credential Manager refresh-token 轮换。
+
+使用装有项目依赖的 Python，在保留的运行目录执行：
+
+```powershell
+python scripts/daily_computer_brief.py --dry-run
+python scripts/daily_computer_brief.py --no-notify
+python scripts/daily_computer_brief.py --open
+python scripts/install_scheduled_tasks.py --computer-brief --dry-run
+python scripts/install_scheduled_tasks.py --computer-brief
+python scripts/install_scheduled_tasks.py --computer-brief --check
+```
+
+`--dry-run` 只读采集并打印脱敏 JSON，不写晨报 artifact、不通知；OAuth 凭据轮换仍可能发生。
+`--no-notify` 生成文件但不发 Toast；`--open` 仅为手动运行可选动作，与 `--dry-run` 互斥。
+默认安装入口不带 `--computer-brief` 时仍选择原 10:00/22:00 邮件摘要任务。
+安装晨报只操作 `AI-Work Daily Computer Brief`，不会启动任务或修改已有邮件任务。
+晨报任务每天本机时间 **08:00**，当前用户 Interactive / Limited，无需管理员或保存密码；
+IgnoreNew 禁止并发，超时 15 分钟，允许电池供电，StartWhenAvailable 允许错过后补跑。
+需要用户已登录及电脑可运行；不保证关机/未登录时即时执行，不依赖任何前台应用。
+检查覆盖动作、工作目录、每日触发类型/间隔/数量、重复触发、启用状态、电源策略、超时、并发和当前用户 SID。
+
+输出位于 `%LOCALAPPDATA%\AI-Work\computer-brief\`：
+
+- `latest.html`：今日重点、邮箱摘要、最近下载、系统状态、建议。
+- `latest.json`：所需安全摘要，无正文、发件人/收件人、凭据、剪贴板或完整本机路径；主题和窗口标题有界并隐藏常见 URL/地址/路径/凭据形式。
+- `last-attempt.json`：仅时间、阶段、状态、计数和固定错误码，无原始异常或邮件字段。
+
+各文件采用同目录临时文件、fsync、原子替换；Windows 打包应用的目录重定向通过目录句柄解析，
+不会退回非原子复制。旧 artifact 不参与采集，因此畸形旧文件不会污染新晨报。
+三个文件不是跨文件事务；出现写入失败时 `ok=false`，旧 latest 可能保留，须核对生成时间与 last-attempt。
+只清理本次写入自建临时文件，保留用户文件和其他运行 artifact。
+
+失败不会被显示成零邮件：auth/config error、unavailable、parser/backend failure 使用 null 计数；
+EMPTY_TODAY 为已确认空，READY 是最多 100 条的有界元数据计数，可能遗漏分页、截断或解析失败条目，
+不声称完整邮箱总量。重要程度是邮件主题关键词规则，不是语义分类。
+Downloads 只扫描顶层、最近 24 小时、最多展示 10 个文件；沿用 10,000 项/3 秒扫描预算，
+partial 或内部 200 条截断会明确显示 partial，计数限于观察范围，不保证真正最新。
+系统组件失败显示 unknown，电池不存在显示 not_present。组件降级不阻止其他区块及晨报生成；
+运行 `ok` 表示 artifact 成功生成，不代表全部依赖健康。Toast 只显示固定标题和计数，失败单独标记 degraded。
+
+部署时必须保留安装命令使用的工作目录与 Python。若迁移目录，先在新目录完成验证，再用同一
+`--computer-brief` 安装入口更新并 `--check`；不要删除仍被任务引用的 worktree。
+本地 Windows scheduler 为主要实现，外部 ChatGPT 08:00 automation 可能重复提醒，需用户自行选择停用；本实现不修改它。

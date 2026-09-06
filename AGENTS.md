@@ -136,7 +136,7 @@ These instructions apply to the whole repository. This project is a Windows-only
 - Final assistant send verification must confirm Graph `isDraft=true` or IMAP `\Draft`; reject the reference if the message has stopped being a draft.
 - Pending assistant draft references must expire after 15 minutes and be capped at 16 in-process items; an expired, invalid, or consumed reference fails explicitly and never re-creates or substitutes a draft.
 - The credential setup CLI must use only its explicit whitelist, prompt twice without echo, verify presence after write, and never print, log, retain, or accept secrets as command-line arguments. Unit tests must inject fake stores and prompts; they must not write Credential Manager.
-- The scheduled-task installer must register only its fixed digest task and must never start the task as a side effect of installation. `--dry-run` must not call Task Scheduler; unit tests must mock process execution.
+- The scheduled-task installer must register only the explicitly selected fixed digest or computer-brief task and must never start the task as a side effect of installation. `--dry-run` must not call Task Scheduler; unit tests must mock process execution.
 - `--check` must remain read-only and may only report definition drift; health checks must treat task-definition drift as required failure.
 - Task definition drift checks must include execution path/arguments, working directory, trigger times, concurrency policy, execution limit, and battery power policy.
 - Outlook interactive login must use authorization code + PKCE, bind only to `127.0.0.1`, require exact `/callback` path and Host, verify OAuth `state`, and never print or retain authorization codes or tokens. Its token exchange and refresh-token writeback must use the same cross-process Graph refresh lock as automated refresh. Only the rotated refresh token is written to `master_mail_graph_refresh_token`; failed token exchange must not overwrite or erase the existing entry. Browser launch is allowed only through the explicit login command; unit tests must mock it.
@@ -196,3 +196,12 @@ Do not remove existing smoke artifacts or screenshots unless the user explicitly
 - Record each demo input/result/status/limitations/manual check in docs/V1_ACCEPTANCE.md. Unexecuted or manually unconfirmed demos are not PASS.
 - Use only owned smoke fixtures; preserve windows and artifacts. Real mailbox selection and mentor draft fields require explicit user input. Never send for demo acceptance.
 - Goal C's nine demos are accepted. Do not merge main without separate user approval.
+
+
+## Daily Computer Brief (v1.1)
+
+- `windows_gui/computer_brief.py` and `scripts/daily_computer_brief.py` are internal scheduled workflow code, never MCP tools. Keep all 42 existing public contracts unchanged; Browser/Mail/Remote remain frozen.
+- Use only direct internal metadata backends, safe Downloads inspection and read-only system status. No browser fallback, remote LLM, clipboard, mail mutation or file-content read. Existing Graph refresh-token rotation remains permitted.
+- Unknown/failed components have null counts and fixed statuses, never invented zero. Expose bounded-count and partial-scan limitations. Artifact diagnostics cannot contain raw exceptions, mail subjects, titles, credentials or paths.
+- Write only the dedicated computer-brief artifacts using fsync and same-directory atomic replace; never use a non-atomic copy fallback. Resolve virtualized Windows directory paths through handles. Cleanup is limited to the current invocation's owned temporary.
+- `--computer-brief` selects only the daily 08:00 task; preserve default digest task behavior. Installation never starts tasks. Readback must verify daily trigger semantics, action, working directory, timeout, concurrency, power policy and current-user Limited principal. Preserve the installed runtime directory.
