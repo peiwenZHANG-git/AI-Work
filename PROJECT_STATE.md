@@ -90,6 +90,7 @@
 - v1.1 Agent Productization 已合入 main：统一自然语言入口保留原邮件助手兼容路由，并为所有变异请求增加 CSRF；tray 在固定快捷键被占用时继续可用并显示固定提示。current-user startup task 已安装，使用 Python310/pythonw、stable runtime 工作目录、登录触发、IgnoreNew、`--no-refresh`，不保存 Windows 密码且不影响 Morning Brief。
 - Goal E 部署自动验收：stable runtime 更新到已验证 main；startup task 真实启动唯一 `127.0.0.1:8931` host，页面、最近任务、Mail Assistant 兼容路由、Host/Origin/Content-Type/CSRF/CSP 边界及 tray HWND 均通过。受控 productization smoke 的长期 MCP 子进程、五工作流中的学习/代码/文件整理路径、TaskCenter preview→confirm→单次 owned fixture move、脱敏历史、临时 loopback host、tray 生命周期和 clean shutdown 全部自动 PASS；fixture 窗口和生产 `Win+Alt+A` 触发保留为 MANUAL CHECK。
 - Goal E 修复两个真实部署阻塞：Task Scheduler COM folder 查询不再使用无效尾部分隔符，`--check` 可读取已安装任务；文件整理把 `inspect_path` 的 UTC 修改时间转换为本地日期后判断“今天”，避免本地午夜后漏掉 owned PDF。compileall、Agent/Morning Brief/scheduler/MCP 聚焦71项及完整680项单元测试均 PASS；42/42、v1签名快照、`windows-gui`、FAILSAFE 与 diff hygiene 保持。
+- 邮箱助手页面现将最近一次电脑晨报作为默认标签，通过同一 `127.0.0.1:8931` 入口读取既有只读 artifact；08:00 晨报生成与调度仍保持独立。页面此前把任务预览换行展开成非法 JavaScript，导致脚本在绑定“刷新摘要”前停止；现已修正模板转义，并为刷新请求、轮询和失败状态提供可见反馈。真实无界面 Edge 验证统一页面、晨报内容和刷新按钮恢复通过，一次真实只读摘要刷新返回成功；完整 682 项单元测试通过，未改变 42-tool surface。
 
 - Goal B 验证（2026-09-05）：compileall PASS，完整 612 项单元测试 PASS，42 tools / 42 unique names、旧 36 签名、diff check PASS。真实 `--system-status` smoke 的前台/电池/磁盘/屏幕/鼠标全部 PASS；`--clipboard-owner` 只验证真实隐藏 owner 的创建/锁定/关闭，PASS，未读取/清空/写入剪贴板，不等于读写 smoke。
 - 真实剪贴板固定文本 write/read/paste 已在用户授权下完成，原剪贴板内容未读取或备份；课程网页/PDF与导师草稿也已按受控字段完成验收。九项 demo 的最终事实以 `docs/V1_ACCEPTANCE.md` 为准。

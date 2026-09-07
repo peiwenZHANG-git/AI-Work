@@ -24,6 +24,7 @@ from windows_gui.mail_assistant import (
     send_staged_draft,
     stage_draft_for_mailbox,
 )
+from windows_gui.computer_brief import artifact_dir as computer_brief_artifact_dir
 from windows_gui.mail_digest import DIGEST_DIR
 from windows_gui.mail_digest import build_today_action_items
 from windows_gui.mail_digest import dismiss_mail_keys
@@ -188,6 +189,19 @@ class MailAssistantHandler(BaseHTTPRequestHandler):
                 return
             html = files[-1].read_text(encoding='utf-8')
             self._send_html(filter_dismissed_html(html, dismissed_keys()))
+            return
+        if path == '/computer-brief':
+            try:
+                html = (computer_brief_artifact_dir() / 'latest.html').read_text(
+                    encoding='utf-8'
+                )
+            except FileNotFoundError:
+                self._send_html('<h1>还没有电脑晨报，请等待 08:00 自动生成</h1>', 404)
+                return
+            except (OSError, UnicodeError):
+                self._send_html('<h1>电脑晨报暂时不可用</h1>', 500)
+                return
+            self._send_html(html)
             return
         if path == '/api/status':
             self._send_json({'status': 'ok'})
