@@ -523,6 +523,7 @@ class TrayTests(unittest.TestCase):
 
         def pump_messages():
             state['window_proc'](99, WM_TRAY, 0, win32con.WM_RBUTTONUP)
+            state['window_proc'](99, win32con.WM_COMMAND, MENU_EXIT, 0)
 
         with mock.patch.object(win32api, 'GetModuleHandle', return_value=1), \
                 mock.patch.object(win32gui, 'WNDCLASS', return_value=types.SimpleNamespace()), \
@@ -535,7 +536,7 @@ class TrayTests(unittest.TestCase):
                 mock.patch.object(win32gui, 'AppendMenu'), \
                 mock.patch.object(win32gui, 'GetCursorPos', return_value=(0, 0)), \
                 mock.patch.object(win32gui, 'SetForegroundWindow'), \
-                mock.patch.object(win32gui, 'TrackPopupMenu', return_value=MENU_EXIT), \
+                mock.patch.object(win32gui, 'TrackPopupMenu', return_value=True), \
                 mock.patch.object(win32gui, 'DestroyMenu'), \
                 mock.patch.object(win32gui, 'PostMessage', post_message), \
                 mock.patch.object(win32gui, 'PostQuitMessage'), \

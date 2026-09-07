@@ -46,6 +46,16 @@ class NativeTrayAdapter:
                 if message == win32con.WM_HOTKEY and wparam == HOTKEY_ID:
                     self._callbacks[0]()
                     return 0
+                if message == win32con.WM_COMMAND:
+                    command = wparam & 0xFFFF
+                    if command == MENU_OPEN:
+                        self._callbacks[0]()
+                    elif command == MENU_RECENT:
+                        self._callbacks[1]()
+                    elif command == MENU_EXIT:
+                        self._callbacks[2]()
+                        win32gui.PostQuitMessage(0)
+                    return 0
                 if message == WM_TRAY and lparam in (win32con.WM_RBUTTONUP, win32con.WM_LBUTTONDBLCLK):
                     if lparam == win32con.WM_LBUTTONDBLCLK:
                         self._callbacks[0]()
@@ -57,20 +67,13 @@ class NativeTrayAdapter:
                     win32gui.AppendMenu(menu, win32con.MF_STRING, MENU_EXIT, 'Exit AI-Work')
                     x, y = win32gui.GetCursorPos()
                     win32gui.SetForegroundWindow(hwnd)
-                    command = win32gui.TrackPopupMenu(
-                        menu, win32con.TPM_LEFTALIGN | win32con.TPM_RETURNCMD,
+                    win32gui.TrackPopupMenu(
+                        menu, win32con.TPM_LEFTALIGN | win32con.TPM_RIGHTBUTTON,
                         x, y, 0, hwnd, None,
                     )
                     win32gui.DestroyMenu(menu)
                     # Keep later notification-area menus responsive after dismissal.
                     win32gui.PostMessage(hwnd, win32con.WM_NULL, 0, 0)
-                    if command == MENU_OPEN:
-                        self._callbacks[0]()
-                    elif command == MENU_RECENT:
-                        self._callbacks[1]()
-                    elif command == MENU_EXIT:
-                        self._callbacks[2]()
-                        win32gui.PostQuitMessage(0)
                     return 0
                 if message == win32con.WM_CLOSE:
                     win32gui.DestroyWindow(hwnd)
