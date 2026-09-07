@@ -23,7 +23,7 @@ from windows_gui.mcp_executor import (
     PersistentMcpExecutor, _Job,
 )
 from windows_gui.orchestrator import AgentOrchestrator
-from windows_gui.tray import TrayController
+from windows_gui.tray import MENU_EXIT, WM_TRAY, NativeTrayAdapter, TrayController
 from windows_gui.workflows import (
     ClarificationRequired, InputTooLarge, UnsupportedTask, compile_workflow,
     complete_cleanup_plan, complete_workspace_plan, route_intent,
@@ -495,6 +495,46 @@ class AgentHttpTests(unittest.TestCase):
 
 
 class TrayTests(unittest.TestCase):
+    def test_native_menu_posts_wm_null_before_exit(self):
+        import win32api
+        import win32con
+        import win32gui
+
+        state = {}
+        post_message = mock.Mock()
+
+        def register_class(window_class):
+            state['window_proc'] = window_class.lpfnWndProc
+            return 1
+
+        def pump_messages():
+            state['window_proc'](99, WM_TRAY, 0, win32con.WM_RBUTTONUP)
+
+        with mock.patch.object(win32api, 'GetModuleHandle', return_value=1), \
+                mock.patch.object(win32gui, 'WNDCLASS', return_value=types.SimpleNamespace()), \
+                mock.patch.object(win32gui, 'RegisterClass', side_effect=register_class), \
+                mock.patch.object(win32gui, 'CreateWindow', return_value=99), \
+                mock.patch.object(win32gui, 'LoadIcon', return_value=1), \
+                mock.patch.object(win32gui, 'Shell_NotifyIcon'), \
+                mock.patch.object(win32gui, 'RegisterHotKey', return_value=True), \
+                mock.patch.object(win32gui, 'CreatePopupMenu', return_value=1), \
+                mock.patch.object(win32gui, 'AppendMenu'), \
+                mock.patch.object(win32gui, 'GetCursorPos', return_value=(0, 0)), \
+                mock.patch.object(win32gui, 'SetForegroundWindow'), \
+                mock.patch.object(win32gui, 'TrackPopupMenu', return_value=MENU_EXIT), \
+                mock.patch.object(win32gui, 'DestroyMenu'), \
+                mock.patch.object(win32gui, 'PostMessage', post_message), \
+                mock.patch.object(win32gui, 'PostQuitMessage'), \
+                mock.patch.object(win32gui, 'PumpMessages', side_effect=pump_messages), \
+                mock.patch.object(win32gui, 'UnregisterHotKey'):
+            exited = []
+            adapter = NativeTrayAdapter()
+            adapter._callbacks = (lambda: None, lambda: None, lambda: exited.append(True))
+            adapter._run()
+
+        post_message.assert_called_once_with(99, win32con.WM_NULL, 0, 0)
+        self.assertEqual([True], exited)
+
     def test_tray_and_hotkey_lifecycle_uses_only_fixed_actions(self):
         class Adapter:
             def start(self, *callbacks): self.callbacks = callbacks

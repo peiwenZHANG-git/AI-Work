@@ -62,6 +62,8 @@ class NativeTrayAdapter:
                         x, y, 0, hwnd, None,
                     )
                     win32gui.DestroyMenu(menu)
+                    # Keep later notification-area menus responsive after dismissal.
+                    win32gui.PostMessage(hwnd, win32con.WM_NULL, 0, 0)
                     if command == MENU_OPEN:
                         self._callbacks[0]()
                     elif command == MENU_RECENT:
