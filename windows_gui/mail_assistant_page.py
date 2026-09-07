@@ -11,10 +11,10 @@ ASSISTANT_PAGE_HTML = """<!DOCTYPE html>
 * { box-sizing: border-box; }
 body { margin: 0; font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; background: #eef1f5; color: #1f2430; }
 .topbar { background: #171e29; color: #fff; padding: 12px 22px; }
-.topbar .inner { max-width: 1080px; margin: 0 auto; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.topbar .inner { max-width: 1080px; margin: 0 auto; display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
 .brand { display: flex; align-items: center; gap: 10px; font-size: 17px; font-weight: 600; }
 .brand .dot { width: 9px; height: 9px; border-radius: 50%; background: #34d399; }
-.tabs { display: flex; gap: 4px; background: rgba(255,255,255,0.08); border-radius: 8px; padding: 4px; }
+.tabs { display: flex; gap: 4px; background: rgba(255,255,255,0.08); border-radius: 8px; padding: 4px; flex-wrap: wrap; }
 .tab { border: 0; background: transparent; color: #cbd2d9; padding: 7px 18px; border-radius: 6px; font-size: 14px; cursor: pointer; }
 .tab.active { background: #ffffff; color: #171e29; font-weight: 600; }
 .actions { display: flex; gap: 10px; align-items: center; }
@@ -25,7 +25,7 @@ body { margin: 0; font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-se
 .wrap { max-width: 1080px; margin: 18px auto 40px; padding: 0 16px; }
 .tab-panel { display: none; }
 .tab-panel.active { display: block; }
-#digest-frame { width: 100%; height: calc(100vh - 190px); min-height: 480px; border: 1px solid #e2e6ea; border-radius: 8px; background: #fff; }
+.report-frame { width: 100%; height: calc(100vh - 190px); min-height: 480px; border: 1px solid #e2e6ea; border-radius: 8px; background: #fff; }
 .digest-bar { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 10px; font-size: 13px; color: #52606d; flex-wrap: wrap; }
 .digest-bar a { color: #2563eb; }
 .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 18px; }
@@ -105,7 +105,8 @@ button:disabled { opacity: 0.55; cursor: wait; }
   <div class="brand"><span class="dot"></span>AI-Work</div>
   <nav class="tabs">
     <button class="tab" data-tab="agent">AI-Work</button>
-    <button class="tab active" data-tab="digest">今日摘要</button>
+    <button class="tab active" data-tab="brief">电脑晨报</button>
+    <button class="tab" data-tab="digest">邮箱摘要</button>
     <button class="tab" data-tab="todo">今日待办</button>
     <button class="tab" data-tab="ai">AI 写邮件</button>
     <button class="tab" data-tab="search">跨箱搜索</button>
@@ -138,12 +139,18 @@ button:disabled { opacity: 0.55; cursor: wait; }
       <div id="agent-history" class="empty-note">尚未加载。</div>
     </section>
   </section>
-  <section id="tab-digest" class="tab-panel active">
+  <section id="tab-brief" class="tab-panel active">
+    <div class="digest-bar">
+      <span>每天 08:00 自动生成；这里显示最近一次电脑晨报。</span>
+    </div>
+    <iframe id="brief-frame" class="report-frame" src="/computer-brief" title="电脑晨报"></iframe>
+  </section>
+  <section id="tab-digest" class="tab-panel">
     <div class="digest-bar">
       <span>下方为最近一次生成的摘要页面，点击上方"刷新摘要"获取最新邮件。</span>
       <a href="/digest" target="_blank">在新窗口打开完整摘要 →</a>
     </div>
-    <iframe id="digest-frame" src="/digest" title="今日摘要"></iframe>
+    <iframe id="digest-frame" class="report-frame" src="/digest" title="邮箱摘要"></iframe>
   </section>
   <section id="tab-todo" class="tab-panel">
     <div class="tool-head">
@@ -287,9 +294,9 @@ function renderAgentTask(task) {
   const draft = $('agent-draft');
   if (task.draft_preview) {
     draft.style.display = '';
-    draft.textContent = '邮箱：' + task.draft_preview.mailbox_id + '\n收件人：' +
-      task.draft_preview.to + '\n主题：' + task.draft_preview.subject +
-      '\n\n' + task.draft_preview.body + '\n\n只保存草稿，不发送。';
+    draft.textContent = '邮箱：' + task.draft_preview.mailbox_id + '\\n收件人：' +
+      task.draft_preview.to + '\\n主题：' + task.draft_preview.subject +
+      '\\n\\n' + task.draft_preview.body + '\\n\\n只保存草稿，不发送。';
   } else { draft.style.display = 'none'; draft.textContent = ''; }
 }
 async function submitAgentTask() {
@@ -583,11 +590,35 @@ document.getElementById('copy').addEventListener('click', async () => {
 document.getElementById('refresh').addEventListener('click', async () => {
   $('refresh').disabled = true;
   $('refresh-status').textContent = '后台刷新中…';
-  await api('/api/refresh', {});
-  const timer = setInterval(async () => {
-    const state = await (await fetch('/api/refresh-status')).json();
-    if (!state.running) { clearInterval(timer); location.reload(); }
-  }, 2000);
+  try {
+    await api('/api/refresh', {});
+    const timer = window.setInterval(async () => {
+      try {
+        const response = await fetch('/api/refresh-status', { cache: 'no-store' });
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        const state = await response.json();
+        if (!state.running) {
+          window.clearInterval(timer);
+          $('refresh').disabled = false;
+          const when = (state.last_finished || '').replace('T', ' ').slice(0, 16);
+          $('refresh-status').textContent = state.last_ok
+            ? '最近更新：' + when
+            : '刷新失败，请查看系统状态';
+          if (state.last_ok) {
+            $('digest-frame').src = '/digest?updated=' + Date.now();
+            loadStats();
+          }
+        }
+      } catch (error) {
+        window.clearInterval(timer);
+        $('refresh').disabled = false;
+        $('refresh-status').textContent = '刷新状态读取失败，请重试';
+      }
+    }, 2000);
+  } catch (error) {
+    $('refresh').disabled = false;
+    $('refresh-status').textContent = '刷新失败：' + error.message;
+  }
 });
 window.addEventListener('load', async () => {
   const storedReply = sessionStorage.getItem('ai-reply');
@@ -597,12 +628,13 @@ window.addEventListener('load', async () => {
     catch (error) { /* stale reply selection is optional */ }
   }
   try {
-    const state = await (await fetch('/api/refresh-status')).json();
+    const state = await (await fetch('/api/refresh-status', { cache: 'no-store' })).json();
     if (state.running) {
       $('refresh-status').textContent = '后台刷新中…';
     } else if (state.last_finished) {
-      $('refresh-status').textContent =
-        '最近更新：' + state.last_finished.replace('T', ' ').slice(0, 16);
+      $('refresh-status').textContent = state.last_ok
+        ? '最近更新：' + state.last_finished.replace('T', ' ').slice(0, 16)
+        : '最近一次刷新失败，请查看系统状态';
     }
   } catch (error) { /* status is optional */ }
 });

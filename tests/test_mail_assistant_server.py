@@ -85,6 +85,14 @@ class MailAssistantServerSecurityTests(unittest.TestCase):
         self.assertIn('id="status"', html)
         self.assertIn("function setStatus(text) { $('status').textContent = text; }", html)
 
+    def test_assistant_page_includes_computer_brief_and_refresh_failure_ui(self):
+        html = mail_assistant.build_assistant_page()
+        self.assertIn('data-tab="brief"', html)
+        self.assertIn('src="/computer-brief"', html)
+        self.assertIn("'刷新失败：' + error.message", html)
+        self.assertIn("'刷新状态读取失败，请重试'", html)
+        self.assertIn("mailbox_id + '\\n收件人：'", html)
+
     def test_assistant_page_contains_health_dashboard(self):
         html = mail_assistant.build_assistant_page()
         self.assertIn('data-tab="health"', html)
@@ -422,6 +430,26 @@ class MailAssistantSendFlowTests(unittest.TestCase):
 
         self.assertEqual([(report, 200)], responses)
         build.assert_called_once()
+
+    def test_computer_brief_endpoint_reads_latest_artifact(self):
+        handler = object.__new__(self.server.MailAssistantHandler)
+        handler.path = '/computer-brief'
+        handler.headers = {'Host': '127.0.0.1:8931'}
+        responses = []
+        handler._send_html = lambda payload, code=200: responses.append(
+            (payload, code)
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, 'latest.html').write_text(
+                '<html>computer brief</html>', encoding='utf-8'
+            )
+            with mock.patch.object(
+                self.server, 'computer_brief_artifact_dir',
+                return_value=Path(directory),
+            ):
+                handler.do_GET()
+
+        self.assertEqual([('<html>computer brief</html>', 200)], responses)
 
 
 class AssistantRestartTests(unittest.TestCase):
