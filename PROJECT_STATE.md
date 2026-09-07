@@ -12,7 +12,7 @@
 
 兼容性基线：保留 `windows_gui_mcp.py` stdio 入口、服务器名 `windows-gui` 和导出的 `mcp` 对象；Goal A 新增 inspect_path/open_path/manage_path/open_app，Goal B 新增 clipboard/get_system_status，当前恰好 42 个唯一工具；旧 36 个工具的签名、返回结构及实现保持兼容。PyAutoGUI `FAILSAFE` 开启；ASCII 走 PyAutoGUI，非 ASCII 走原生 SendInput。v1 已批准的 public surface 上限为 42，之后 Goal C 做九项 demo 验收与 freeze。
 
-当前开发重点：v1 与 v1.1 Agent Productization 均已合入 main，公共 surface 冻结为 42 tools。Agent 的 current-user startup task 已安装并从 stable runtime 启动本机 host/tray；部署自动验收完成，等待最后的 fixture 窗口与快捷键人工确认后进入 maintenance。Daily Computer Brief 已合入 main 并处于 maintenance，不属于 Agent 的工作流 registry。Browser 停止功能扩张，Mail 仅 maintenance，Remote 冻结；不推进 LAN smoke。
+当前开发重点：v1 与 v1.1 Agent Productization 均已合入 main，公共 surface 冻结为 42 tools。Agent 的 current-user startup task 已安装并从 stable runtime 启动本机 host/tray；部署、owned fixture 与 tray 人工验收及 Exit/restart 生命周期验收已完成，项目进入 maintenance / real-use。Daily Computer Brief 已合入 main 并处于 maintenance，不属于 Agent 的工作流 registry。Browser 停止功能扩张，Mail 仅 maintenance，Remote 冻结；不推进 LAN smoke。
 
 邮箱稳定边界：继续保留固定 Edge Profile、READ/DRAFT/SEND 最小权限流程；所有发送必须先创建草稿并获得显式确认，QQ 邮箱永不发送，身份或服务域名无法确认时立即停止处理。
 
@@ -88,8 +88,8 @@
 ## 4. 当前工作
 
 - v1.1 Agent Productization 已合入 main：统一自然语言入口保留原邮件助手兼容路由，并为所有变异请求增加 CSRF；tray 在固定快捷键被占用时继续可用并显示固定提示。current-user startup task 已安装，使用 Python310/pythonw、stable runtime 工作目录、登录触发、IgnoreNew、`--no-refresh`，不保存 Windows 密码且不影响 Morning Brief。
-- Goal E 部署自动验收：stable runtime 更新到已验证 main；startup task 真实启动唯一 `127.0.0.1:8931` host，页面、最近任务、Mail Assistant 兼容路由、Host/Origin/Content-Type/CSRF/CSP 边界及 tray HWND 均通过。受控 productization smoke 的长期 MCP 子进程、五工作流中的学习/代码/文件整理路径、TaskCenter preview→confirm→单次 owned fixture move、脱敏历史、临时 loopback host、tray 生命周期和 clean shutdown 全部自动 PASS；fixture 窗口和生产 `Win+Alt+A` 触发保留为 MANUAL CHECK。
-- Goal E 修复两个真实部署阻塞：Task Scheduler COM folder 查询不再使用无效尾部分隔符，`--check` 可读取已安装任务；文件整理把 `inspect_path` 的 UTC 修改时间转换为本地日期后判断“今天”，避免本地午夜后漏掉 owned PDF。compileall、Agent/Morning Brief/scheduler/MCP 聚焦71项及完整680项单元测试均 PASS；42/42、v1签名快照、`windows-gui`、FAILSAFE 与 diff hygiene 保持。
+- Goal E 部署最终验收：stable runtime 的唯一 `127.0.0.1:8931` host、tray、页面、最近任务、Mail Assistant 兼容路由、健康/历史、队列和长期 MCP 子进程均通过；owned HCI/VR fixture 与页面入口获人工 PASS。tray Exit 经标准 `WM_COMMAND` 路径验证会同时关闭 host、8931 和 MCP child，且不会被 startup task 自动拉起；正式 startup task 随后恢复唯一 host、tray、8931 与 42-tool child。
+- Goal E 修复四个真实部署阻塞：Task Scheduler COM folder 查询不再使用无效尾部分隔符，`--check` 可读取已安装任务；文件整理按本地日期判断“今天”；通知区连续菜单按 Win32 要求回投 `WM_NULL` 并由标准 `WM_COMMAND` 分发；`pythonw.exe` host 使用同目录 console Python 与有效 stderr 启动 stdio MCP child。compileall、完整684项单元测试及独立42-tool/签名聚焦10项均 PASS；42/42、v1签名快照、`windows-gui`、FAILSAFE 与 diff hygiene 保持。
 - 邮箱助手页面现将最近一次电脑晨报作为默认标签，通过同一 `127.0.0.1:8931` 入口读取既有只读 artifact；08:00 晨报生成与调度仍保持独立。页面此前把任务预览换行展开成非法 JavaScript，导致脚本在绑定“刷新摘要”前停止；现已修正模板转义，并为刷新请求、轮询和失败状态提供可见反馈。真实无界面 Edge 验证统一页面、晨报内容和刷新按钮恢复通过，一次真实只读摘要刷新返回成功；完整 682 项单元测试通过，未改变 42-tool surface。
 
 - Goal B 验证（2026-09-05）：compileall PASS，完整 612 项单元测试 PASS，42 tools / 42 unique names、旧 36 签名、diff check PASS。真实 `--system-status` smoke 的前台/电池/磁盘/屏幕/鼠标全部 PASS；`--clipboard-owner` 只验证真实隐藏 owner 的创建/锁定/关闭，PASS，未读取/清空/写入剪贴板，不等于读写 smoke。
@@ -103,7 +103,7 @@
 ## 5. 已知问题与阻塞
 
 - 本次一次完整回归出现既有 Remote `test_concurrent_replay_has_single_winner` 失败：现有 `_consume_action_token` 在验证 task/action 前 pop token，错误绑定请求先到时可能导致两个请求都拒绝。单独复验及随后完整回归通过，但竞态未修复；Remote 代码/测试未改动，不把偶发通过等同已解决。Remote 保持冻结。
-- v1.1 受控 smoke 首轮固定 `Win+Alt+A` 被当时已运行的旧 AI-Work host 占用；产品按规定保留 tray 并显示固定提示。旧 host 已由 stable-runtime production host 替换，生产 tray 存在；实际快捷键触发仍待人工确认。
+- 生产 `Win+Alt+A` 人工回复未提供明确的 PASS/OCCUPIED 值；部署收口时 Windows 注册探针返回 error 1409，记录为 `OCCUPIED` degraded。产品按规定保留 tray 与固定冲突提示；该状态不是部署 blocker。
 - 新文件能力不构成对管理员/内核/恶意驱动的隔离。测试使用本机 Windows/NTFS；异常共享锁或其他原生文件系统行为可 fail closed。时间预算在循环边界检查，无法强制中断已阻塞内核 I/O；目录扫描不是并发事务快照。文件名使用实际拼写，路径大小写歧义安全拒绝。文档/应用关联是本机信任配置；open_requested/launch_requested 不保证窗口就绪，分发后应用异步读取仍可能发生后续对象变化。
 
 - Outlook 一次性登录命令已具备，但本会话未执行真实 Microsoft 登录或用真实租户验证端到端授权。已有 refresh token 时，摘要/助手会安全刷新并轮换。摘要/搜索需要 `Mail.Read` 凭据，草稿需要 `Mail.ReadWrite`，发送还需要 `Mail.Send`。
@@ -132,7 +132,7 @@
 
 ## 7. 下一步
 
-1. 完成 Goal E 的 owned fixture 窗口与生产 `Win+Alt+A` 人工确认；通过后 Agent 进入 maintenance / real use。
+1. v1/v1.1 与 Agent 部署已完成，保持 maintenance / real-use；后续只处理真实使用中发现的安全或可靠性维护问题。
 2. 保持冻结的 42-tool public surface；Browser 不扩张，Mail maintenance，Remote 冻结，不增加 delete、任意 shell或自动发送。
 3. Daily Computer Brief 保持独立 maintenance，不加入 Agent 工作流；Remote LAN smoke 仍在 v1/v1.1 验收范围外，既有并发竞态保留为 residual risk。
 4. 后续 maintenance 交付继续执行规定 compileall、完整单元测试、精确注册/兼容性检查、git diff --check，并同步本状态文件。
