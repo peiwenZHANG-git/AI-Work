@@ -3,7 +3,7 @@
 - 项目名称：AI-Work — 仅面向 Windows 的 FastMCP 桌面自动化服务器
 - 仓库路径：`D:\21781\Documents\Codex\AI-Work`
 - 远程仓库：`https://github.com/peiwenZHANG-git/AI-Work.git`（origin）
-- 状态基线：本文档内容核实于 2026-09-07；Git 当前 HEAD 与分支指向请实时查询（如 `git rev-parse main origin/main`），本文档不记录会随提交立即过时的动态 hash。
+- 状态基线：本文档内容核实于 2026-09-09；Git 当前 HEAD 与分支指向请实时查询（如 `git rev-parse main origin/main`），本文档不记录会随提交立即过时的动态 hash。
 - 维护规则：开始新的重要开发任务前先阅读本文档；完成影响项目状态的重要工作后更新本文档。只记录恢复上下文所需信息，不记录微小修改；记录前须用仓库、Git 历史和验证输出核实。
 
 ## 1. 当前目标
@@ -177,3 +177,8 @@ Goal C.4 通过私有、非 MCP 的严格只读恢复路径收口同一草稿：
 - 现有 `scripts/install_scheduled_tasks.py` 增加 `--important-mail-check` 显式选择器，用于幂等恢复固定任务 `AI-Work Important Mail Check`；不新增 MCP tool，不新增第二套 installer，也不改变 Mail Digest、Morning Brief 或 Agent startup。
 - canonical 定义引用 stable runtime 的 `scripts/daily_mail_digest.py --check-high`，工作目录为 stable runtime；沿用 hourly 一次性触发起点 `2026-08-29T00:00:00`、`PT1H` 重复、`P3650D` 期限和到期停止。调度 principal 为当前用户 Interactive/Limited；并发策略 `IgnoreNew`，10 分钟超时，禁止电池启动/继续，错过后补跑。
 - `--important-mail-check --check` 只读比对 action、arguments、cwd、启动时间、trigger 类型、hourly 重复/期限、当前用户 principal、并发/超时/电源策略和 enabled 状态；`--dry-run` 不调用 Task Scheduler。测试注入 process runner，覆盖 selector 隔离、canonical action、hourly preservation 和 drift detection。
+
+## Daily digest console encoding fix（2026-09-09）
+
+- 直接 console 运行 `scripts/daily_mail_digest.py` 时，中文完成/失败摘要曾受 Windows cp950 strict stdout 限制触发 `UnicodeEncodeError`；digest 业务、UTF-8 artifacts 和 scheduled-task 退出语义不受影响。`mail_digest.main()` 现在仅在进入 CLI 输出前为 stdout/stderr 启用有界 `backslashreplace` fallback，不改系统 locale、不改变 artifact 内容，也不吞掉业务失败。
+- 维护验证：UTF-8 与 cp950 console focused tests 3/3 PASS，`tests/test_mail_digest.py` 40/40 PASS；`PYTHONIOENCODING=cp950` 下直接加载 digest 入口并用 mocked 业务结果探针验证退出 0；完整 694/694 单元测试 PASS；compileall、diff hygiene、Mail Digest/Morning Brief/Important Mail Check/Agent startup scheduler definitions 均 PASS。

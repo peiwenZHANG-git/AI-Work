@@ -1,6 +1,7 @@
 """Unit tests for the nightly digest formatting and toast helpers."""
 
 import hashlib
+import io
 import json
 import os
 import requests
@@ -873,6 +874,90 @@ class MailBodyTextTest(unittest.TestCase):
         self.assertIn('fresh', kept)
         self.assertNotIn('stale', kept)
         self.assertNotIn('broken', kept)
+
+
+class ConsoleEncodingTests(unittest.TestCase):
+    def _console_stream(self, encoding: str):
+        raw = io.BytesIO()
+        stream = io.TextIOWrapper(
+            raw,
+            encoding=encoding,
+            errors='strict',
+            newline='',
+            write_through=True,
+        )
+        return stream, raw
+
+    def test_utf8_summary_remains_unchanged(self) -> None:
+        stdout, stdout_raw = self._console_stream('utf-8')
+        stderr, stderr_raw = self._console_stream('utf-8')
+        text = 'OK 邮件摘要完成'
+
+        with mock.patch.object(
+            mail_digest,
+            'run_digest_update',
+            return_value={'ok': True, 'text': text},
+        ), mock.patch.object(
+            mail_digest.sys, 'stdout', stdout
+        ), mock.patch.object(
+            mail_digest.sys, 'stderr', stderr
+        ):
+            exit_code = mail_digest.main([])
+
+        stdout.flush()
+        stderr.flush()
+        self.assertEqual(0, exit_code)
+        self.assertEqual(f'{text}\n', stdout_raw.getvalue().decode('utf-8'))
+        self.assertEqual(b'', stderr_raw.getvalue())
+
+    def test_cp950_summary_does_not_raise_unicode_encode_error(self) -> None:
+        stdout, stdout_raw = self._console_stream('cp950')
+        stderr, stderr_raw = self._console_stream('cp950')
+        text = 'OK 邮件摘要完成'
+
+        with mock.patch.object(
+            mail_digest,
+            'run_digest_update',
+            return_value={'ok': True, 'text': text},
+        ), mock.patch.object(
+            mail_digest.sys, 'stdout', stdout
+        ), mock.patch.object(
+            mail_digest.sys, 'stderr', stderr
+        ):
+            exit_code = mail_digest.main([])
+
+        stdout.flush()
+        stderr.flush()
+        self.assertEqual(0, exit_code)
+        console_text = stdout_raw.getvalue().decode('cp950')
+        self.assertTrue(console_text.startswith('OK \\u90ae'))
+        self.assertTrue(console_text.endswith('\n'))
+        self.assertEqual(b'', stderr_raw.getvalue())
+
+    def test_cp950_failure_keeps_explicit_failure_semantics(self) -> None:
+        stdout, stdout_raw = self._console_stream('cp950')
+        stderr, stderr_raw = self._console_stream('cp950')
+        text = 'OK 邮件摘要完成'
+
+        with mock.patch.object(
+            mail_digest,
+            'run_digest_update',
+            return_value={'ok': False, 'text': text},
+        ), mock.patch.object(
+            mail_digest.sys, 'stdout', stdout
+        ), mock.patch.object(
+            mail_digest.sys, 'stderr', stderr
+        ):
+            exit_code = mail_digest.main([])
+
+        stdout.flush()
+        stderr.flush()
+        self.assertEqual(1, exit_code)
+        self.assertTrue(stdout_raw.getvalue().decode('cp950').startswith('OK '))
+        self.assertIn(
+            'last-run.json',
+            stderr_raw.getvalue().decode('cp950'),
+        )
 
 
 if __name__ == '__main__':

@@ -2360,7 +2360,18 @@ def check_high_importance_mails(*, notify: bool = True) -> dict[str, Any]:
         _release_run_lock()
 
 
+def _enable_console_encoding_fallback() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        if stream is None or not hasattr(stream, 'reconfigure'):
+            continue
+        try:
+            stream.reconfigure(errors='backslashreplace')
+        except (OSError, ValueError):
+            continue
+
+
 def main(argv: list[str] | None = None) -> int:
+    _enable_console_encoding_fallback()
     parser = argparse.ArgumentParser(
         description='Read-only nightly summary of the three configured mailboxes.'
     )
