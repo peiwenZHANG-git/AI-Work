@@ -67,8 +67,13 @@ _STOP = object()
 
 def _default_client_factory():
     root = Path(__file__).resolve().parents[1]
+    executable = Path(sys.executable)
+    if executable.name.casefold() == 'pythonw.exe':
+        console_executable = executable.with_name('python.exe')
+        if console_executable.is_file():
+            executable = console_executable
     transport = StdioTransport(
-        command=sys.executable,
+        command=str(executable),
         args=['-u', str(root / 'windows_gui_mcp.py')],
         cwd=str(root),
     )

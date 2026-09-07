@@ -18,6 +18,7 @@ import tempfile
 from unittest import mock
 
 from windows_gui import activity_history
+import windows_gui.mcp_executor as mcp_executor
 from windows_gui.mcp_executor import (
     ChildInterrupted, EXPECTED_TOOLS, ExecutorQueueFull,
     PersistentMcpExecutor, _Job,
@@ -340,6 +341,17 @@ class FakeClient:
 
 
 class ExecutorTests(unittest.TestCase):
+    def test_pythonw_host_uses_console_python_for_stdio_child(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pythonw = Path(directory) / 'pythonw.exe'
+            python = Path(directory) / 'python.exe'
+            pythonw.touch(); python.touch()
+            with mock.patch.object(mcp_executor.sys, 'executable', str(pythonw)), \
+                    mock.patch.object(mcp_executor, 'StdioTransport') as transport, \
+                    mock.patch.object(mcp_executor, 'Client', side_effect=lambda value: value):
+                mcp_executor._default_client_factory()
+        self.assertEqual(str(python), transport.call_args.kwargs['command'])
+
     def test_child_startup_and_read_retry(self):
         calls = []
         clients = iter([FakeClient(calls, fail=True), FakeClient(calls)])
