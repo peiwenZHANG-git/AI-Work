@@ -347,10 +347,12 @@ class ExecutorTests(unittest.TestCase):
             python = Path(directory) / 'python.exe'
             pythonw.touch(); python.touch()
             with mock.patch.object(mcp_executor.sys, 'executable', str(pythonw)), \
+                    mock.patch.object(mcp_executor.sys, 'stderr', None), \
                     mock.patch.object(mcp_executor, 'StdioTransport') as transport, \
                     mock.patch.object(mcp_executor, 'Client', side_effect=lambda value: value):
                 mcp_executor._default_client_factory()
         self.assertEqual(str(python), transport.call_args.kwargs['command'])
+        self.assertEqual(Path(mcp_executor.os.devnull), transport.call_args.kwargs['log_file'])
 
     def test_child_startup_and_read_retry(self):
         calls = []

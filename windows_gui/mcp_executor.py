@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import os
 import queue
 import sys
 import threading
@@ -76,6 +77,7 @@ def _default_client_factory():
         command=str(executable),
         args=['-u', str(root / 'windows_gui_mcp.py')],
         cwd=str(root),
+        log_file=Path(os.devnull) if sys.stderr is None else None,
     )
     return Client(transport)
 
