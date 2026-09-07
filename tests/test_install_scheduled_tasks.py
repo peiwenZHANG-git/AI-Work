@@ -244,5 +244,187 @@ class InstallScheduledTasksTests(unittest.TestCase):
         self.assertIn('definition_matches', output.getvalue())
 
 
+class ImportantMailCheckSchedulerTests(unittest.TestCase):
+    def setUp(self):
+        self.installer = _load_installer_module()
+
+    def test_important_selector_uses_canonical_action_without_registering(self):
+        root = Path(r'C:\repo')
+        output = io.StringIO()
+        with mock.patch.object(
+            self.installer,
+            'build_install_script',
+            return_value='SCRIPT',
+        ) as build_install_script, mock.patch.object(
+            self.installer, 'install_task'
+        ) as install_task, redirect_stdout(output):
+            exit_code = self.installer.main(
+                [
+                    '--root', r'C:\repo',
+                    '--python-executable', r'C:\Python\pythonw.exe',
+                    '--important-mail-check',
+                    '--dry-run',
+                ],
+            )
+
+        self.assertEqual(0, exit_code)
+        install_task.assert_not_called()
+        build_install_script.assert_called_once_with(
+            root=root.resolve(),
+            python_executable=r'C:\Python\pythonw.exe',
+            important_mail_check=True,
+        )
+
+    def test_important_selector_rejects_a_second_selector(self):
+        with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as raised:
+            self.installer.main(
+                [
+                    '--root', r'C:\repo',
+                    '--computer-brief',
+                    '--important-mail-check',
+                    '--dry-run',
+                ],
+            )
+
+        self.assertEqual(2, raised.exception.code)
+
+    def test_important_definition_uses_stable_runtime_action_and_policy(self):
+        definition = self.installer.expected_task_definition(
+            root=Path(r'C:\repo'),
+            python_executable=r'C:\Python\pythonw.exe',
+            important_mail_check=True,
+        )
+
+        self.assertEqual(r'C:\Python\pythonw.exe', definition['execute'])
+        self.assertEqual(
+            r'"C:\repo\scripts\daily_mail_digest.py" --check-high',
+            definition['arguments'],
+        )
+        self.assertEqual(r'C:\repo', definition['working_directory'])
+        self.assertEqual('IgnoreNew', definition['multiple_instances'])
+        self.assertEqual('PT10M', definition['execution_time_limit'])
+        self.assertTrue(definition['disallow_start_on_batteries'])
+        self.assertTrue(definition['stop_if_going_on_batteries'])
+        self.assertTrue(definition['start_when_available'])
+        self.assertTrue(definition['principal_current_user'])
+        self.assertEqual('Interactive', definition['logon_type'])
+        self.assertEqual('Limited', definition['run_level'])
+
+    def test_important_install_script_preserves_hourly_trigger(self):
+        script = self.installer.build_install_script(
+            root=Path(r'C:\repo'),
+            python_executable=r'C:\Python\pythonw.exe',
+            important_mail_check=True,
+        )
+
+        self.assertIn("New-ScheduledTaskTrigger -Once -At '2026-08-29T00:00:00'", script)
+        self.assertIn("$trigger.Repetition.Interval = 'PT1H'", script)
+        self.assertIn("$trigger.Repetition.Duration = 'P3650D'", script)
+        self.assertIn('$trigger.Repetition.StopAtDurationEnd = $true', script)
+        self.assertIn(
+            '"C:\\repo\\scripts\\daily_mail_digest.py" --check-high',
+            script,
+        )
+        self.assertIn("-WorkingDirectory 'C:\\repo'", script)
+        self.assertIn('-MultipleInstances IgnoreNew', script)
+        self.assertIn('-ExecutionTimeLimit (New-TimeSpan -Minutes 10)', script)
+        self.assertIn('-AllowStartIfOnBatteries:$false', script)
+        self.assertIn('-DontStopIfGoingOnBatteries:$false', script)
+        self.assertIn('-StartWhenAvailable', script)
+        self.assertIn("-TaskName 'AI-Work Important Mail Check'", script)
+
+    def test_important_check_reports_matching_definition(self):
+        desired = self.installer.expected_task_definition(
+            root=Path(r'C:\repo'),
+            python_executable=r'C:\Python\pythonw.exe',
+            important_mail_check=True,
+        )
+        actual = {
+            'execute': desired['execute'],
+            'arguments': desired['arguments'],
+            'working_directory': desired['working_directory'],
+            'trigger_times': '00:00',
+            'multiple_instances': 'IgnoreNew',
+            'execution_time_limit': 'PT10M',
+            'disallow_start_on_batteries': True,
+            'stop_if_going_on_batteries': True,
+            'start_when_available': True,
+            'action_count': 1,
+            'trigger_count': 1,
+            'trigger_type': 'MSFT_TaskTimeTrigger',
+            'daily_trigger_count': 0,
+            'daily_interval': None,
+            'repetition_interval': 'PT1H',
+            'repetition_duration': 'P3650D',
+            'repetition_stop_at_duration_end': True,
+            'repetition_disabled': False,
+            'enabled': True,
+            'principal_current_user': True,
+            'logon_type': 'Interactive',
+            'run_level': 'Limited',
+        }
+        commands = []
+
+        def runner(command, **kwargs):
+            commands.append(command)
+            return subprocess.CompletedProcess(command, 0, json.dumps(actual), '')
+
+        result = self.installer.check_task_definition(
+            root=Path(r'C:\repo'),
+            python_executable=r'C:\Python\pythonw.exe',
+            important_mail_check=True,
+            runner=runner,
+        )
+
+        self.assertTrue(result['ok'])
+        self.assertEqual([], result['differences'])
+        self.assertIn(
+            "Get-ScheduledTask -TaskName 'AI-Work Important Mail Check'",
+            commands[0][-1],
+        )
+
+    def test_important_check_detects_hourly_drift(self):
+        desired = self.installer.expected_task_definition(
+            root=Path(r'C:\repo'),
+            python_executable=r'C:\Python\pythonw.exe',
+            important_mail_check=True,
+        )
+        actual = dict(desired)
+        actual['trigger_times'] = '00:00'
+        actual['repetition_interval'] = 'PT30M'
+
+        differences = self.installer.compare_task_definitions(desired, actual)
+
+        self.assertEqual(['repetition_interval'], differences)
+
+    def test_other_task_builds_do_not_gain_important_behavior(self):
+        digest_script = self.installer.build_install_script(
+            root=Path(r'C:\repo'),
+            python_executable=r'C:\Python\pythonw.exe',
+        )
+        brief_script = self.installer.build_install_script(
+            root=Path(r'C:\repo'),
+            python_executable=r'C:\Python\pythonw.exe',
+            computer_brief=True,
+        )
+        important_check_script = self.installer.build_check_script(
+            self.installer.IMPORTANT_TASK_NAME,
+        )
+
+        self.assertIn("-TaskName 'AI-Work Daily Mail Digest'", digest_script)
+        self.assertIn("-TaskName 'AI-Work Daily Computer Brief'", brief_script)
+        self.assertNotIn('AI-Work Important Mail Check', digest_script)
+        self.assertNotIn('AI-Work Important Mail Check', brief_script)
+        self.assertNotIn('--check-high', digest_script)
+        self.assertNotIn('--check-high', brief_script)
+        self.assertIn(
+            "Get-ScheduledTask -TaskName 'AI-Work Important Mail Check'",
+            important_check_script,
+        )
+        self.assertNotIn('AI-Work Daily Mail Digest', important_check_script)
+        self.assertNotIn('AI-Work Daily Computer Brief', important_check_script)
+        self.assertNotIn('Start-ScheduledTask', important_check_script)
+
+
 if __name__ == '__main__':
     unittest.main()

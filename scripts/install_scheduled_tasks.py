@@ -1,4 +1,4 @@
-"""Install/check one fixed Windows task: mail digest or computer brief."""
+"""Install/check one fixed Windows task: mail digest, computer brief, or important mail check."""
 
 from __future__ import annotations
 
@@ -13,6 +13,10 @@ from typing import Any, Callable
 TASK_NAME = 'AI-Work Daily Mail Digest'
 DIGEST_TIMES = ('10:00', '22:00')
 BRIEF_TASK_NAME = 'AI-Work Daily Computer Brief'
+IMPORTANT_TASK_NAME = 'AI-Work Important Mail Check'
+IMPORTANT_TRIGGER_START = '2026-08-29T00:00:00'
+IMPORTANT_TRIGGER_INTERVAL = 'PT1H'
+IMPORTANT_TRIGGER_DURATION = 'P3650D'
 
 
 def powershell_single_quote(value: str) -> str:
@@ -33,23 +37,64 @@ def build_install_script(
     root: Path,
     python_executable: str,
     computer_brief: bool = False,
+    important_mail_check: bool = False,
 ) -> str:
-    action_script = root / 'scripts' / ('daily_computer_brief.py' if computer_brief else 'daily_mail_digest.py')
-    times = ('08:00',) if computer_brief else DIGEST_TIMES
-    task_name = BRIEF_TASK_NAME if computer_brief else TASK_NAME
-    timeout = '-Minutes 15' if computer_brief else '-Hours 1'
-    battery = '' if computer_brief else ':$false'
-    catchup = ' -StartWhenAvailable' if computer_brief else ''
-    principal = ("$principal = New-ScheduledTaskPrincipal -UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited\n"
-                 if computer_brief else '')
-    principal_argument = '-Principal $principal ' if computer_brief else ''
-    action_arguments = f'"{action_script}"'
-    triggers = ', '.join(
-        f"(New-ScheduledTaskTrigger -Daily -At {powershell_single_quote(time)})"
-        for time in times
-    )
+    if computer_brief and important_mail_check:
+        raise ValueError('select only one scheduled task')
+    if computer_brief:
+        action_script = root / 'scripts' / 'daily_computer_brief.py'
+        task_name = BRIEF_TASK_NAME
+        timeout = '-Minutes 15'
+        battery = ''
+        catchup = ' -StartWhenAvailable'
+        principal = (
+            '$principal = New-ScheduledTaskPrincipal '
+            '-UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) '
+            '-LogonType Interactive -RunLevel Limited\n'
+        )
+        principal_argument = '-Principal $principal '
+        action_arguments = f'"{action_script}"'
+        triggers = ", ".join(
+            f"(New-ScheduledTaskTrigger -Daily -At {powershell_single_quote(time)})"
+            for time in ('08:00',)
+        )
+    elif important_mail_check:
+        action_script = root / 'scripts' / 'daily_mail_digest.py'
+        task_name = IMPORTANT_TASK_NAME
+        timeout = '-Minutes 10'
+        battery = ':$false'
+        catchup = ' -StartWhenAvailable'
+        principal = (
+            '$principal = New-ScheduledTaskPrincipal '
+            '-UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) '
+            '-LogonType Interactive -RunLevel Limited\n'
+        )
+        principal_argument = '-Principal $principal '
+        action_arguments = f'"{action_script}" --check-high'
+        triggers = '$trigger'
+    else:
+        action_script = root / 'scripts' / 'daily_mail_digest.py'
+        task_name = TASK_NAME
+        timeout = '-Hours 1'
+        battery = ':$false'
+        catchup = ''
+        principal = ''
+        principal_argument = ''
+        action_arguments = f'"{action_script}"'
+        triggers = ", ".join(
+            f"(New-ScheduledTaskTrigger -Daily -At {powershell_single_quote(time)})"
+            for time in DIGEST_TIMES
+        )
+    important_trigger = ''
+    if important_mail_check:
+        important_trigger = f"""
+$trigger = New-ScheduledTaskTrigger -Once -At {powershell_single_quote(IMPORTANT_TRIGGER_START)}
+$trigger.Repetition.Interval = {powershell_single_quote(IMPORTANT_TRIGGER_INTERVAL)}
+$trigger.Repetition.Duration = {powershell_single_quote(IMPORTANT_TRIGGER_DURATION)}
+$trigger.Repetition.StopAtDurationEnd = $true
+"""
     return f"""
-$ErrorActionPreference = 'Stop'
+{important_trigger}$ErrorActionPreference = 'Stop'
 $action = New-ScheduledTaskAction `
     -Execute {powershell_single_quote(python_executable)} `
     -Argument {powershell_single_quote(action_arguments)} `
@@ -74,7 +119,37 @@ def expected_task_definition(
     root: Path,
     python_executable: str,
     computer_brief: bool = False,
+    important_mail_check: bool = False,
 ) -> dict[str, Any]:
+    if computer_brief and important_mail_check:
+        raise ValueError('select only one scheduled task')
+    if important_mail_check:
+        executable = digest_python_executable(python_executable)
+        action_script = root / 'scripts' / 'daily_mail_digest.py'
+        return {
+            'execute': str(executable),
+            'arguments': f'"{action_script}" --check-high',
+            'working_directory': str(root),
+            'trigger_times': ['00:00'],
+            'multiple_instances': 'IgnoreNew',
+            'execution_time_limit': 'PT10M',
+            'disallow_start_on_batteries': True,
+            'stop_if_going_on_batteries': True,
+            'start_when_available': True,
+            'action_count': 1,
+            'trigger_count': 1,
+            'trigger_type': 'MSFT_TaskTimeTrigger',
+            'daily_trigger_count': 0,
+            'daily_interval': None,
+            'repetition_interval': IMPORTANT_TRIGGER_INTERVAL,
+            'repetition_duration': IMPORTANT_TRIGGER_DURATION,
+            'repetition_stop_at_duration_end': True,
+            'repetition_disabled': False,
+            'enabled': True,
+            'principal_current_user': True,
+            'logon_type': 'Interactive',
+            'run_level': 'Limited',
+        }
     if computer_brief:
         desired = expected_task_definition(root=root, python_executable=python_executable)
         desired.update(arguments=f'"{root / "scripts" / "daily_computer_brief.py"}"',
@@ -118,6 +193,10 @@ try {{
 $triggerTimes = @(
     $task.Triggers | ForEach-Object {{ ([datetime]$_.StartBoundary).ToString('HH:mm') }}
 ) -join ','
+$triggerType = @(
+    $task.Triggers | ForEach-Object {{ $_.CimClass.CimClassName }}
+) -join ','
+$firstTrigger = @($task.Triggers)[0]
 [pscustomobject]@{{
     execute = [string]$action.Execute
     arguments = [string]$action.Arguments
@@ -130,8 +209,12 @@ $triggerTimes = @(
     start_when_available = [bool]$task.Settings.StartWhenAvailable
     action_count = @($task.Actions).Count
     trigger_count = @($task.Triggers).Count
+    trigger_type = [string]$triggerType
     daily_trigger_count = @($task.Triggers | Where-Object {{ $_.CimClass.CimClassName -eq 'MSFT_TaskDailyTrigger' }}).Count
     daily_interval = @($task.Triggers)[0].DaysInterval
+    repetition_interval = [string]$firstTrigger.Repetition.Interval
+    repetition_duration = [string]$firstTrigger.Repetition.Duration
+    repetition_stop_at_duration_end = [bool]$firstTrigger.Repetition.StopAtDurationEnd
     repetition_disabled = -not [bool](@($task.Triggers)[0].Repetition.Interval)
     enabled = [bool]$task.Settings.Enabled -and [bool](@($task.Triggers)[0].Enabled)
     principal_current_user = $principalMatches
@@ -158,6 +241,10 @@ def compare_task_definitions(
         'execution_time_limit': str(actual.get('execution_time_limit') or ''),
         'disallow_start_on_batteries': actual.get('disallow_start_on_batteries') is True,
         'stop_if_going_on_batteries': actual.get('stop_if_going_on_batteries') is True,
+        'trigger_type': str(actual.get('trigger_type') or ''),
+        'repetition_interval': str(actual.get('repetition_interval') or ''),
+        'repetition_duration': str(actual.get('repetition_duration') or ''),
+        'repetition_stop_at_duration_end': actual.get('repetition_stop_at_duration_end') is True,
     }
     for key in ('action_count', 'trigger_count', 'daily_trigger_count', 'daily_interval',
                 'repetition_disabled', 'enabled', 'principal_current_user', 'logon_type', 'run_level', 'start_when_available'):
@@ -180,13 +267,19 @@ def check_task_definition(
     python_executable: str,
     task_name: str = TASK_NAME,
     computer_brief: bool = False,
+    important_mail_check: bool = False,
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> dict[str, Any]:
     desired = expected_task_definition(
-        root=root, python_executable=python_executable, computer_brief=computer_brief
+        root=root,
+        python_executable=python_executable,
+        computer_brief=computer_brief,
+        important_mail_check=important_mail_check,
     )
     if computer_brief:
         task_name = BRIEF_TASK_NAME
+    elif important_mail_check:
+        task_name = IMPORTANT_TASK_NAME
     command = [
         'powershell',
         '-NoProfile',
@@ -242,6 +335,7 @@ def install_task(
     root: Path,
     python_executable: str,
     computer_brief: bool = False,
+    important_mail_check: bool = False,
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> dict[str, Any]:
     executable = digest_python_executable(python_executable)
@@ -251,7 +345,12 @@ def install_task(
         '-ExecutionPolicy',
         'Bypass',
         '-Command',
-        build_install_script(root=root, python_executable=str(executable), computer_brief=computer_brief),
+        build_install_script(
+            root=root,
+            python_executable=str(executable),
+            computer_brief=computer_brief,
+            important_mail_check=important_mail_check,
+        ),
     ]
     try:
         result = runner(command, capture_output=True, text=True, timeout=30)
@@ -302,8 +401,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument('--computer-brief', action='store_true',
                         help='select only the independent 08:00 computer brief task')
+    parser.add_argument(
+        '--important-mail-check', action='store_true',
+        help='select only the independent hourly important mail check task',
+    )
     args = parser.parse_args(argv)
-    task_options = {'computer_brief': True} if args.computer_brief else {}
+    if args.computer_brief and args.important_mail_check:
+        parser.error('--computer-brief and --important-mail-check are mutually exclusive')
+    task_options = {}
+    if args.computer_brief:
+        task_options['computer_brief'] = True
+    if args.important_mail_check:
+        task_options['important_mail_check'] = True
     if args.dry_run and args.check:
         parser.error('--dry-run and --check are mutually exclusive')
     root = args.root.resolve()
@@ -332,7 +441,14 @@ def main(argv: list[str] | None = None) -> int:
         python_executable=str(executable),
         **task_options,
     )
-    print(f"[{'PASS' if result['ok'] else 'FAIL'}] {BRIEF_TASK_NAME if args.computer_brief else TASK_NAME}: {result['detail']}")
+    selected_task_name = (
+        BRIEF_TASK_NAME
+        if args.computer_brief
+        else IMPORTANT_TASK_NAME
+        if args.important_mail_check
+        else TASK_NAME
+    )
+    print(f"[{'PASS' if result['ok'] else 'FAIL'}] {selected_task_name}: {result['detail']}")
     return 0 if result['ok'] else 1
 
 

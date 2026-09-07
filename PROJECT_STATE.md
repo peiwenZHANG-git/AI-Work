@@ -171,3 +171,9 @@ Goal C.4 通过私有、非 MCP 的严格只读恢复路径收口同一草稿：
 - v1.1最终交付验证：compileall（含scripts）PASS；完整648/648单元测试PASS；晨报与scheduler聚焦30/30 PASS；独立42/42唯一工具、旧42实现模块/签名/返回形状不变、windows-gui、FAILSAFE True、artifact结构、真实Toast、真实Task Scheduler触发、实际任务check与git diff --check均PASS。delivery-check结果PASS；既有Remote偶发竞态保留为剩余风险。
 
 - 部署清理（2026-09-06）：原任务因安装器默认`--root`绑定临时feature worktree；用户脏main checkout停在旧提交且包含重叠改动，不能安全更新或直接作为runtime。已新建长期detached worktree `D:\21781\Documents\Codex\AI-Work-runtime` 并检出已验证main，使用现有安装器的`--root`迁移同一任务。迁移后08:00定义、action、cwd、当前用户、并发/超时/电源策略全部匹配；Task Scheduler真实触发返回0，普通用户调度环境确认三个artifact更新、diagnostics complete且Toast ok。临时诊断action、脚本和报告均已移除，生产action恢复并再次check。仓库和全部Windows计划任务不再引用临时feature worktree，允许删除该worktree和本地feature分支；稳定runtime必须保留。
+
+## Important Mail Check canonicalization（2026-09-09）
+
+- 现有 `scripts/install_scheduled_tasks.py` 增加 `--important-mail-check` 显式选择器，用于幂等恢复固定任务 `AI-Work Important Mail Check`；不新增 MCP tool，不新增第二套 installer，也不改变 Mail Digest、Morning Brief 或 Agent startup。
+- canonical 定义引用 stable runtime 的 `scripts/daily_mail_digest.py --check-high`，工作目录为 stable runtime；沿用 hourly 一次性触发起点 `2026-08-29T00:00:00`、`PT1H` 重复、`P3650D` 期限和到期停止。调度 principal 为当前用户 Interactive/Limited；并发策略 `IgnoreNew`，10 分钟超时，禁止电池启动/继续，错过后补跑。
+- `--important-mail-check --check` 只读比对 action、arguments、cwd、启动时间、trigger 类型、hourly 重复/期限、当前用户 principal、并发/超时/电源策略和 enabled 状态；`--dry-run` 不调用 Task Scheduler。测试注入 process runner，覆盖 selector 隔离、canonical action、hourly preservation 和 drift detection。
