@@ -317,9 +317,12 @@ class ImportantMailCheckSchedulerTests(unittest.TestCase):
             important_mail_check=True,
         )
 
-        self.assertIn("New-ScheduledTaskTrigger -Once -At '2026-08-29T00:00:00'", script)
-        self.assertIn("$trigger.Repetition.Interval = 'PT1H'", script)
-        self.assertIn("$trigger.Repetition.Duration = 'P3650D'", script)
+        self.assertIn(
+            "New-ScheduledTaskTrigger -Once -At '2026-08-29T00:00:00' `",
+            script,
+        )
+        self.assertIn('-RepetitionInterval (New-TimeSpan -Hours 1)', script)
+        self.assertIn('-RepetitionDuration (New-TimeSpan -Days 3650)', script)
         self.assertIn('$trigger.Repetition.StopAtDurationEnd = $true', script)
         self.assertIn(
             '"C:\\repo\\scripts\\daily_mail_digest.py" --check-high',

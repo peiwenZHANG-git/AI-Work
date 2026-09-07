@@ -88,9 +88,9 @@ def build_install_script(
     important_trigger = ''
     if important_mail_check:
         important_trigger = f"""
-$trigger = New-ScheduledTaskTrigger -Once -At {powershell_single_quote(IMPORTANT_TRIGGER_START)}
-$trigger.Repetition.Interval = {powershell_single_quote(IMPORTANT_TRIGGER_INTERVAL)}
-$trigger.Repetition.Duration = {powershell_single_quote(IMPORTANT_TRIGGER_DURATION)}
+$trigger = New-ScheduledTaskTrigger -Once -At {powershell_single_quote(IMPORTANT_TRIGGER_START)} `
+    -RepetitionInterval (New-TimeSpan -Hours 1) `
+    -RepetitionDuration (New-TimeSpan -Days 3650)
 $trigger.Repetition.StopAtDurationEnd = $true
 """
     return f"""
