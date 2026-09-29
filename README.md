@@ -1,6 +1,39 @@
-# Windows GUI MCP Server
+# AI-Work
 
 English | [中文](README.zh-CN.md)
+
+**A local assistant that lets AI work on my Windows computer — mail, files, apps, the browser — while I stay in control.**
+
+AI agents that can touch a real computer are powerful and risky: one wrong click can send an email, overwrite a file or leak something private. AI-Work explores how to hand everyday tasks to an AI *without* giving up control. I use it daily on my own machine, across three real mailboxes.
+
+### Design principles
+
+- **Read-only by default.** Summarising and searching mail never changes anything.
+- **Draft first, send later.** The AI can write an email as a draft; sending is a separate step that I confirm explicitly, and the draft is re-checked right before it goes out.
+- **Nothing gets lost.** File operations never overwrite, never delete, and stay inside Downloads and Documents.
+- **The phone can ask, never decide.** A paired device can submit a request, but only I, at the computer, can confirm it.
+- **When unsure, do nothing.** Any check that can't be settled fails closed instead of guessing.
+
+### What it does
+
+- A morning brief at 08:00: today's mail across my three mailboxes, recent downloads and the computer's status
+- Mail summary, search and draft writing, with two-step sending
+- Finding, opening and organising files; opening apps and web pages; safe downloads
+- A small local assistant page and a tray hotkey (`Win+Alt+A`), all bound to this computer only
+
+### How it was validated
+
+- **9 real-world scenarios** accepted one by one, from "find my newest PDF" to "draft an email to my mentor", including one that failed, was diagnosed and fixed before it passed
+- **631 automated tests**, plus a frozen public surface of exactly **42 MCP tools**
+- A written threat model for remote access ([docs/REMOTE_ARCHITECTURE.md](docs/REMOTE_ARCHITECTURE.md)) and a full acceptance record ([docs/V1_ACCEPTANCE.md](docs/V1_ACCEPTANCE.md))
+
+### My role
+
+I defined the problem, the scope, the safety boundaries and the acceptance criteria. The code was written with AI coding assistants (Codex and Claude Code); I reviewed and checked every change against those criteria, and tested each iteration on my own computer before accepting it.
+
+---
+
+## Technical overview
 
 A Windows-only FastMCP server that gives AI clients mouse, keyboard, window focus, screenshot, Windows UI Automation, and menu control capabilities.
 
