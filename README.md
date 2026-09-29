@@ -1,458 +1,468 @@
 # Windows GUI MCP Server
 
-这是一个仅面向 Windows 的 FastMCP Server，为 AI 客户端提供鼠标、键盘、窗口聚焦、截图、Windows UI Automation 和菜单操作能力。
+English | [中文](README.zh-CN.md)
 
-项目保留 `windows_gui_mcp.py` 作为兼容启动入口，具体实现按职责放在 `windows_gui/` 包中：
+A Windows-only FastMCP server that gives AI clients mouse, keyboard, window focus, screenshot, Windows UI Automation, and menu control capabilities.
 
-- `server.py`：共享 FastMCP 实例和 PyAutoGUI 安全设置。
-- `mouse.py`：鼠标、滚轮、拖动和截图。
-- `keyboard.py`：文本输入、按键和快捷键。
-- `windows.py`：窗口枚举、聚焦及聚焦后的输入操作。
-- `uia.py`：UI Automation 控件、菜单和保存对话框操作。
-- `mail_backends.py`：统一邮箱后端抽象、Graph 与 Edge adapter；摘要和搜索保持 READ-only，草稿仅保存不发送。
-- `browser_mail.py`：QQ 与本科网易邮箱的 Browser DOM/CDP READ-only 摘要 adapter；只提取列表元数据。
-- `imap_mail.py`：QQ 与本科网易邮箱共享的标准库 IMAP READ-only 摘要 adapter；使用 SSL、EXAMINE、UID 和 BODY.PEEK。
-- `mailboxes.py`：固定邮箱身份、权限边界和 Edge Profile 启动逻辑。
-- `mail_search.py`：统一 READ-only 邮件搜索、后端分发和安全结果引用。
-- `mail_draft.py`：统一草稿创建、Graph/Edge 后端分发和不发送安全检查。
-- `mail_send.py`：统一发送已有草稿、显式确认和发送前元数据校验。
-- `mail_summary.py`：邮箱身份和页面验证、只读列表解析、今日摘要及重要事项分类。
-- `mail_digest.py`：计划任务摘要、Outlook refresh 轮换、GLM 摘要/翻译和本地 HTML 渲染。
-- `master_oauth.py` / `scripts/authenticate_master_mail.py`：一次性 Outlook OAuth 登录和 refresh token 安全写入。
-- `mail_assistant.py` / `scripts/mail_assistant_server.py`：本机 AI-Work 统一入口和兼容的邮件助手页面，只绑定 `127.0.0.1:8931`。
-- `workflows.py` / `orchestrator.py` / `mcp_executor.py`：五类固定意图、有界任务编排、单执行器和长期 stdio MCP 子进程。
-- `activity_history.py` / `tray.py`：有界脱敏活动历史、托盘入口和固定 `Win+Alt+A` 快捷键。
-- `health_events.py` / `system_health.py`：有界脱敏健康事件和助手页面共享的四态只读健康模型。
-- `scripts/configure_mail_credentials.py`：交互式写入白名单凭据；输入不回显，密钥不从命令行或日志传递。
-- `scripts/system_health.py`：本机只读健康检查，验证配置/凭据存在性、MCP 注册、计划任务、助手服务和最近摘要运行状态。
-- `scripts/install_scheduled_tasks.py`：幂等恢复每日摘要计划任务；只注册任务，不自动触发邮件读取。
-- `scripts/install_agent_startup.py`：生成、只读核对或显式安装当前用户的 AI-Work 登录启动定义。
+`windows_gui_mcp.py` is kept as the backward-compatible entry point; the implementation lives in the `windows_gui/` package, organized by responsibility:
 
-## 环境要求
+- `server.py`: the shared FastMCP instance and PyAutoGUI safety settings.
+- `mouse.py`: mouse movement, scroll wheel, dragging, and screenshots.
+- `keyboard.py`: text input, key presses, and hotkeys.
+- `windows.py`: window enumeration, focusing, and input after focusing.
+- `uia.py`: UI Automation controls, menus, and Save dialog operations.
+- `mail_backends.py`: a unified mailbox backend abstraction with Graph and Edge adapters; summary and search stay READ-only, and drafts are saved but never sent.
+- `browser_mail.py`: a READ-only Browser DOM/CDP summary adapter for QQ Mail and the undergraduate NetEase mailbox; it extracts list metadata only.
+- `imap_mail.py`: a standard-library IMAP READ-only summary adapter shared by QQ Mail and the undergraduate NetEase mailbox; it uses SSL, EXAMINE, UIDs, and BODY.PEEK.
+- `mailboxes.py`: fixed mailbox identities, permission boundaries, and Edge profile launch logic.
+- `mail_search.py`: unified READ-only mail search, backend dispatch, and safe result references.
+- `mail_draft.py`: unified draft creation, Graph/Edge backend dispatch, and no-send safety checks.
+- `mail_send.py`: unified sending of existing drafts, with explicit confirmation and pre-send metadata validation.
+- `mail_summary.py`: mailbox identity and page verification, read-only list parsing, daily summaries, and important-item classification.
+- `mail_digest.py`: scheduled-task digests, Outlook refresh-token rotation, GLM summarization/translation, and local HTML rendering.
+- `master_oauth.py` / `scripts/authenticate_master_mail.py`: one-time Outlook OAuth sign-in and secure storage of the refresh token.
+- `mail_assistant.py` / `scripts/mail_assistant_server.py`: the local AI-Work unified entry point and the backward-compatible mail assistant page, bound only to `127.0.0.1:8931`.
+- `workflows.py` / `orchestrator.py` / `mcp_executor.py`: five fixed intents, bounded task orchestration, a single executor, and a long-lived stdio MCP subprocess.
+- `activity_history.py` / `tray.py`: bounded, redacted activity history, the tray entry point, and the fixed `Win+Alt+A` hotkey.
+- `health_events.py` / `system_health.py`: bounded, redacted health events and the four-state read-only health model shared with the assistant page.
+- `scripts/configure_mail_credentials.py`: interactively writes allowlisted credentials; input is not echoed, and secrets are never passed via the command line or logs.
+- `scripts/system_health.py`: a local read-only health check that verifies configuration/credential presence, MCP registration, scheduled tasks, the assistant service, and the status of the latest digest run.
+- `scripts/install_scheduled_tasks.py`: idempotently restores the daily digest scheduled task; it only registers the task and never triggers mail reading.
+- `scripts/install_agent_startup.py`: generates, checks (read-only), or explicitly installs the current user's AI-Work sign-in startup definition.
 
-- Windows 10 或 Windows 11
-- Python 3.10 或更高版本
-- 可交互的桌面会话
+## Requirements
 
-安装依赖：
+- Windows 10 or Windows 11
+- Python 3.10 or later
+- An interactive desktop session
+
+Install dependencies:
 
 ```powershell
 python -m pip install fastmcp pyautogui pywin32 pywinauto pillow requests keyring
 ```
 
-QQ / 网易 Browser DOM 摘要还需要可选依赖 `playwright`。该 adapter 只使用
-`connect_over_cdp` 连接已经由用户明确开启远程调试的 Edge，不会下载或启动新的浏览器：
+The QQ / NetEase Browser DOM summary also needs the optional `playwright` dependency. This adapter only uses
+`connect_over_cdp` to attach to an Edge instance where the user has explicitly enabled remote debugging; it never downloads or launches a new browser:
 
 ```powershell
 python -m pip install playwright
 ```
 
-## 通用网页与文件下载
+## General web pages and file downloads
 
-通用浏览器能力同时提供 CLI 和 MCP 语义工具。打开网页时会新建
-Edge 窗口；打开和下载会解析并检查目标主机地址，拒绝本机、私网、link-local 和
-其他非公共地址；公共下载按禁用自动重定向的方式逐跳校验重定向目标。下载默认仅允许
-HTTPS、不覆盖已有文件，并使用临时文件原子落盘，同时返回大小与 SHA-256：
+General browser capabilities are exposed both as a CLI and as semantic MCP tools. Opening a web page creates a new
+Edge window. Opening and downloading both resolve and check the target host address, rejecting localhost, private,
+link-local, and other non-public addresses; public downloads disable automatic redirects and validate each redirect
+hop. Downloads allow HTTPS only by default, never overwrite existing files, and are written atomically through a
+temporary file; the result includes the size and SHA-256:
 
 ```powershell
 python scripts/browser_download.py open https://example.com
 python scripts/browser_download.py download https://example.com/report.pdf D:\Downloads
 ```
 
-可用 `--filename` 指定安全文件名、`--max-bytes` 调整默认 256 MiB 上限。仅在明确
-需要时使用 `--allow-http` 或 `--overwrite`。目标目录必须已经存在。登录态网页下载不
-会复制 Cookie 到此下载器；登录态下载使用下述受控浏览器会话。
+Use `--filename` to specify a safe filename and `--max-bytes` to change the default 256 MiB limit. Use `--allow-http`
+or `--overwrite` only when explicitly needed. The target directory must already exist. Cookies are never copied into
+this downloader for signed-in pages; signed-in downloads use the controlled browser session described below.
 
-持久会话由专用工作线程持有，并使用 `%LOCALAPPDATA%\AI-Work\browser-agent-profile`
-独立资料目录，不复用三个邮箱 Profile。可用工具依次启动会话、导航、检查页面、点击
-唯一匹配元素、保存浏览器下载并停止会话。Playwright 请求在 context 级逐请求校验
-DNS/私网边界；检查结果会移除 URL 查询串与片段，不返回 Cookie 或输入框值；按钮和表单
-控件点击必须显式确认。登录态下载沿用 256 MiB 上限，默认不覆盖已有文件，失败或超限时
-清理临时文件。
+The persistent session is owned by a dedicated worker thread and uses a separate profile directory at
+`%LOCALAPPDATA%\AI-Work\browser-agent-profile`; it does not reuse any of the three mailbox profiles. The tools start a
+session, navigate, inspect the page, click a uniquely matched element, save a browser download, and stop the session.
+Playwright validates DNS/private-network boundaries per request at the context level; inspection results strip URL
+query strings and fragments and never return cookies or input values; clicking buttons and form controls requires
+explicit confirmation. Signed-in downloads keep the 256 MiB limit, do not overwrite existing files by default, and
+clean up temporary files on failure or when the limit is exceeded.
 
-新增 MCP 工具：`open_webpage`、`download_web_file`、`start_browser_session`、
-`navigate_browser`、`inspect_browser`、`click_browser_element`、
-`download_browser_element`、`stop_browser_session`。服务器当前固定注册 42 个工具。
+New MCP tools: `open_webpage`, `download_web_file`, `start_browser_session`,
+`navigate_browser`, `inspect_browser`, `click_browser_element`,
+`download_browser_element`, `stop_browser_session`. The server currently registers exactly 42 tools.
 
-`pyautogui` 的故障保护已开启。把鼠标快速移动到屏幕左上角可中止 PyAutoGUI 操作。
+PyAutoGUI's fail-safe is enabled. Quickly moving the mouse to the top-left corner of the screen aborts PyAutoGUI actions.
 
-## v1 Goal A：本地文件与应用
+## v1 Goal A: Local files and apps
 
-Goal A 新增 `inspect_path`、`open_path`、`manage_path`、`open_app`，阶段总数 40；Goal B 后总数为 42。
-共享路径策略在 `windows_gui/local_paths.py`，文件操作在 `files.py`，启动在 `applications.py`。
-依赖沿用现有 pywin32、FastMCP 及其 Pydantic 2；不需要新的服务、索引或后台任务。
+Goal A adds `inspect_path`, `open_path`, `manage_path`, and `open_app`, bringing the total to 40 at that stage; the total is 42 after Goal B.
+The shared path policy lives in `windows_gui/local_paths.py`, file operations in `files.py`, and app launching in `applications.py`.
+Dependencies are the existing pywin32, FastMCP, and its Pydantic 2; no new services, indexes, or background tasks are needed.
 
-以下是 MCP tool arguments，不是 shell 命令。路径使用 Windows Known Folders 的
-`Downloads/...`、`Documents/...` 别名，或这些根内的绝对路径；返回值只给根相对路径。
-不要硬编码用户 profile。采用 Windows 返回的实际文件名拼写；不接受路径大小写歧义。
-Desktop、网络共享、可移动盘、重解析/OneDrive 占位目录、hardlink 均不在此版本支持范围。
+The following are MCP tool arguments, not shell commands. Paths use the Windows Known Folders aliases
+`Downloads/...` and `Documents/...`, or absolute paths inside those roots; return values only contain root-relative paths.
+Do not hard-code the user profile. Use the actual filename casing returned by Windows; case-ambiguous paths are rejected.
+The Desktop, network shares, removable drives, reparse points/OneDrive placeholder folders, and hard links are out of scope for this version.
 
-| 任务 | Tool | Arguments |
+| Task | Tool | Arguments |
 |---|---|---|
-| 打开 VS Code | `open_app` | `{"app":"vscode"}` |
-| 查找 Downloads 最新 PDF | `inspect_path` | `{"request":{"operation":"search","path":"Downloads","extension":".pdf","max_depth":0,"sort":"modified_desc","limit":1}}` |
-| 打开上一步返回路径 | `open_path` | `{"path":"Downloads/report.pdf"}` |
-| 创建课程目录 | `manage_path` | `{"request":{"operation":"mkdir","path":"Documents/HCI"}}` |
-| 同卷移动指定文件 | `manage_path` | `{"request":{"operation":"move","source":"Downloads/report.pdf","destination":"Documents/HCI/report.pdf"}}` |
-| 复制普通文件 | `manage_path` | `{"request":{"operation":"copy","source":"Downloads/report.pdf","destination":"Documents/report-copy.pdf"}}` |
-| 仅重命名 basename | `manage_path` | `{"request":{"operation":"rename","source":"Documents/report-copy.pdf","new_name":"reading.pdf"}}` |
-| 明确读取文本 | `inspect_path` | `{"request":{"operation":"read_text","path":"Documents/notes.txt","encoding":"utf-8","max_chars":16000}}` |
+| Open VS Code | `open_app` | `{"app":"vscode"}` |
+| Find the newest PDF in Downloads | `inspect_path` | `{"request":{"operation":"search","path":"Downloads","extension":".pdf","max_depth":0,"sort":"modified_desc","limit":1}}` |
+| Open the path returned by the previous step | `open_path` | `{"path":"Downloads/report.pdf"}` |
+| Create a course folder | `manage_path` | `{"request":{"operation":"mkdir","path":"Documents/HCI"}}` |
+| Move a specific file on the same volume | `manage_path` | `{"request":{"operation":"move","source":"Downloads/report.pdf","destination":"Documents/HCI/report.pdf"}}` |
+| Copy a regular file | `manage_path` | `{"request":{"operation":"copy","source":"Downloads/report.pdf","destination":"Documents/report-copy.pdf"}}` |
+| Rename the basename only | `manage_path` | `{"request":{"operation":"rename","source":"Documents/report-copy.pdf","new_name":"reading.pdf"}}` |
+| Explicitly read text | `inspect_path` | `{"request":{"operation":"read_text","path":"Documents/notes.txt","encoding":"utf-8","max_chars":16000}}` |
 
-`inspect_path` 的 request 是严格操作分支，拒绝不适用字段。`stat` 只返回类型、大小和
-修改时间；`list` 是单目录，`search` 的 `max_depth` 默认 2、范围 0–5，0 表示只搜索
-指定目录；扩展名过滤是 `.pdf` 形式的简单后缀，大小写不敏感，没有任意 glob。
-排序为 `name`（默认）或 `modified_desc`，`limit` 默认 100、最多 200。
-扫描最多 10,000 项，协作式时间预算 3 秒。先扫描并排序，再限制返回条数；
-`results_truncated=true` 仅表示输出数量裁剪，`partial=true`/`scan_complete=false`
-则表示扫描不完整（包括权限、重解析点、时间/数量边界），不得声称找到了全范围最新。
-`latest_in_scope_verified=true` 只代表完整观测范围内排序，不是并发文件系统事务快照。
+The `inspect_path` request is a strict per-operation union that rejects fields that do not apply. `stat` returns only
+type, size, and modification time; `list` covers a single directory; `search` has `max_depth` defaulting to 2 with a
+range of 0–5, where 0 searches only the given directory. The extension filter is a simple case-insensitive suffix such
+as `.pdf`; there are no arbitrary globs. Sorting is by `name` (default) or `modified_desc`; `limit` defaults to 100 with
+a maximum of 200. A scan covers at most 10,000 entries with a cooperative 3-second time budget. Results are scanned and
+sorted first, then limited; `results_truncated=true` only means the output count was trimmed, while
+`partial=true`/`scan_complete=false` means the scan was incomplete (including permissions, reparse points, and
+time/count limits), so it must not claim to have found the newest item across the full scope.
+`latest_in_scope_verified=true` only means ordering within the fully observed scope; it is not a transactional snapshot of a concurrent file system.
 
-文本文件上限 1 MiB；默认返回最多 16,000 字符、可指定至 64,000。超字符限制返回
-`truncated=true`，超文件大小拒绝。UTF-8 严格解码且接受 BOM；UTF-16 必须有 BOM；
-GB18030 必须显式选择。会验证整个有界文件，拒绝二进制控制字符和无效编码，包括
-返回字符范围之外的尾部；不缓存、不记录正文、不写 audit。返回文本会进入调用客户端上下文。
+Text files are limited to 1 MiB; by default up to 16,000 characters are returned, configurable up to 64,000. Exceeding
+the character limit returns `truncated=true`; exceeding the file size limit is rejected. UTF-8 is decoded strictly and
+accepts a BOM; UTF-16 requires a BOM; GB18030 must be selected explicitly. The entire bounded file is validated,
+rejecting binary control characters and invalid encodings, including in the tail beyond the returned character range;
+content is never cached, logged, or written to the audit log. Returned text enters the calling client's context.
 
-`manage_path` 的 `mkdir` 只创建一层，父目录必须存在。copy 上限 256 MiB、协作式
-15 秒预算，以独占创建临时对象加原子不替换发布实现；失败仅清理本次拥有的临时句柄。
-move 只接受同卷普通文件，跨卷固定返回 `cross_volume_not_supported`，不会 copy+delete。
-rename 只接受新 basename，不能借此改变父目录。所有目标已存在时失败，不接受
-`overwrite`、`replace`、`delete`、递归操作或 ACL 修改参数。
+`manage_path`'s `mkdir` creates only one level, and the parent directory must exist. Copy is limited to 256 MiB with a
+cooperative 15-second budget, implemented by exclusively creating a temporary object and publishing it with an atomic
+no-replace operation; on failure, only the temporary handles owned by this operation are cleaned up.
+Move accepts only regular files on the same volume; cross-volume moves always return `cross_volume_not_supported` and
+never fall back to copy+delete. Rename accepts only a new basename and cannot be used to change the parent directory.
+Every operation fails if the target already exists; `overwrite`, `replace`, `delete`, recursive operations, and ACL
+modification parameters are not accepted.
 
-`open_path` 首版只允许 `.pdf/.txt/.md/.png/.jpg/.jpeg/.bmp`，目录交给 Explorer。
-Office 文件暂未开放；可执行文件、脚本、`.lnk/.url` 等跳转类型一律拒绝。
-文档使用 Windows association API 的固定 `open` verb，应用通过 argv 列表、
-`shell=False` 启动；不拼 shell command string。`open_app` 仅接受
-`notepad/calculator/explorer/edge/vscode`，由系统目录/Known Folders 下固定安装位置解析。
-没有安装时返回 `app_not_installed`，不会搜索任意 PATH 或启动解释器。
+In this first version, `open_path` only allows `.pdf/.txt/.md/.png/.jpg/.jpeg/.bmp`, and directories are handed to Explorer.
+Office files are not yet supported; executables, scripts, `.lnk/.url`, and other redirecting types are always rejected.
+Documents are opened with the fixed `open` verb of the Windows association API, and apps are launched with an argv list
+and `shell=False`; no shell command strings are assembled. `open_app` only accepts
+`notepad/calculator/explorer/edge/vscode`, resolved from fixed install locations under system directories/Known Folders.
+If an app is not installed it returns `app_not_installed`; it never searches an arbitrary PATH or launches an interpreter.
 
-四个工具均返回固定 `status` 与 `code`，不返回原始异常；常见错误包括
-`invalid_request`、`invalid_path`、`outside_allowed_roots`、`not_found`、
-`reparse_point_not_supported`、`path_changed`、`destination_exists`、`file_busy`、
-`permission_denied`。打开/启动成功码是 `open_requested`/`launch_requested`，只确认
-操作已交给系统，不保证窗口已就绪。
+All four tools return a fixed `status` and `code` and never return raw exceptions; common errors include
+`invalid_request`, `invalid_path`, `outside_allowed_roots`, `not_found`,
+`reparse_point_not_supported`, `path_changed`, `destination_exists`, `file_busy`, and
+`permission_denied`. The success codes for opening/launching are `open_requested`/`launch_requested`, which only
+confirm the operation was handed to the system, not that a window is ready.
 
-### 路径竞态与残余风险
+### Path races and residual risk
 
-父链逐组件以句柄打开，不允许删除共享；源文件在读取/移动期间拒绝写/删共享。
-属性读取句柄不提供足够的 Windows 共享锁，所以实际加入 read-data/list-directory 权限。
-文件管理使用 parent-relative `NtCreateFile` + `OBJ_DONT_REPARSE`，发布使用
-parent-relative `NtSetInformationFile` 的 no-replace rename；原生失败直接停止，
-不松锁重试、不退回全路径 rename。原生 junction、检查后父目录替换、并发目标出现、
-最后一刻 reparse 修改均有专用 fixture 测试。
+Each component of the parent chain is opened by handle without allowing delete sharing; source files deny write/delete
+sharing while being read or moved. Attribute-read handles do not provide sufficient Windows sharing locks, so
+read-data/list-directory access is actually requested. File management uses parent-relative `NtCreateFile` +
+`OBJ_DONT_REPARSE`, and publishing uses a parent-relative no-replace rename via `NtSetInformationFile`; native failures
+stop immediately, without relaxing locks to retry or falling back to a full-path rename. Native junctions, parent
+directory replacement after checks, concurrent target creation, and last-moment reparse changes all have dedicated fixture tests.
 
-安全实现参考 Microsoft 的 [NtCreateFile](https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntcreatefile)
-和 [NtSetInformationFile](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-ntsetinformationfile)
-契约。它不是对管理员、内核、恶意文件系统驱动或同用户进程的全面隔离。
-时间预算在循环边界检查，不能强制打断已经阻塞的内核 I/O；完整扫描也不是事务快照。
-原生行为在本机 Windows/NTFS 验证，其他文件系统/异常共享锁可能安全拒绝。
-文件关联程序与已知安装路径是本机信任配置，不能证明文档/应用内容无恶意。
-文件打开句柄只持有到系统分发完成，目标应用异步读取前仍可能发生后续变化；
-因此返回 requested，不宣称已验证应用读到的内容。不要自动打开不可信下载。
+The security implementation follows Microsoft's [NtCreateFile](https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntcreatefile)
+and [NtSetInformationFile](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-ntsetinformationfile)
+contracts. It is not comprehensive isolation from administrators, the kernel, malicious file system drivers, or processes running as the same user.
+Time budgets are checked at loop boundaries and cannot forcibly interrupt kernel I/O that is already blocked; a complete scan is not a transactional snapshot either.
+Native behavior is verified on local Windows/NTFS; other file systems or unusual sharing locks may be safely rejected.
+File associations and known install paths are trusted local configuration and cannot prove that document/app content is not malicious.
+File-open handles are held only until the system dispatch completes, so the target may still change before the app reads it asynchronously;
+this is why results say "requested" rather than claiming the app read verified content. Do not automatically open untrusted downloads.
 
-### Goal A 专用 smoke
+### Goal A smoke tests
 
-先运行完整自动化验证，再在获得授权的桌面会话中执行：
+First run the full automated verification, then, in an authorized desktop session, run:
 
 ```powershell
 python tests/smoke_test.py --local-files
 python tests/smoke_test.py --local-files-open
 ```
 
-两者只操作本次创建的 `tests/smoke_artifacts/local-files-<uuid>/`；测试专用根仅在进程内
-注入，不改变生产 Known Folders。前者验证查询、建目录、复制、移动、重命名、不覆盖与
-内容保留；后者另用固定 Notepad 打开自建无害文本，保留窗口供 `MANUAL CHECK`，
-不点击/输入/关闭应用。不操作用户 Downloads，不把选取用的 PDF-equivalent 文件当 PDF 打开。
-文档关联与应用解析/启动分别通过注入测试；这不声称真实 VS Code 或 PDF viewer 已验收。
+Both only touch the `tests/smoke_artifacts/local-files-<uuid>/` created by the current run; the test-only root is
+injected in-process only and does not change the production Known Folders. The first verifies querying, creating
+folders, copying, moving, renaming, no-overwrite behavior, and content preservation; the second additionally opens a
+self-created harmless text file in the fixed Notepad and leaves the window open for `MANUAL CHECK`, without clicking,
+typing, or closing the app. It never touches the user's Downloads and never opens the PDF-equivalent selection file as a PDF.
+Document association and app resolution/launch are tested separately via injection; this does not claim that a real VS Code or PDF viewer has been accepted.
 
-Goal A 保持 40 工具。用户已随后批准 Goal B 增加 clipboard/get_system_status 至 42，
-再进行 Goal C 的九项 demo 验收与 feature freeze；Browser/Mail/Remote 不扩张。
+Goal A keeps 40 tools. The user subsequently approved Goal B adding clipboard/get_system_status for a total of 42,
+followed by Goal C's nine-demo acceptance and feature freeze; Browser/Mail/Remote do not expand.
 
-## v1 Goal B：剪贴板与系统状态
+## v1 Goal B: Clipboard and system status
 
-本阶段仅增加 `clipboard`、`get_system_status`，总数恰好 42；旧 36 个工具保持兼容。
+This stage only adds `clipboard` and `get_system_status`, for a total of exactly 42; the previous 36 tools remain compatible.
 
 ```json
 {"request":{"operation":"read","max_chars":16000}}
 ```
 
-上例调用 `clipboard`，明确读取当前 Unicode 文本；最多 64,000 字符，返回 `truncated`。
-原生内存对象超过 256 KiB、二进制格式或无效 Unicode 会被拒绝。内容不进入服务端日志、
-audit、缓存或文件，但请求方客户端可能保留 tool result，因此不要无意读取密码或 token。
+The example above calls `clipboard` to explicitly read the current Unicode text; at most 64,000 characters, returning `truncated`.
+Native memory objects over 256 KiB, binary formats, and invalid Unicode are rejected. Content never enters server logs,
+the audit log, caches, or files, but the requesting client may retain the tool result, so do not read passwords or tokens unintentionally.
 
 ```json
 {"request":{"operation":"write","text":"Harmless course note"}}
 ```
 
-写入会替换剪贴板，只返回字符数与状态，不回显文本。上限 64,000 字符；拒绝 NUL 和
-无效 surrogate。先注册/准备内存，再清空剪贴板；先放置 Windows 的三个
-[历史与云同步排除格式](https://learn.microsoft.com/en-us/windows/win32/dataxchg/clipboard-formats)，
-再发布正文。标记失败时不发布正文；清空之后的失败可能留下空剪贴板。
-不会偷偷读取/备份旧内容，也不会自动粘贴、后台监听或清理用户历史。
-这些标记是 Windows 的排除机制，不能约束任意第三方 clipboard manager 或请求客户端。
+Writing replaces the clipboard and returns only the character count and status, without echoing the text. The limit is
+64,000 characters; NUL and invalid surrogates are rejected. Memory is registered/prepared first, then the clipboard is
+cleared; Windows' three
+[history and cloud-sync exclusion formats](https://learn.microsoft.com/en-us/windows/win32/dataxchg/clipboard-formats)
+are placed first, and then the content is published. If setting the markers fails, the content is not published; a failure after clearing may leave an empty clipboard.
+It never silently reads or backs up previous content, and never auto-pastes, listens in the background, or clears the user's history.
+These markers are Windows' exclusion mechanism and cannot constrain arbitrary third-party clipboard managers or the requesting client.
 
-`get_system_status` 无参数，返回前台 HWND/最多 256 字符标题、电池状态、固定本地卷的
-free/total bytes、主屏和虚拟屏尺寸及鼠标位置。坐标沿用进程 DPI awareness。
-无电池是 `not_present`，未知/失败是 `unknown`/`query_failed`，整体返回 `partial`；
-不会把未知电量伪装成 0%。不聚焦窗口、不读剪贴板、不探测网络、不读凭据或命令行。
-结果是连续查询的观察值，不是原子快照；标题只返回给调用方，不进入日志。
+`get_system_status` takes no parameters and returns the foreground HWND/title (up to 256 characters), battery status,
+free/total bytes of fixed local volumes, primary and virtual screen sizes, and the mouse position. Coordinates follow the process's DPI awareness.
+No battery is reported as `not_present`, unknown/failed as `unknown`/`query_failed`, with an overall `partial`;
+an unknown charge level is never disguised as 0%. It does not focus windows, read the clipboard, probe the network, or read credentials or command lines.
+Results are observations from consecutive queries, not an atomic snapshot; the title is returned only to the caller and never logged.
 
-真实只读状态 smoke：
+Real read-only status smoke test:
 
 ```powershell
 python tests/smoke_test.py --system-status
 ```
 
-该 smoke 只输出组件验证状态，不输出/保存窗口标题。剪贴板单元测试全部使用 fake/native
-API mocks，不冒充真实系统剪贴板测试。`python tests/smoke_test.py --clipboard-owner` 只验证真实隐藏 owner/锁定/关闭，不读取或写入内容，不能替代 read/write smoke。本机 Windows 拒绝创建独立 Window Station
-（Access denied），因此在取得替换当前剪贴板的明确确认前，不执行真实写入 smoke。
-九项真实 demo 和最终 freeze 属于下一阶段 Goal C；未执行的项目不标记 PASS。
+This smoke test only outputs component verification status and never outputs or saves window titles. All clipboard unit tests use fake/native
+API mocks and do not pretend to test the real system clipboard. `python tests/smoke_test.py --clipboard-owner` only verifies the real hidden owner/locking/closing, without reading or writing content, and cannot replace a read/write smoke test. The local Windows refuses to create a separate Window Station
+(Access denied), so the real write smoke test is not run until explicit confirmation to replace the current clipboard is obtained.
+The nine real demos and the final freeze belong to the next stage, Goal C; items that have not been run are not marked PASS.
 
-## 启动
+## Running
 
-在项目根目录运行：
+From the project root, run:
 
 ```powershell
 python windows_gui_mcp.py
 ```
 
-VS Code MCP 配置位于 `.vscode/mcp.json`，通过 stdio 启动同一个兼容入口。
+The VS Code MCP configuration is in `.vscode/mcp.json` and launches the same compatible entry point over stdio.
 
-## 测试
+## Testing
 
-运行所有不操作真实桌面的单元测试：
+Run all unit tests that do not touch the real desktop:
 
 ```powershell
 python -m unittest discover -s tests -t . -v
 ```
 
-运行语法编译检查：
+Run the syntax compilation check:
 
 ```powershell
 python -m compileall -q windows_gui_mcp.py windows_gui tests scripts
 ```
 
-运行真实 Windows GUI smoke test：
+Run the real Windows GUI smoke test:
 
 ```powershell
 python tests/smoke_test.py
 ```
 
-Smoke test 只使用唯一命名的专用记事本文件，测试结果写入 `tests/smoke_artifacts/`。它不会删除文件、发送消息、关闭程序或操作已有文档；记事本会保留在桌面供人工确认。日志中的 `MANUAL CHECK` 表示需要观察截图或桌面状态。
+The smoke test only uses a uniquely named, dedicated Notepad file, and writes results to `tests/smoke_artifacts/`. It never deletes files, sends messages, closes programs, or touches existing documents; Notepad is left on the desktop for manual confirmation. `MANUAL CHECK` in the log means a screenshot or desktop state needs to be observed.
 
-## MCP 工具
+## MCP tools
 
-当前服务器注册 42 个工具；Goal A 之前的 36 个工具的名称、参数和返回结构保持不变。
+The server currently registers 42 tools; the names, parameters, and return structures of the 36 tools that existed before Goal A are unchanged.
 
-| 工具 | 用途 |
+| Tool | Purpose |
 |---|---|
-| `clipboard` | 显式、仅文本的剪贴板 read/write；不记录内容，写入排除历史/云同步。 |
-| `get_system_status` | 只读聚合前台窗口、电池、固定本地磁盘空间、屏幕尺寸和鼠标。 |
-| `inspect_path` | Downloads/Documents 内有界 stat/list/search/read_text。 |
-| `open_path` | 打开允许的普通 PDF/文本/图片或目录。 |
-| `manage_path` | 单层 mkdir、普通文件 copy/同卷 move、basename rename；绝不覆盖。 |
-| `open_app` | 按固定 alias 启动已安装的常用应用，不接收命令或参数。 |
-| `get_mouse_position` | 返回当前鼠标光标坐标。 |
-| `move_mouse` | 把鼠标移动到指定屏幕坐标。 |
-| `click_mouse` | 在当前位置单击左键、右键或中键。 |
-| `screenshot` | 截取当前桌面并作为 FastMCP Image 返回。 |
-| `double_click` | 在当前位置执行双击。 |
-| `right_click` | 在当前位置执行右键单击。 |
-| `scroll` | 发送 Windows 鼠标滚轮事件。 |
-| `drag_mouse` | 从当前位置拖动到指定坐标。 |
-| `focus_and_press` | 点击指定坐标取得焦点，然后按一个键。 |
-| `type_text` | 向当前聚焦输入区域输入文本；ASCII 保持原输入路径，中文、日文、韩文、重音字符、emoji 和其他 Unicode 使用 Windows `SendInput`。 |
-| `press_key` | 使用 Windows 键盘事件按下一个受支持的按键。 |
-| `hotkey` | 执行由按键列表描述的快捷键。 |
-| `list_windows` | 列出可见顶层窗口标题。 |
-| `focus_window` | 按标题匹配并聚焦可见窗口。 |
-| `focus_window_and_press` | 聚焦匹配窗口后按一个键。 |
-| `focus_window_and_hotkey` | 聚焦匹配窗口后执行快捷键。 |
-| `focus_window_and_type` | 聚焦匹配窗口后输入文本。 |
-| `focus_window_and_scroll` | 聚焦匹配窗口、移动到窗口中心并滚动。 |
-| `list_controls` | 列出匹配窗口中最多 150 个有用 UIA 控件。 |
-| `click_control` | 按名称及可选控件类型激活 UIA 控件。 |
-| `click_menu_item` | 打开指定菜单并激活其中的菜单项。 |
-| `set_save_dialog_filename` | 在 Windows 保存对话框中设置文件名。 |
-| `click_save_button` | 激活 Windows 保存对话框中的保存按钮。 |
-| `open_all_mailboxes` | 使用三个固定 Edge Profile 分别打开独立邮箱窗口，并返回每个邮箱的打开状态；不读取或修改邮件。 |
-| `summarize_all_mailboxes_today` | 硕士邮箱保持 Graph 优先 / Edge fallback；QQ 与本科网易邮箱优先使用 IMAP READ-only、显式配置时可回退 Browser DOM/CDP；外部返回结构保持兼容。 |
-| `search_mailboxes` | 按邮箱、关键词、发件人、ISO 8601 起止时间和最大数量执行 READ-only 搜索；不打开正文，不改变邮件状态。 |
-| `create_mail_draft` | 在指定已验证邮箱中创建并保存草稿；只保存不发送，不支持附件。 |
-| `send_mail_draft` | 仅在 `confirm_send=true` 时发送已有草稿；发送前校验邮箱身份、draft 归属、收件人和主题。 |
+| `clipboard` | Explicit, text-only clipboard read/write; content is never logged, and writes are excluded from history/cloud sync. |
+| `get_system_status` | Read-only aggregate of the foreground window, battery, fixed local disk space, screen size, and mouse. |
+| `inspect_path` | Bounded stat/list/search/read_text within Downloads/Documents. |
+| `open_path` | Opens an allowed regular PDF/text/image file or a directory. |
+| `manage_path` | Single-level mkdir, regular-file copy/same-volume move, basename rename; never overwrites. |
+| `open_app` | Launches an installed common app by fixed alias; accepts no commands or arguments. |
+| `get_mouse_position` | Returns the current mouse cursor coordinates. |
+| `move_mouse` | Moves the mouse to the given screen coordinates. |
+| `click_mouse` | Clicks the left, right, or middle button at the current position. |
+| `screenshot` | Captures the current desktop and returns it as a FastMCP Image. |
+| `double_click` | Double-clicks at the current position. |
+| `right_click` | Right-clicks at the current position. |
+| `scroll` | Sends Windows mouse wheel events. |
+| `drag_mouse` | Drags from the current position to the given coordinates. |
+| `focus_and_press` | Clicks the given coordinates to take focus, then presses a key. |
+| `type_text` | Types text into the currently focused input area; ASCII keeps the original input path, while Chinese, Japanese, Korean, accented characters, emoji, and other Unicode use Windows `SendInput`. |
+| `press_key` | Presses a supported key using Windows keyboard events. |
+| `hotkey` | Performs a hotkey described by a list of keys. |
+| `list_windows` | Lists visible top-level window titles. |
+| `focus_window` | Focuses a visible window matched by title. |
+| `focus_window_and_press` | Focuses a matching window, then presses a key. |
+| `focus_window_and_hotkey` | Focuses a matching window, then performs a hotkey. |
+| `focus_window_and_type` | Focuses a matching window, then types text. |
+| `focus_window_and_scroll` | Focuses a matching window, moves to its center, and scrolls. |
+| `list_controls` | Lists up to 150 useful UIA controls in a matching window. |
+| `click_control` | Activates a UIA control by name and optional control type. |
+| `click_menu_item` | Opens the given menu and activates a menu item in it. |
+| `set_save_dialog_filename` | Sets the filename in a Windows Save dialog. |
+| `click_save_button` | Activates the Save button in a Windows Save dialog. |
+| `open_all_mailboxes` | Opens a separate mailbox window with each of the three fixed Edge profiles and returns each mailbox's open status; does not read or modify mail. |
+| `summarize_all_mailboxes_today` | The master's mailbox stays Graph-first with Edge fallback; QQ Mail and the undergraduate NetEase mailbox prefer IMAP READ-only and can fall back to Browser DOM/CDP when explicitly configured; the external return structure stays compatible. |
+| `search_mailboxes` | Runs a READ-only search by mailbox, keyword, sender, ISO 8601 start/end time, and maximum count; does not open message bodies or change mail state. |
+| `create_mail_draft` | Creates and saves a draft in the specified verified mailbox; saves only, never sends, no attachment support. |
+| `send_mail_draft` | Sends an existing draft only when `confirm_send=true`; verifies mailbox identity, draft ownership, recipient, and subject before sending. |
 
-## 固定邮箱身份
+## Fixed mailbox identities
 
-邮箱身份配置只包含非敏感元数据，不保存密码、Cookie、sid、token、会话链接或其他登录凭证。
+Mailbox identity configuration contains only non-sensitive metadata and never stores passwords, cookies, sids, tokens, session links, or other sign-in credentials.
 
-| 身份 | 显示名称 | Edge Profile | 服务 | 稳定 URL | 权限 |
+| Identity | Display name | Edge Profile | Service | Stable URL | Permissions |
 |---|---|---|---|---|---|
-| `bachelor_mail` | 本科邮箱 | `Profile 1` | 网易企业邮箱 | `https://mailh.qiye.163.com/` | READ、DRAFT、SEND |
-| `master_mail` | 硕士邮箱 | `Profile 2` | Outlook Web | `https://outlook.office.com/mail/` | READ、DRAFT、SEND |
-| `qq_mail` | QQ邮箱 | `Profile 3` | QQ Mail | `https://mail.qq.com/` | READ、DRAFT |
+| `bachelor_mail` | `本科邮箱` (undergraduate mail) | `Profile 1` | NetEase Enterprise Mail | `https://mailh.qiye.163.com/` | READ, DRAFT, SEND |
+| `master_mail` | `硕士邮箱` (master's mail) | `Profile 2` | Outlook Web | `https://outlook.office.com/mail/` | READ, DRAFT, SEND |
+| `qq_mail` | `QQ邮箱` (QQ Mail) | `Profile 3` | QQ Mail | `https://mail.qq.com/` | READ, DRAFT |
 
-所有发送动作都必须先生成草稿并等待用户确认。QQ 邮箱允许创建草稿但不允许发送。删除、移动、标记或归档邮件前必须获得用户确认。任何邮箱操作都必须先核对邮箱身份与指定 Profile；无法确认时立即停止，禁止猜测。自动输入密码以及记录登录凭证、Cookie、token 或会话链接均被禁止。
+Every send action must first create a draft and wait for user confirmation. QQ Mail may create drafts but may not send. Deleting, moving, flagging, or archiving mail requires user confirmation first. Every mailbox operation must first verify the mailbox identity and the specified profile; if that cannot be confirmed, it stops immediately and never guesses. Automatically typing passwords and recording sign-in credentials, cookies, tokens, or session links are all prohibited.
 
 
-### READ-only 邮件搜索
+### READ-only mail search
 
-- `search_mailboxes(mailbox_id=None, keyword=None, sender=None, start_time=None, end_time=None, max_results=10)` 是新增的第 26 个工具；原 25 个 MCP 工具保持不变。
-- 结果只包含 `mailbox_id`、发件人、主题、接收时间、`message_reference`、`reference_kind` 和搜索范围；不返回正文。
-- 硕士 Outlook 在 Graph READY 时使用 Graph `$filter` 服务端搜索，只选择 `id`、发件人、主题和接收时间；Graph 不可用时回退 Edge。
-- QQ 与本科网易通过 Edge 只读解析当前已验证页面的可见邮件列表；该 fallback 不输入搜索框、不点击邮件、不滚动页面，因此只能覆盖当前可见列表，不代表全邮箱完整索引。
-- Edge 的 `message_reference` 是由邮箱 ID 和列表元数据生成的安全 hash，不包含 HWND、URL、sid 或会话材料；Graph 返回 Graph message id。
+- `search_mailboxes(mailbox_id=None, keyword=None, sender=None, start_time=None, end_time=None, max_results=10)` is the newly added 26th tool; the original 25 MCP tools are unchanged.
+- Results contain only `mailbox_id`, sender, subject, received time, `message_reference`, `reference_kind`, and the search scope; message bodies are never returned.
+- For the master's Outlook mailbox, when Graph is READY, it uses a Graph `$filter` server-side search that selects only `id`, sender, subject, and received time; when Graph is unavailable, it falls back to Edge.
+- For QQ Mail and the undergraduate NetEase mailbox, Edge parses the visible message list of the currently verified page in read-only mode; this fallback does not type into the search box, click messages, or scroll the page, so it only covers the currently visible list and is not a complete index of the whole mailbox.
+- Edge's `message_reference` is a safe hash generated from the mailbox ID and list metadata, and contains no HWND, URL, sid, or session material; Graph returns the Graph message id.
 
-### 统一邮件草稿创建
+### Unified mail draft creation
 
-- `create_mail_draft(mailbox_id, to, subject, body)` 是第 27 个工具；原 26 个工具的名称、参数和返回结构保持不变。
-- 草稿创建工具只保存，不发送；返回包含邮箱、状态、draft reference、收件人和主题，不返回正文。
-- 硕士 Outlook 在 Graph 可用时先调用 `/me` 校验登录账号，再用 `/me/messages` 创建并只读复核草稿；未配置、未认证或 token 失效可回退已验证 Edge Profile，Graph 请求失败则 fail closed，避免不明确的重复草稿。
-- 本科网易和 QQ 邮箱复用现有 Edge Profile / 服务域名校验，再通过 UIA 查找显式的新建邮件、收件人、主题、正文和存草稿控件；找不到必需控件时失败，不会改用发送或关闭窗口动作。
-- QQ 邮箱权限更新为 READ + DRAFT，但仍不允许 SEND。当前未实现 Reply、Forward 或带附件的草稿/发送；摘要只显示附件名称、MIME 类型和大小，不下载或解码附件。Send 只能通过 `send_mail_draft` 发送已有草稿。
-- Graph 草稿路径需要委托 token 具备 `Mail.ReadWrite`；项目已提供一次性 authorization code + PKCE 登录命令。源码和普通配置不会保存授权码、密码、cookie、sid 或 token，refresh token 只写入 Windows Credential Manager。
+- `create_mail_draft(mailbox_id, to, subject, body)` is the 27th tool; the names, parameters, and return structures of the original 26 tools are unchanged.
+- The draft creation tool only saves and never sends; the result includes the mailbox, status, draft reference, recipient, and subject, but not the body.
+- For the master's Outlook mailbox, when Graph is available it first calls `/me` to verify the signed-in account, then uses `/me/messages` to create the draft and re-reads it read-only; if Graph is not configured, not authenticated, or the token is invalid, it can fall back to the verified Edge profile, while a failed Graph request fails closed to avoid ambiguous duplicate drafts.
+- The undergraduate NetEase mailbox and QQ Mail reuse the existing Edge profile / service domain checks, then use UIA to find explicit New Message, recipient, subject, body, and Save Draft controls; if a required control is missing it fails, and never switches to a send or close-window action.
+- QQ Mail permissions are updated to READ + DRAFT, but SEND is still not allowed. Reply, Forward, and drafts/sending with attachments are not implemented yet; summaries only show attachment names, MIME types, and sizes, without downloading or decoding attachments. Sending is only possible for existing drafts via `send_mail_draft`.
+- The Graph draft path requires a delegated token with `Mail.ReadWrite`; the project provides a one-time authorization code + PKCE sign-in command. Source code and ordinary configuration never store authorization codes, passwords, cookies, sids, or tokens; the refresh token is written only to Windows Credential Manager.
 
-### 统一发送已有草稿
+### Unified sending of existing drafts
 
-- `send_mail_draft(mailbox_id, draft_reference, confirm_send)` 是新增的第 28 个工具；原 27 个工具保持不变。
-- 该工具不接受 `to`、`subject` 或 `body`，不能绕过草稿直接发送；未显式传入 `confirm_send=true` 时立即拒绝。
-- 硕士 Outlook 是当前唯一实际支持的发送后端：Graph 先校验 `/me` 身份，再读取草稿元数据并核对单一收件人、主题、草稿状态和归属，最后才调用 Graph send endpoint。发送失败不会回退到 Edge。
-- Graph send 响应不返回 message id，因此成功结果的 `sent_reference` 为空；后续如需已发送邮件引用，必须另建 READ-only 查询能力。
-- 本科网易暂不提供 Edge 发送实现，因为现有 Edge draft hash 不能稳定定位和校验已有草稿；QQ 邮箱保持禁止 SEND。Edge draft reference 传入发送工具时返回不可发送状态。
+- `send_mail_draft(mailbox_id, draft_reference, confirm_send)` is the newly added 28th tool; the original 27 tools are unchanged.
+- This tool does not accept `to`, `subject`, or `body`, so it cannot bypass drafts to send directly; it refuses immediately unless `confirm_send=true` is passed explicitly.
+- The master's Outlook mailbox is currently the only supported send backend: Graph first verifies the `/me` identity, then reads the draft metadata and checks the single recipient, subject, draft status, and ownership, and only then calls the Graph send endpoint. A failed send never falls back to Edge.
+- The Graph send response does not return a message id, so `sent_reference` is empty on success; a reference to the sent message would require a separate READ-only query capability.
+- The undergraduate NetEase mailbox has no Edge send implementation yet, because the existing Edge draft hash cannot reliably locate and verify an existing draft; QQ Mail remains SEND-prohibited. Passing an Edge draft reference to the send tool returns a not-sendable status.
 
-### AI-Work 统一任务入口（v1.1）
+### AI-Work unified task entry point (v1.1)
 
-运行 `python scripts/mail_assistant_server.py --no-refresh --open` 会在现有
-`127.0.0.1:8931` 宿主中提供统一 command palette、托盘菜单和 `Win+Alt+A`。
-如果快捷键已被其他程序占用，托盘仍可用，并显示固定冲突提示。
-同一页面默认显示最近一次电脑晨报，并保留邮箱摘要、今日待办、AI 写邮件、
-跨箱搜索和系统状态标签；晨报仍由独立的 08:00 计划任务生成，不依赖助手服务运行。
+Running `python scripts/mail_assistant_server.py --no-refresh --open` provides a unified command palette, tray menu,
+and `Win+Alt+A` within the existing `127.0.0.1:8931` host.
+If the hotkey is already taken by another program, the tray still works and shows a fixed conflict notice.
+The same page shows the latest computer morning brief by default, and keeps the mailbox summary, today's to-dos, AI email writing,
+cross-mailbox search, and system status tabs; the morning brief is still generated by a separate 08:00 scheduled task and does not depend on the assistant service running.
 
-入口只接受五类任务：打开学习环境、整理文件、课程下载、打开代码项目和创建邮件草稿。
-自然语言先映射为固定 intent/slots，再由本地编译器生成最多 8 步的计划；用户不能提供
-工具名或任意步骤。目录有多个精确匹配、邮件缺少明确邮箱/收件人或网页目标不唯一时，
-任务会要求补充信息而不会猜测。
+The entry point only accepts five kinds of tasks: open the study environment, organize files, download course materials, open a code project, and create an email draft.
+Natural language is first mapped to fixed intents/slots, and a local compiler then generates a plan of at most 8 steps; users cannot supply
+tool names or arbitrary steps. When a folder has multiple exact matches, an email lacks a clear mailbox/recipient, or a web target is ambiguous,
+the task asks for more information instead of guessing.
 
-文件 mkdir/copy/move/rename、网页确认点击/下载和保存邮件草稿均先显示计划并使用
-TaskCenter 的短时、单次、任务/计划绑定确认。邮件预览会显示在当前页面，但不会进入活动
-历史；邮件工作流只会创建草稿，永远不会调用发送。相同请求在短时间内复用当前任务，
-进程重启后不恢复或重放未完成副作用。
+File mkdir/copy/move/rename, confirmed web clicks/downloads, and saving email drafts all show the plan first and use
+TaskCenter's short-lived, single-use confirmation bound to the task/plan. Email previews are shown on the current page but never enter the activity
+history; the email workflow only creates drafts and never calls send. Identical requests within a short window reuse the current task,
+and incomplete side effects are not resumed or replayed after a process restart.
 
-宿主持有一个长期 `windows_gui_mcp.py` stdio 子进程，所有调用经单执行器和最多 8 项等待
-队列串行化。只读步骤可在子进程故障后安全重连并重试一次；副作用步骤中断后固定停止为
-未知结果，绝不自动重放。
+The host holds a long-lived `windows_gui_mcp.py` stdio subprocess, and all calls are serialized through a single executor and a wait
+queue of at most 8 items. Read-only steps can safely reconnect and retry once after a subprocess failure; side-effecting steps that are interrupted always stop with
+an unknown result and are never replayed automatically.
 
-活动历史位于 LocalAppData 的 `AI-Work/activity-history.jsonl`，最多保留 2000 项、30 天、
-每文件约 1 MiB 和 3 个轮转文件。它只保存固定摘要及脱敏资源，不保存剪贴板内容、邮件字段、
-绝对路径、完整 URL、凭据或异常原文；页面默认按最近 50 个任务展开步骤。
+The activity history is stored in LocalAppData at `AI-Work/activity-history.jsonl`, keeping at most 2000 entries, 30 days,
+about 1 MiB per file, and 3 rotated files. It only stores fixed summaries and redacted resources, never clipboard content, email fields,
+absolute paths, full URLs, credentials, or raw exception text; the page expands steps for the 50 most recent tasks by default.
 
-登录启动定义在 feature branch 阶段不会持久安装：
+The sign-in startup definition is not persistently installed during the feature branch stage:
 
 ```powershell
 python scripts/install_agent_startup.py --dry-run
 python scripts/install_agent_startup.py --check
 ```
 
-进入主分支后如需启用，再显式运行 `python scripts/install_agent_startup.py --install`。
-该任务只启动同一 8931 宿主，禁止并发实例，不触发邮件刷新。Daily Computer Brief
-由独立模块和调度任务实现，不加入 Agent 工作流；Remote/LAN 扩张及新的 Browser/Mail
-能力不属于本次 Agent Productization。
+After merging to the main branch, enable it if needed by explicitly running `python scripts/install_agent_startup.py --install`.
+This task only starts the same 8931 host, prohibits concurrent instances, and does not trigger a mail refresh. The Daily Computer Brief
+is implemented by a separate module and scheduled task and is not part of the Agent workflows; Remote/LAN expansion and new Browser/Mail
+capabilities are outside the scope of this Agent Productization.
 
-### 本地 AI 摘要与草稿助手
+### Local AI summary and draft assistant
 
-- `scripts/daily_mail_digest.py` 生成三邮箱摘要；`scripts/mail_assistant_server.py` 只绑定 `127.0.0.1:8931`，并校验 Host、Origin 和 JSON Content-Type。
-- 助手页支持从最近本地摘要选择邮件并生成 AI 回复草稿；生成结果只进入可编辑表单，不会自动保存或发送。摘要卡片额外携带本机渲染用的发件人地址和主题元数据。
-- 助手页“今日待办”只解析最近一次本地摘要，按截止日期、需回复/办理、学校行政和高重要度输出简洁工作清单；不访问邮箱、不修改已读、不删除或移动邮件。
-- 助手页“跨箱搜索”把常见中文请求解析为关键词和起止时间，并复用现有 `search_mailboxes()` 只读元数据搜索；例如“找最近两个月关于实习的邮件”。该路径不会新增发送副作用。
-- 助手变异请求的 JSON 主体上限为 256 KiB；无效或负数 `Content-Length` 会在读取请求体前拒绝。
-- 助手页面响应带 `nosniff`、`no-referrer`、同源 frame 保护和 CSP；后台刷新由锁保护，避免并发点击启动多个读取任务。
-- “刷新摘要”会显示后台运行、成功时间或明确失败状态，并在成功后原位更新邮箱摘要；它只调用既有只读摘要流程。
-- AI 指令、收件人、主题和正文都有长度上限；收件人必须是单个普通邮箱地址，主题会去除换行以阻止 SMTP/Graph 头注入。
-- 发送采用两阶段确认：第一次点击只保存待发送草稿并生成一次性引用；必须再次点击“确认发送已保存草稿”。后端会校验已保存草稿的收件人、主题、正文和位置后才发送；修改草稿字段会使待发送引用失效。
-- 助手 SMTP 路径只接受已取回并校验的 `EmailMessage`；不存在“用新字段即时构建并发送”的旁路。
-- IMAP 保存要求服务器返回 APPENDUID；保存后会只读重读草稿，校验 `\Draft`、发件人、收件人、主题、正文、SHA-256、folder/UID/UIDVALIDITY。
-- 发送前还会确认 Graph 消息仍为 `isDraft=true`，或 IMAP 消息仍带 `\Draft` 标记；状态已变化的引用会显式失败。
-- 待发送引用 15 分钟过期，进程内最多保留 16 个；过期、修改字段或重复使用都会显式失败，需要重新保存草稿。
-- AI 中文摘要/翻译调用 Zhipu GLM；QQ 助手只能保存草稿，本科 SMTP 发送前先保存草稿，页面发送按钮仍需显式确认。
-- 助手 QQ/本科草稿和本科 SMTP 使用独立的 Credential Manager 授权码条目；缺失时明确失败，绝不回退只读摘要凭据。
-- 运行 `python scripts/configure_mail_credentials.py --missing-assistant` 配置三个助手专用授权码；每个密钥需隐藏输入两次。只能用 `--key`/`--all-configurable` 选择白名单目标，不能用参数传递密钥值；覆盖已有条目需显式 `--force`。
+- `scripts/daily_mail_digest.py` generates the three-mailbox digest; `scripts/mail_assistant_server.py` binds only to `127.0.0.1:8931` and validates Host, Origin, and the JSON Content-Type.
+- The assistant page supports selecting a message from the latest local digest and generating an AI reply draft; the result only goes into an editable form and is never saved or sent automatically. Digest cards additionally carry the sender address and subject metadata used for local rendering.
+- The assistant page's "Today's to-dos" only parses the latest local digest, producing a concise task list by deadline, reply/action needed, school administration, and high importance; it does not access mailboxes, change read status, or delete or move mail.
+- The assistant page's "Cross-mailbox search" parses common Chinese requests into keywords and a start/end time, and reuses the existing `search_mailboxes()` read-only metadata search; for example, "找最近两个月关于实习的邮件" ("find emails about internships from the last two months"). This path adds no send side effects.
+- The JSON body of mutating assistant requests is limited to 256 KiB; an invalid or negative `Content-Length` is rejected before the request body is read.
+- Assistant page responses include `nosniff`, `no-referrer`, same-origin frame protection, and a CSP; background refreshes are lock-protected so repeated clicks cannot start multiple read tasks.
+- "Refresh digest" (`刷新摘要`) shows background running, the time of success, or an explicit failure status, and updates the mailbox summary in place on success; it only calls the existing read-only digest flow.
+- AI instructions, recipient, subject, and body all have length limits; the recipient must be a single plain email address, and newlines are stripped from the subject to block SMTP/Graph header injection.
+- Sending uses two-phase confirmation: the first click only saves the pending draft and generates a single-use reference; the user must click "Confirm sending the saved draft" (`确认发送已保存草稿`) again. The backend verifies the saved draft's recipient, subject, body, and location before sending; editing draft fields invalidates the pending reference.
+- The assistant's SMTP path only accepts an `EmailMessage` that has been retrieved and verified; there is no bypass that "builds and sends immediately from new fields".
+- IMAP saving requires the server to return APPENDUID; after saving, the draft is re-read read-only to verify `\Draft`, sender, recipient, subject, body, SHA-256, and folder/UID/UIDVALIDITY.
+- Before sending, it also confirms that the Graph message is still `isDraft=true`, or that the IMAP message still carries the `\Draft` flag; references whose state has changed fail explicitly.
+- Pending references expire after 15 minutes, with at most 16 kept in-process; expired, edited, or reused references fail explicitly and require saving the draft again.
+- AI Chinese summarization/translation calls Zhipu GLM; the QQ assistant can only save drafts, the undergraduate SMTP path saves a draft before sending, and the page's send button still requires explicit confirmation.
+- The assistant's QQ/undergraduate drafts and undergraduate SMTP use separate Credential Manager authorization code entries; if missing they fail explicitly and never fall back to the read-only digest credentials.
+- Run `python scripts/configure_mail_credentials.py --missing-assistant` to configure the three assistant-specific authorization codes; each secret must be entered twice with hidden input. Only allowlisted targets can be selected via `--key`/`--all-configurable`, secret values cannot be passed as arguments, and overwriting an existing entry requires an explicit `--force`.
 
-### 本机健康检查
+### Local health check
 
-- 运行 `python scripts/system_health.py` 查看文本报告，或加 `--json` 供自动化消费；必需检查失败时退出码为 1。
-- 使用 `--dashboard` 可输出与助手页“系统状态”一致的 `PASS` / `WARN` / `FAIL` / `UNKNOWN` 四态模型；默认模式继续保留严格的环境、计划任务定义和摘要新鲜度门禁。
-- 检查范围限于本机配置和运行状态：环境变量名存在性、Credential Manager 条目存在性、42 个 MCP 工具注册、计划任务、最近 `last-run.json` 状态和助手服务状态。
-- 摘要健康检查要求邮箱状态全部为 `READY`/`EMPTY_TODAY`，且报告不超过 13 小时（覆盖每日 10:00/22:00 两次调度）；Toast 是否显示单独作为可选 INFO，不与邮件读取健康混在一起。
-- 摘要 HTML 和 `last-run.json` 使用临时文件加原子替换写入；状态包含 `ok`、邮箱读取结果、计数和 Toast 状态。状态写入失败会让任务显式失败，不会留下“任务成功但报告过期”的假信号。
-- `last-attempt.json` 记录运行阶段、邮箱状态/计数和错误类型；它不包含发件人、主题、正文、URL 或凭据，用于在任务失败但 `last-run.json` 未更新时定位阶段。
-- 如果运行锁被并发刷新占用，本次摘要跳过时返回失败；这避免计划任务在 `last-run.json` 仍过期时误报成功。
-- 助手页 `/api/health` 只执行本机只读检查，不启动浏览器、邮件读取或远程探测；最近错误来自固定代码/摘要白名单的有界日志，不包含邮件字段、URL、异常原文或凭据。
+- Run `python scripts/system_health.py` for a text report, or add `--json` for automation; the exit code is 1 when a required check fails.
+- `--dashboard` outputs the same four-state `PASS` / `WARN` / `FAIL` / `UNKNOWN` model as the assistant page's "System status"; the default mode keeps the strict gates on environment, scheduled task definitions, and digest freshness.
+- Checks are limited to local configuration and runtime state: environment variable name presence, Credential Manager entry presence, registration of the 42 MCP tools, scheduled tasks, the latest `last-run.json` status, and the assistant service status.
+- The digest health check requires every mailbox status to be `READY`/`EMPTY_TODAY` and the report to be no more than 13 hours old (covering the two daily runs at 10:00/22:00); whether the Toast was shown is a separate optional INFO and is not mixed with mail-reading health.
+- The digest HTML and `last-run.json` are written via a temporary file and atomic replacement; the status includes `ok`, mailbox read results, counts, and Toast status. A failed status write makes the task fail explicitly, so there is never a false "task succeeded but report is stale" signal.
+- `last-attempt.json` records the run stage, mailbox statuses/counts, and error types; it contains no senders, subjects, bodies, URLs, or credentials, and is used to locate the stage when a task fails but `last-run.json` was not updated.
+- If the run lock is held by a concurrent refresh, the skipped digest run returns failure; this prevents the scheduled task from falsely reporting success while `last-run.json` is still stale.
+- The assistant page's `/api/health` only performs local read-only checks and never launches a browser, reads mail, or probes remotely; recent errors come from a bounded log restricted to an allowlist of fixed codes/summaries, containing no email fields, URLs, raw exception text, or credentials.
 
-### 计划任务恢复
+### Scheduled task recovery
 
-- 预览恢复命令：`python scripts/install_scheduled_tasks.py --dry-run`。
-- 只读校验当前定义：`python scripts/install_scheduled_tasks.py --check`；它会报告路径、参数、触发时间和执行限制差异，但不会启动或修改任务。
-- 任务定义校验还覆盖禁止电池供电启动、电池供电时停止、禁止并发实例和 1 小时执行上限。
-- 需要创建或修复 `AI-Work Daily Mail Digest` 时显式运行 `python scripts/install_scheduled_tasks.py`；任务在每日 10:00 和 22:00 触发，禁止并发实例，最长运行 1 小时。
-- 安装只写入计划任务定义，不会立即读取邮件；真实邮箱读取仍由计划时间或用户显式启动决定。
-- 该命令不打开浏览器、不操作桌面、不访问外部邮件服务、不读取邮件正文，也绝不输出或保存凭据值；助手服务未运行只报告 `INFO`，不影响必需检查结论。
+- Preview the recovery command: `python scripts/install_scheduled_tasks.py --dry-run`.
+- Check the current definition read-only: `python scripts/install_scheduled_tasks.py --check`; it reports differences in path, arguments, trigger times, and execution limits, but never starts or modifies the task.
+- Task definition checks also cover not starting on battery power, stopping on battery power, prohibiting concurrent instances, and a 1-hour execution limit.
+- To create or repair `AI-Work Daily Mail Digest`, explicitly run `python scripts/install_scheduled_tasks.py`; the task triggers daily at 10:00 and 22:00, prohibits concurrent instances, and runs for at most 1 hour.
+- Installation only writes the scheduled task definition and never reads mail immediately; real mailbox reads are still determined by the scheduled times or an explicit user start.
+- This command does not open a browser, operate the desktop, access external mail services, or read message bodies, and never outputs or saves credential values; an assistant service that is not running is reported only as `INFO` and does not affect the required-check verdict.
 
-### Outlook 一次性登录
+### One-time Outlook sign-in
 
-- 在 `AI_WORK_OUTLOOK_TENANT_ID` 和 `AI_WORK_OUTLOOK_CLIENT_ID` 已配置后运行 `python scripts/authenticate_master_mail.py`。
-- 该命令使用 authorization code + PKCE，回调只绑定 `127.0.0.1:8932`，校验精确路径、Host 和 OAuth `state`；使用 `--no-open` 可只打印 URL、不自动打开浏览器。
-- 成功后只把 refresh token 写入 `AI-Work/windows-gui/mailboxes` / `master_mail_graph_refresh_token`；授权码和 access/refresh token 不会打印、保存到仓库或写入日志。
+- After `AI_WORK_OUTLOOK_TENANT_ID` and `AI_WORK_OUTLOOK_CLIENT_ID` are configured, run `python scripts/authenticate_master_mail.py`.
+- The command uses authorization code + PKCE, with the callback bound only to `127.0.0.1:8932`, and verifies the exact path, Host, and OAuth `state`; use `--no-open` to only print the URL without opening a browser automatically.
+- On success, only the refresh token is written to `AI-Work/windows-gui/mailboxes` / `master_mail_graph_refresh_token`; the authorization code and access/refresh tokens are never printed, saved to the repository, or written to logs.
 
-### Outlook Graph 后端
+### Outlook Graph backend
 
-- 摘要和搜索路径保持 READ-only，仅需委托 token 具备 `Mail.Read`。
-- 草稿创建路径需要委托 token 具备 `Mail.ReadWrite`；一次性 OAuth 登录流程由 `scripts/authenticate_master_mail.py` 提供。
-- 发送已有草稿路径需要既有委托 token 额外具备 `Mail.Send`；未配置或不具备权限时返回不可发送错误，不会回退到 Edge 发送。
-- Graph 请求只读取 `sender`、`subject`、`receivedDateTime` 和最多 10 条列表元数据，不读取正文，不改变已读状态。
-- 非秘密配置来自环境变量：`AI_WORK_OUTLOOK_TENANT_ID`、`AI_WORK_OUTLOOK_CLIENT_ID`、`AI_WORK_OUTLOOK_MAILBOX`。
-- 摘要 refresh token 存放在 Windows Credential Manager 的 `AI-Work/windows-gui/mailboxes` / `master_mail_graph_refresh_token`；Microsoft 返回旋转 token 时立即写回该专用条目。源码、日志、测试 fixture 和 Git 中不得出现 token。
-- refresh token 的读取、交换和旋转写回由 Windows named mutex 串行化，避免计划任务与助手并发轮换导致对方失效。访问 token 只保留在内存。
-- 一次性 OAuth 登录的 token 交换和 refresh token 写回也使用同一把跨进程锁，避免登录与计划任务并发轮换时互相失效。
-- 交互式登录只通过显式命令触发；token 交换失败时不会覆盖既有凭据。刷新失败、refresh token 失效或 Graph 请求失败时，仍明确返回失败或回退到现有 Edge READ-only 摘要路径。
+- The summary and search paths stay READ-only and only require a delegated token with `Mail.Read`.
+- The draft creation path requires a delegated token with `Mail.ReadWrite`; the one-time OAuth sign-in flow is provided by `scripts/authenticate_master_mail.py`.
+- The path for sending existing drafts additionally requires the existing delegated token to have `Mail.Send`; if not configured or lacking permission, it returns a not-sendable error and never falls back to Edge sending.
+- Graph requests only read `sender`, `subject`, `receivedDateTime`, and at most 10 list metadata items; they never read message bodies or change read status.
+- Non-secret configuration comes from environment variables: `AI_WORK_OUTLOOK_TENANT_ID`, `AI_WORK_OUTLOOK_CLIENT_ID`, `AI_WORK_OUTLOOK_MAILBOX`.
+- The digest refresh token is stored in Windows Credential Manager under `AI-Work/windows-gui/mailboxes` / `master_mail_graph_refresh_token`; when Microsoft returns a rotated token, it is immediately written back to this dedicated entry. Tokens must never appear in source code, logs, test fixtures, or Git.
+- Reading, exchanging, and rotating/writing back the refresh token are serialized by a Windows named mutex, preventing the scheduled task and the assistant from invalidating each other through concurrent rotation. Access tokens are kept only in memory.
+- Token exchange and refresh token write-back during the one-time OAuth sign-in use the same cross-process lock, preventing sign-in and the scheduled task from invalidating each other through concurrent rotation.
+- Interactive sign-in is triggered only by an explicit command; a failed token exchange never overwrites existing credentials. When refresh fails, the refresh token is invalid, or a Graph request fails, it still explicitly returns failure or falls back to the existing Edge READ-only summary path.
 
-`open_all_mailboxes()` 和 Edge 摘要路径共享内部 `get_or_open_mailbox_window()` 管理层；Outlook Graph 可用时不会调用该 Edge 窗口管理层，Graph 不可用时按上述规则回退。每个邮箱在 Agent 中最多绑定一个 Edge HWND：有效运行时绑定返回 `REUSED_EXISTING_WINDOW`；Server 重启后优先通过窗口 PID 和进程命令行中的 `--profile-directory` 找回窗口。Edge 复用同一浏览器进程、主命令行不含 Profile 参数时，使用 Edge 浏览器标题中精确的 Profile 显示名称后缀恢复绑定，不从页面 UIA 内容猜测。恢复返回 `RESTORED_WINDOW_BINDING`；只有未找到对应 Profile 窗口时才返回 `CREATED_NEW_WINDOW`。该逻辑不会关闭用户原本打开的重复窗口。
+`open_all_mailboxes()` and the Edge summary path share the internal `get_or_open_mailbox_window()` management layer; when Outlook Graph is available, this Edge window management layer is not called, and when Graph is unavailable it falls back according to the rules above. Each mailbox is bound to at most one Edge HWND in the Agent: a valid runtime binding returns `REUSED_EXISTING_WINDOW`; after a Server restart, it first recovers the window through the window PID and the `--profile-directory` in the process command line. When Edge reuses the same browser process and the main command line has no profile argument, the binding is recovered using the exact profile display name suffix in the Edge browser title, never guessed from page UIA content. Recovery returns `RESTORED_WINDOW_BINDING`; `CREATED_NEW_WINDOW` is returned only when no window for the corresponding profile is found. This logic never closes duplicate windows the user had already opened.
 
-本科邮箱使用固定的非会话安全入口 `https://mailh.qiye.163.com/`。窗口管理层会优先在 Profile 1 的现有窗口中选择主机名为 `mailh.qiye.163.com` 的页面；复用或恢复的窗口停留在新标签页、空白页或其他非邮箱页面时，会在同一 HWND 内通过 Edge 地址栏提交该固定入口，并等待精确域名和至少两类稳定、非敏感邮箱 UI 信号。会话过期或登录页返回 `AUTH_REQUIRED`，加载超时返回 `LOAD_TIMEOUT`，都不会假报 READY。完整网易 URL、sid 和其他会话材料不会被保存、记录或复用。
+The undergraduate mailbox uses the fixed, non-session, safe entry point `https://mailh.qiye.163.com/`. The window management layer prefers a page with the host name `mailh.qiye.163.com` in an existing Profile 1 window; if a reused or recovered window is on a new tab, a blank page, or another non-mailbox page, it submits this fixed entry point through the Edge address bar within the same HWND and waits for the exact domain and at least two kinds of stable, non-sensitive mailbox UI signals. An expired session or a sign-in page returns `AUTH_REQUIRED`, and a load timeout returns `LOAD_TIMEOUT`; neither falsely reports READY. Full NetEase URLs, sids, and other session material are never saved, logged, or reused.
 
-`summarize_all_mailboxes_today()` 严格按本科、硕士、QQ 邮箱顺序执行。硕士 Outlook 优先走 Graph READ-only，Graph 不可用时回退 Edge；QQ 与本科网易优先使用共享的 IMAP READ-only adapter。只有 IMAP 不可用且用户显式配置了对应 CDP endpoint 时，才尝试现有 Browser DOM fallback。
+`summarize_all_mailboxes_today()` runs strictly in the order undergraduate, master's, QQ. The master's Outlook mailbox prefers Graph READ-only and falls back to Edge when Graph is unavailable; QQ Mail and the undergraduate NetEase mailbox prefer the shared IMAP READ-only adapter. The existing Browser DOM fallback is attempted only when IMAP is unavailable and the user has explicitly configured the corresponding CDP endpoint.
 
-QQ IMAP 固定连接 `imap.qq.com:993` 并使用系统 CA 验证的 SSL/TLS。非秘密用户名由 `AI_WORK_QQ_IMAP_USERNAME` 提供；独立授权码只从 Windows Credential Manager 读取，service 为 `AI-Work/windows-gui/mailboxes`，username 为 `qq_mail_imap_authorization_code`，不得复用 Graph token 条目。adapter 使用 `EXAMINE`（`select(..., readonly=True)`）、UID SEARCH 和 `BODY.PEEK[HEADER.FIELDS ...]`，不会调用 STORE、MOVE、COPY 或 EXPUNGE，也不会把该 credential 用于草稿或发送。未配置、认证失败、网络/TLS 失败和协议解析失败分别返回明确 IMAP 状态，候选邮件无法解析时不会假报 `EMPTY_TODAY`。
+QQ IMAP always connects to `imap.qq.com:993` using SSL/TLS verified against the system CAs. The non-secret username is provided by `AI_WORK_QQ_IMAP_USERNAME`; the separate authorization code is read only from Windows Credential Manager, with service `AI-Work/windows-gui/mailboxes` and username `qq_mail_imap_authorization_code`, and must not reuse the Graph token entry. The adapter uses `EXAMINE` (`select(..., readonly=True)`), UID SEARCH, and `BODY.PEEK[HEADER.FIELDS ...]`, never calls STORE, MOVE, COPY, or EXPUNGE, and never uses this credential for drafts or sending. Not configured, authentication failure, network/TLS failure, and protocol parsing failure each return an explicit IMAP status; if candidate messages cannot be parsed, it never falsely reports `EMPTY_TODAY`.
 
-本科网易 IMAP 固定连接 `imaphz.qiye.163.com:993`，同样使用系统 CA 与 hostname 校验的隐式 SSL/TLS。非秘密完整学校邮箱地址由 `AI_WORK_BACHELOR_IMAP_USERNAME` 提供；授权码只从独立的 Windows Credential Manager 条目读取，service 为 `AI-Work/windows-gui/mailboxes`，username 为 `bachelor_mail_imap_authorization_code`。本科和 QQ credential 完全分离，均仅用于摘要 READ backend，不用于 Search、Draft、Send 或 SMTP。
+The undergraduate NetEase IMAP always connects to `imaphz.qiye.163.com:993`, likewise using implicit SSL/TLS with system CA and hostname verification. The non-secret full school email address is provided by `AI_WORK_BACHELOR_IMAP_USERNAME`; the authorization code is read only from a separate Windows Credential Manager entry, with service `AI-Work/windows-gui/mailboxes` and username `bachelor_mail_imap_authorization_code`. The undergraduate and QQ credentials are completely separate, and both are used only for the summary READ backend, never for Search, Draft, Send, or SMTP.
 
-Edge 路径的 Profile 身份来自本进程使用 `--profile-directory` 启动窗口时建立的内存绑定，不再由 UIA 页面内容反推。UIA 只读取地址栏并立即提取主机名，用于精确验证 `mailh.qiye.163.com`、`outlook.office.com`（以及重定向域名 `outlook.cloud.microsoft`）、`mail.qq.com` 或官方 QQ Mail 域名 `wx.mail.qq.com`；完整 URL 不会被保存、记录或返回。
+On the Edge path, the profile identity comes from the in-memory binding established when this process launches the window with `--profile-directory`, and is no longer inferred from UIA page content. UIA only reads the address bar and immediately extracts the host name to exactly verify `mailh.qiye.163.com`, `outlook.office.com` (and the redirect domain `outlook.cloud.microsoft`), `mail.qq.com`, or the official QQ Mail domain `wx.mail.qq.com`; full URLs are never saved, logged, or returned.
 
-QQ Browser fallback 与本科网易摘要不使用 Windows UIA 重建邮件行。UIA 仅确认运行时 Profile、目标窗口、精确服务域名和登录/页面状态；Browser adapter 只提取发件人、主题、接收时间和经过 SHA-256 截断生成的本地 opaque reference。adapter 不点击邮件、不打开正文、不改变已读状态，也不提供发送、删除、移动、归档或标记动作。
+The QQ Browser fallback and the undergraduate NetEase summary do not use Windows UIA to reconstruct message rows. UIA only confirms the runtime profile, target window, exact service domain, and sign-in/page state; the Browser adapter only extracts the sender, subject, received time, and a local opaque reference generated from a truncated SHA-256. The adapter never clicks messages, opens bodies, or changes read status, and provides no send, delete, move, archive, or flag actions.
 
-CDP endpoint 必须分别通过 `AI_WORK_BACHELOR_CDP_ENDPOINT` 和 `AI_WORK_QQ_CDP_ENDPOINT` 配置为带显式端口、无凭证、无查询参数的本机回环 HTTP origin（例如 `http://127.0.0.1:9222`）。不接受或保存包含浏览器 target 标识的 WebSocket 调试 URL。未配置返回 `BROWSER_BACKEND_NOT_READY`，连接或 5 秒 attach 失败返回 `BROWSER_ATTACH_FAILED`，登录失效返回 `AUTH_REQUIRED`；找不到列表、列表行不可解析和确认今日为空分别返回 `MAIL_LIST_NOT_FOUND`、`MAIL_ITEMS_NOT_PARSED`、`EMPTY_TODAY`。只有识别到可信列表且解析成功，或页面明确暴露空列表状态，才会判定 `EMPTY_TODAY`。
+CDP endpoints must be configured separately via `AI_WORK_BACHELOR_CDP_ENDPOINT` and `AI_WORK_QQ_CDP_ENDPOINT` as local loopback HTTP origins with an explicit port, no credentials, and no query parameters (for example `http://127.0.0.1:9222`). WebSocket debugging URLs containing browser target identifiers are neither accepted nor saved. Not configured returns `BROWSER_BACKEND_NOT_READY`, a connection or 5-second attach failure returns `BROWSER_ATTACH_FAILED`, and an expired sign-in returns `AUTH_REQUIRED`; list not found, unparseable list rows, and confirmed empty today return `MAIL_LIST_NOT_FOUND`, `MAIL_ITEMS_NOT_PARSED`, and `EMPTY_TODAY` respectively. `EMPTY_TODAY` is reported only when a trusted list is recognized and parsed successfully, or the page explicitly exposes an empty-list state.
 
-普通运行中的 Edge 无法事后安全开启 CDP。项目不会自动关闭/重启 Edge，不会用同一个日常 User Data 目录再起自动化实例，也不会复制 Profile；这些做法可能造成 Profile 锁、重复进程或会话损坏。远程调试端口具备高权限且无应用级认证，应只绑定 loopback、仅在验收期间开启，并由用户自行决定是否接受该风险。若现有 Edge 没有预先开启 CDP，adapter 会明确停止而不会回退到 QQ/网易 UIA 邮件行解析。
+CDP cannot be safely enabled after the fact on an ordinary running Edge. The project never automatically closes/restarts Edge, never starts another automation instance with the same everyday User Data directory, and never copies profiles; these approaches can cause profile locks, duplicate processes, or session corruption. The remote debugging port is highly privileged and has no application-level authentication, so it should be bound only to loopback, enabled only during acceptance testing, and the user decides whether to accept that risk. If the existing Edge was not started with CDP enabled, the adapter stops explicitly and never falls back to parsing QQ/NetEase message rows via UIA.
 
-## 安全说明
+## Security notes
 
-- GUI 操作会影响当前交互式桌面。调用前应确认目标窗口标题足够具体。
-- 自动化测试必须 mock 所有真实鼠标、键盘和 UIA 副作用。
-- 真实 GUI 验证应只使用 `tests/smoke_test.py` 创建的专用文件和窗口。
-- 默认 Smoke test 只操作专用 Notepad fixture。显式追加 `--mailbox-readonly` 时只调用一次统一窗口管理层，优先复用或恢复现有 Profile 窗口，并验证运行时窗口绑定及服务域名；它不会每次额外创建三个邮箱窗口，也不会关闭用户原有窗口或打开邮件。
-- 截图、Python 缓存和 smoke artifacts 已由 `.gitignore` 排除。
+- GUI operations affect the current interactive desktop. Before calling them, make sure the target window title is specific enough.
+- Automated tests must mock all real mouse, keyboard, and UIA side effects.
+- Real GUI verification should only use the dedicated files and windows created by `tests/smoke_test.py`.
+- The default smoke test only operates on a dedicated Notepad fixture. When `--mailbox-readonly` is explicitly added, it calls the unified window management layer only once, preferring to reuse or recover existing profile windows, and verifies the runtime window bindings and service domains; it does not create three extra mailbox windows each time, close the user's existing windows, or open messages.
+- Screenshots, Python caches, and smoke artifacts are excluded by `.gitignore`.
 
 ## v1 acceptance and freeze
 
 The v1 public surface is frozen at 42 tools. All nine demos are accepted in [the v1 acceptance record](docs/V1_ACCEPTANCE.md), including read-only recovery of the single Graph draft created during Demo 7 without a duplicate POST or send. Goal C adds no public tools. VS Code launches in a fixed new window. Main merge requires separate user approval.
 
 
-## Daily Computer Brief（v1.1 电脑晨报）
+## Daily Computer Brief (v1.1 computer morning brief)
 
-电脑晨报是独立的、非 MCP 本地 scheduled workflow，公共工具仍为 42。
-它不依赖 ChatGPT、MCP stdio、Edge 或邮件助手页面运行。直接复用内部
-Graph/IMAP 只读元数据摘要、Downloads 安全扫描、system_status，并用确定性规则生成最多 3 条建议；不调用远程 LLM。
-没有草稿、发送、邮件标记/移动/归档/删除、下载内容读取或文件管理动作。
-Graph OAuth 刷新仍使用既有跨进程锁与 Credential Manager refresh-token 轮换。
+The Daily Computer Brief is a standalone, non-MCP local scheduled workflow; the public tool count remains 42.
+It does not depend on ChatGPT, MCP stdio, Edge, or the mail assistant page to run. It directly reuses the internal
+Graph/IMAP read-only metadata summary, the safe Downloads scan, and system_status, and uses deterministic rules to generate at most 3 suggestions; it never calls a remote LLM.
+It has no drafting, sending, mail flagging/moving/archiving/deleting, reading of downloaded content, or file management actions.
+Graph OAuth refresh still uses the existing cross-process lock and Credential Manager refresh-token rotation.
 
-使用装有项目依赖的 Python，在保留的运行目录执行：
+Using a Python with the project dependencies installed, run from the retained runtime directory:
 
 ```powershell
 python scripts/daily_computer_brief.py --dry-run
@@ -463,37 +473,37 @@ python scripts/install_scheduled_tasks.py --computer-brief
 python scripts/install_scheduled_tasks.py --computer-brief --check
 ```
 
-`--dry-run` 只读采集并打印脱敏 JSON，不写晨报 artifact、不通知；OAuth 凭据轮换仍可能发生。
-`--no-notify` 生成文件但不发 Toast；`--open` 仅为手动运行可选动作，与 `--dry-run` 互斥。
-默认安装入口不带 `--computer-brief` 时仍选择原 10:00/22:00 邮件摘要任务。
-安装晨报只操作 `AI-Work Daily Computer Brief`，不会启动任务或修改已有邮件任务。
-晨报任务每天本机时间 **08:00**，当前用户 Interactive / Limited，无需管理员或保存密码；
-IgnoreNew 禁止并发，超时 15 分钟，允许电池供电，StartWhenAvailable 允许错过后补跑。
-需要用户已登录及电脑可运行；不保证关机/未登录时即时执行，不依赖任何前台应用。
-检查覆盖动作、工作目录、每日触发类型/间隔/数量、重复触发、启用状态、电源策略、超时、并发和当前用户 SID。
+`--dry-run` only collects read-only data and prints redacted JSON, without writing brief artifacts or notifying; OAuth credential rotation may still occur.
+`--no-notify` generates the files without sending a Toast; `--open` is an optional action for manual runs only and is mutually exclusive with `--dry-run`.
+Without `--computer-brief`, the default install entry point still selects the original 10:00/22:00 mail digest task.
+Installing the brief only touches `AI-Work Daily Computer Brief`; it never starts the task or modifies the existing mail task.
+The brief task runs daily at **08:00** local time as the current user, Interactive / Limited, with no administrator rights or saved password required;
+IgnoreNew prohibits concurrency, the timeout is 15 minutes, running on battery is allowed, and StartWhenAvailable allows catching up after a missed run.
+It requires the user to be signed in and the computer to be able to run; it does not guarantee immediate execution when shut down or signed out, and does not depend on any foreground app.
+The check covers the action, working directory, daily trigger type/interval/count, duplicate triggers, enabled state, power policy, timeout, concurrency, and current user SID.
 
-输出位于 `%LOCALAPPDATA%\AI-Work\computer-brief\`：
+Output is written to `%LOCALAPPDATA%\AI-Work\computer-brief\`:
 
-- `latest.html`：今日重点、邮箱摘要、最近下载、系统状态、建议。
-- `latest.json`：所需安全摘要，无正文、发件人/收件人、凭据、剪贴板或完整本机路径；主题和窗口标题有界并隐藏常见 URL/地址/路径/凭据形式。
-- `last-attempt.json`：仅时间、阶段、状态、计数和固定错误码，无原始异常或邮件字段。
+- `latest.html`: today's highlights, mailbox summary, recent downloads, system status, and suggestions.
+- `latest.json`: the required safe summary, with no message bodies, senders/recipients, credentials, clipboard content, or full local paths; subjects and window titles are bounded, and common URL/address/path/credential patterns are hidden.
+- `last-attempt.json`: only time, stage, status, counts, and fixed error codes, with no raw exceptions or email fields.
 
-各文件采用同目录临时文件、fsync、原子替换；Windows 打包应用的目录重定向通过目录句柄解析，
-不会退回非原子复制。旧 artifact 不参与采集，因此畸形旧文件不会污染新晨报。
-三个文件不是跨文件事务；出现写入失败时 `ok=false`，旧 latest 可能保留，须核对生成时间与 last-attempt。
-只清理本次写入自建临时文件，保留用户文件和其他运行 artifact。
+Each file is written via a same-directory temporary file, fsync, and atomic replacement; directory redirection for Windows packaged apps is resolved through a directory handle,
+never falling back to a non-atomic copy. Old artifacts are not used as input, so malformed old files cannot contaminate a new brief.
+The three files are not a cross-file transaction; on a write failure `ok=false`, and an old latest file may remain, so check the generation time against last-attempt.
+Only the temporary files created by the current write are cleaned up; user files and other run artifacts are preserved.
 
-失败不会被显示成零邮件：auth/config error、unavailable、parser/backend failure 使用 null 计数；
-EMPTY_TODAY 为已确认空，READY 是最多 100 条的有界元数据计数，可能遗漏分页、截断或解析失败条目，
-不声称完整邮箱总量。重要程度是邮件主题关键词规则，不是语义分类。
-Downloads 只扫描顶层、最近 24 小时、最多展示 10 个文件；沿用 10,000 项/3 秒扫描预算，
-partial 或内部 200 条截断会明确显示 partial，计数限于观察范围，不保证真正最新。
-系统组件失败显示 unknown，电池不存在显示 not_present。组件降级不阻止其他区块及晨报生成；
-运行 `ok` 表示 artifact 成功生成，不代表全部依赖健康。Toast 只显示固定标题和计数，失败单独标记 degraded。
+Failures are never shown as zero emails: auth/config errors, unavailable, and parser/backend failures use null counts;
+EMPTY_TODAY means confirmed empty, and READY is a bounded metadata count of at most 100 items that may miss paginated, truncated, or unparseable items,
+and does not claim to be the full mailbox total. Importance is a keyword rule on email subjects, not semantic classification.
+Downloads scans only the top level, the last 24 hours, and shows at most 10 files; it keeps the 10,000-entry/3-second scan budget,
+and partial results or the internal 200-item truncation are explicitly shown as partial; counts are limited to the observed scope and do not guarantee the truly newest files.
+A failed system component shows unknown, and a missing battery shows not_present. A degraded component does not block other sections or the brief itself;
+a run's `ok` means the artifact was generated successfully, not that all dependencies are healthy. The Toast only shows a fixed title and counts, and a Toast failure is marked degraded separately.
 
-部署时使用独立、detached 的 `D:\21781\Documents\Codex\AI-Work-runtime` Git worktree，
-并由该目录中的同一 `--computer-brief --root <runtime>` 安装入口更新和 `--check`。
-该 runtime 固定检出已验证的 `origin/main`，不占用 feature 分支，也不要求修改用户的脏 main checkout；
-升级时先在独立开发 worktree 完成验证和 main 合并，再将干净 runtime 更新到新的已验证 main 并重新安装、检查和触发。
-不得删除仍被计划任务引用的 runtime 目录。
-本地 Windows scheduler 为主要实现，外部 ChatGPT 08:00 automation 可能重复提醒，需用户自行选择停用；本实现不修改它。
+Deployment uses a separate, detached Git worktree at `<runtime-dir>` (e.g. a fixed local folder such as `D:\...\AI-Work-runtime`),
+updated and checked with `--check` through the same `--computer-brief --root <runtime>` install entry point from that directory.
+This runtime always checks out the verified `origin/main`, does not occupy a feature branch, and does not require modifying the user's dirty main checkout;
+to upgrade, first complete verification and the main merge in a separate development worktree, then update the clean runtime to the new verified main and reinstall, check, and trigger it.
+Do not delete a runtime directory that is still referenced by a scheduled task.
+The local Windows scheduler is the primary implementation; an external ChatGPT 08:00 automation may send duplicate reminders, and the user must choose whether to disable it; this implementation does not modify it.
