@@ -2,7 +2,7 @@
 
 English | [中文](README.zh-CN.md)
 
-**A local assistant that lets AI work on my Windows computer — mail, files, apps, the browser — while I stay in control.**
+**A local assistant that lets AI handle my mail, files, apps and browser on Windows, while I stay in control.**
 
 AI agents that can touch a real computer are powerful and risky: one wrong click can send an email, overwrite a file or leak something private. AI-Work explores how to hand everyday tasks to an AI *without* giving up control. I use it daily on my own machine, across three real mailboxes.
 
