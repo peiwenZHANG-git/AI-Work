@@ -24,7 +24,7 @@ AI agents that can touch a real computer are powerful and risky: one wrong click
 ### How it was validated
 
 - **9 real-world scenarios** accepted one by one, from "find my newest PDF" to "draft an email to my mentor", including one that failed, was diagnosed and fixed before it passed
-- **631 automated tests**, plus a frozen public surface of exactly **42 MCP tools**
+- **694 automated tests, all passing** (631 at the v1 freeze), plus a frozen public surface of exactly **42 MCP tools**
 - A written threat model for remote access ([docs/REMOTE_ARCHITECTURE.md](docs/REMOTE_ARCHITECTURE.md)) and a full acceptance record ([docs/V1_ACCEPTANCE.md](docs/V1_ACCEPTANCE.md))
 
 ### My role
