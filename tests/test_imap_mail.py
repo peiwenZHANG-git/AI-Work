@@ -168,6 +168,31 @@ class QqImapReadonlyBackendTests(unittest.TestCase):
         result = _backend(connection).summarize_today(10)
         self.assertIs(BackendStatus.IMAP_AUTH_FAILED, result.status)
 
+    def test_failed_candidate_is_not_hidden_by_an_older_parsed_row(self):
+        for status, payload, expected in (
+            ('NO', [], BackendStatus.IMAP_PROTOCOL_ERROR),
+            ('OK', None, BackendStatus.IMAP_PROTOCOL_ERROR),
+            ('OK', [(b'bad', b'')], BackendStatus.MAIL_ITEMS_NOT_PARSED),
+        ):
+            with self.subTest(status=status, expected=expected):
+                connection = FakeImapConnection(search_uids=b'10 11')
+                original_uid = connection.uid
+
+                def uid(command, *args):
+                    if command == 'SEARCH':
+                        return original_uid(command, *args)
+                    if args[0] == b'11':
+                        return 'OK', _fetch_response(
+                            internal_date='26-Aug-2026 23:59:00 +0200',
+                        )
+                    return status, payload
+
+                connection.uid = uid
+                result = _backend(connection).summarize_today(10)
+                self.assertIs(expected, result.status)
+                self.assertEqual((), result.emails)
+                self.assertEqual(('logout',), connection.calls[-1])
+
     def test_network_failure_is_explicit(self):
         def unavailable(host, port, timeout, context):
             raise OSError('network unavailable')
@@ -494,15 +519,16 @@ class FetchMessagesReadonlyTests(unittest.TestCase):
         messages = self._fetch(connection)
         self.assertEqual([b'10'], [item.uid for item in messages])
 
-    def test_size_fetch_failure_skips_uid(self):
+    def test_size_fetch_failure_rejects_partial_results(self):
         connection = FetchMessagesFakeConnection(
             search_uids=b'10 11',
             sizes={b'11': 500},
             bodies={b'11': _raw_message('Surviving subject')},
             internal_dates={b'11': '27-Aug-2026 09:30:00 +0200'},
         )
-        messages = self._fetch(connection)
-        self.assertEqual([b'11'], [item.uid for item in messages])
+        with self.assertRaises(imaplib.IMAP4.error):
+            self._fetch(connection)
+        self.assertEqual(('logout',), connection.calls[-1])
 
     def test_internal_date_is_parsed_and_missing_date_reports_none(self):
         connection = FetchMessagesFakeConnection(
@@ -527,14 +553,15 @@ class FetchMessagesReadonlyTests(unittest.TestCase):
         self.assertEqual(30, dated.minute)
         self.assertIsNone(by_uid[b'11'].received)
 
-    def test_missing_body_is_skipped(self):
+    def test_body_fetch_failure_is_not_an_empty_result(self):
         connection = FetchMessagesFakeConnection(
             search_uids=b'10',
             sizes={b'10': 500},
             bodies={},
         )
-        messages = self._fetch(connection)
-        self.assertEqual([], messages)
+        with self.assertRaises(imaplib.IMAP4.error):
+            self._fetch(connection)
+        self.assertEqual(('logout',), connection.calls[-1])
 
     def test_login_rejection_raises_and_still_logs_out(self):
         connection = FetchMessagesFakeConnection()

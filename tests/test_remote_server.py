@@ -1,13 +1,33 @@
 """End-to-end tests for the loopback-only remote server (ephemeral port)."""
 
 import http.client
+import hashlib
 import json
 import tempfile
 import unittest
 from pathlib import Path
 
+from windows_gui import health_events
 from windows_gui.remote import auth, policy
 from windows_gui.remote.server import RemoteServer
+
+
+def assert_real_health_log_unchanged(test_case):
+    def snapshot():
+        paths = [health_events.EVENTS_PATH] + [
+            Path(f'{health_events.EVENTS_PATH}.{index}')
+            for index in range(1, health_events.MAX_ROTATED_FILES + 1)
+        ]
+        return [
+            (path.stat().st_mtime_ns, hashlib.sha256(path.read_bytes()).hexdigest())
+            if path.exists() else None
+            for path in paths
+        ]
+
+    before = snapshot()
+    test_case.addCleanup(
+        lambda: test_case.assertEqual(before, snapshot(), 'Real health log changed')
+    )
 
 
 class FakeStoreBackend:
@@ -32,9 +52,11 @@ class FakeStoreBackend:
 
 class RemoteServerTests(unittest.TestCase):
     def setUp(self):
+        assert_real_health_log_unchanged(self)
         self.backend = FakeStoreBackend()
         self.clock = {'now': 1_000.0, 'wall': 1_700_000_000.0}
         self.health_calls = []
+        self.audit_events = []
         self.authenticator = auth.RemoteAuthenticator(
             secret_store=auth.DeviceSecretStore(self.backend.factory),
             now_factory=lambda: self.clock['now'],
@@ -47,9 +69,14 @@ class RemoteServerTests(unittest.TestCase):
             pepper_provider=lambda: 'test-pepper',
             health_collector=self._fake_health,
             devices_path=self._devices_path(),
+            audit_recorder=lambda code, **kwargs: self.audit_events.append(code),
         )
         self.server.start()
         self.addCleanup(self.server.stop)
+
+    def test_audit_events_are_recorded_only_in_memory(self):
+        self.server._audit('pairing_started')
+        self.assertEqual(['pairing_started'], self.audit_events)
 
     def _devices_path(self):
         if not hasattr(self, '_devices_dir'):

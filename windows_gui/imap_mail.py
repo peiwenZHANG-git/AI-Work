@@ -238,10 +238,16 @@ class ImapReadonlyBackend:
             for uid in reversed(uids[-max_emails:]):
                 status, fetch_data = connection.uid('FETCH', uid, _FETCH_ITEMS)
                 if status != 'OK' or not isinstance(fetch_data, list):
-                    continue
+                    return MailBackendResult(
+                        BackendStatus.IMAP_PROTOCOL_ERROR,
+                        f'{self.config.display_name} UID FETCH 失败',
+                    )
                 email = _parse_fetch_response(self.config, uid, fetch_data)
                 if email is None:
-                    continue
+                    return MailBackendResult(
+                        BackendStatus.MAIL_ITEMS_NOT_PARSED,
+                        f'{self.config.display_name} 候选邮件头或日期无法解析',
+                    )
                 parsed_count += 1
                 if datetime.fromisoformat(email.time).date() != today:
                     continue
@@ -364,7 +370,7 @@ def fetch_messages_readonly(
         for uid in reversed(uids[-limit:]):
             status, size_payload = connection.uid('FETCH', uid, '(RFC822.SIZE)')
             if status != 'OK':
-                continue
+                raise imaplib.IMAP4.error('UID FETCH size failed')
             size = _parse_rfc822_size(size_payload)
             if size is not None and size > max_message_bytes:
                 continue
@@ -372,7 +378,7 @@ def fetch_messages_readonly(
                 'FETCH', uid, '(INTERNALDATE BODY.PEEK[])'
             )
             if status != 'OK':
-                continue
+                raise imaplib.IMAP4.error('UID FETCH body failed')
             raw = b''
             metadata = b''
             for part in message_payload or []:
@@ -382,7 +388,7 @@ def fetch_messages_readonly(
                     if isinstance(part[1], bytes):
                         raw += part[1]
             if not raw:
-                continue
+                raise imaplib.IMAP4.error('UID FETCH body missing')
             results.append(
                 ReadonlyMailboxMessage(
                     uid=uid,

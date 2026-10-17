@@ -3,7 +3,7 @@
 - 项目名称：AI-Work — 仅面向 Windows 的 FastMCP 桌面自动化服务器
 - 仓库路径：`D:\21781\Documents\Codex\AI-Work`
 - 远程仓库：`https://github.com/peiwenZHANG-git/AI-Work.git`（origin）
-- 状态基线：本文档内容核实于 2026-09-09；Git 当前 HEAD 与分支指向请实时查询（如 `git rev-parse main origin/main`），本文档不记录会随提交立即过时的动态 hash。
+- 状态基线：本文档内容核实于 2026-10-16；Git 当前 HEAD 与分支指向请实时查询（如 `git rev-parse main origin/main`），本文档不记录会随提交立即过时的动态 hash。
 - 维护规则：开始新的重要开发任务前先阅读本文档；完成影响项目状态的重要工作后更新本文档。只记录恢复上下文所需信息，不记录微小修改；记录前须用仓库、Git 历史和验证输出核实。
 
 ## 1. 当前目标
@@ -139,7 +139,7 @@
 
 ## 8. 最近一次更新
 
-2026-09-07（Europe/Paris）
+2026-10-16（Europe/Paris）
 
 ## Goal C 验收历程（2026-09-05 至 2026-09-06）
 
@@ -182,3 +182,11 @@ Goal C.4 通过私有、非 MCP 的严格只读恢复路径收口同一草稿：
 
 - 直接 console 运行 `scripts/daily_mail_digest.py` 时，中文完成/失败摘要曾受 Windows cp950 strict stdout 限制触发 `UnicodeEncodeError`；digest 业务、UTF-8 artifacts 和 scheduled-task 退出语义不受影响。`mail_digest.main()` 现在仅在进入 CLI 输出前为 stdout/stderr 启用有界 `backslashreplace` fallback，不改系统 locale、不改变 artifact 内容，也不吞掉业务失败。
 - 维护验证：UTF-8 与 cp950 console focused tests 3/3 PASS，`tests/test_mail_digest.py` 40/40 PASS；`PYTHONIOENCODING=cp950` 下直接加载 digest 入口并用 mocked 业务结果探针验证退出 0；完整 694/694 单元测试 PASS；compileall、diff hygiene、Mail Digest/Morning Brief/Important Mail Check/Agent startup scheduler definitions 均 PASS。
+
+## QQ read-failure reporting and Remote test isolation（2026-10-16）
+
+- 本机留存的 2026-10-14 12:44（Europe/Paris）摘要诊断记录 QQ 为 REQUEST_FAILED，对应 HTML 只保留 `IMAP 网络失败：TimeoutError`，没有具体命令阶段。修改前真实 QQ 邮件头检查与摘要读取均成功；不能宣称已定位或根治历史网络超时。
+- 确定性复现确认：非空 UID SEARCH 后，失败的 size/body FETCH 或缺失正文被跳过，摘要可错误返回 EMPTY_TODAY；混合成功/失败候选也可能被当作完整读取。现有共享 IMAP 路径改为明确失败，不返回部分结果冒充成功，仍保持 SSL/只读选择/UID/BODY.PEEK；不新增重试或改变权限、超时与大小限制。
+- 摘要 HTML 只有在所有邮箱读取成功且均无邮件时才能显示“所有邮箱都没有新邮件”；超时及协议失败仍显示读取失败。回归覆盖超时、FETCH 拒绝、缺失正文、失败候选混合已解析旧邮件以及全空显示条件。
+- Remote server/pairing/confirmation 测试通过既有注入点使用内存 audit recorder，不改变 Remote 产品实现；各 fixture 清理服务器后核对真实健康日志及轮转文件的 SHA-256/修改时间。完整测试进程外另有运行前后断言，确认真实日志及三个轮转文件均未改变。
+- 验证：修复前新增/调整的三项聚焦回归出现六个失败（含 subtest），其中超时状态本身已是失败，但 HTML 仍错误显示全空；修复后相关四模块 143/143 PASS，完整 `python -m unittest discover -s tests -t .` 698/698 PASS；compileall、42/42 unique、windows-gui、FAILSAFE 和 diff check PASS。未运行 GUI smoke、未部署；既有 Remote 并发竞态仍未修复。

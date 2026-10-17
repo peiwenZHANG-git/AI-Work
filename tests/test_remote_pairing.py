@@ -11,11 +11,12 @@ from pathlib import Path
 from windows_gui.remote import auth, policy
 from windows_gui.remote.adapters import RemoteAdapters
 from windows_gui.remote.server import RemoteServer
-from tests.test_remote_server import FakeStoreBackend
+from tests.test_remote_server import FakeStoreBackend, assert_real_health_log_unchanged
 
 
 class PairingDeviceTests(unittest.TestCase):
     def setUp(self):
+        assert_real_health_log_unchanged(self)
         self.backend = FakeStoreBackend()
         self.clock = {'now': 1_000.0, 'wall': 1_700_000_000.0}
         self.audit_events = []
@@ -41,6 +42,7 @@ class PairingDeviceTests(unittest.TestCase):
             health_collector=lambda: {'overall_status': 'PASS', 'components': []},
             devices_path=self.devices_path,
             adapters=adapters,
+            audit_recorder=overrides.pop('audit_recorder', self._record_audit),
             **overrides,
         )
         server.start()
@@ -350,6 +352,7 @@ class PairingDeviceTests(unittest.TestCase):
 
 class ConfirmationPlaneTests(PairingDeviceTests):
     def setUp(self):
+        assert_real_health_log_unchanged(self)
         self.click_calls = []
         self.audit_events = []
         self.devices_dir = tempfile.TemporaryDirectory()
@@ -368,7 +371,7 @@ class ConfirmationPlaneTests(PairingDeviceTests):
 
     def _make_server(self, **overrides):
         audit_recorder = overrides.pop(
-            'audit_recorder', getattr(self, '_record_audit', None),
+            'audit_recorder', self._record_audit,
         )
         server = RemoteServer(
             port=0,

@@ -1811,7 +1811,7 @@ def format_digest_html(
             f'（{escape(box.status)}）：{escape(_single_line(box.message, 160))}</p>'
             '</section>'
         )
-    if not ok_boxes or all(not box.emails for box in ok_boxes):
+    if ok_boxes and not failed_boxes and all(not box.emails for box in ok_boxes):
         sections.append(
             '<section class="mailbox"><p class="empty">'
             '过去 24 小时所有邮箱都没有新邮件</p></section>'

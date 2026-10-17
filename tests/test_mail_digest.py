@@ -47,6 +47,59 @@ def _mail(sender: str, subject: str, time: str, **extra) -> SimpleNamespace:
 
 
 class MailDigestTest(unittest.TestCase):
+    def test_all_mailboxes_empty_requires_every_read_to_succeed(self):
+        failed = MailboxDigest('qq_mail', 'QQ', 'QQ', 'REQUEST_FAILED', 'timeout')
+        empty = MailboxDigest('master_mail', 'Master', 'Master', 'EMPTY_TODAY', '')
+        for boxes in ([failed], [failed, empty], [empty]):
+            with self.subTest(statuses=[box.status for box in boxes]):
+                html = format_digest_html(boxes, datetime.now().astimezone())
+                self.assertEqual(
+                    all(box.ok for box in boxes),
+                    '所有邮箱都没有新邮件' in html,
+                )
+
+    def test_qq_read_failures_are_not_reported_as_no_new_mail(self):
+        from tests.test_imap_mail import FetchMessagesFakeConnection
+
+        for failure in ('timeout', 'size_fetch', 'body_fetch', 'empty_body'):
+            with self.subTest(failure=failure):
+                connection = FetchMessagesFakeConnection(
+                    search_uids=b'10',
+                    sizes={} if failure == 'size_fetch' else {b'10': 500},
+                )
+                original_uid = connection.uid
+
+                def uid(command, *args):
+                    if failure == 'timeout':
+                        raise TimeoutError('read timed out')
+                    if failure == 'empty_body' and command == 'FETCH' and 'BODY.PEEK' in args[1]:
+                        return 'OK', [b')']
+                    return original_uid(command, *args)
+
+                connection.uid = uid
+                with mock.patch.object(
+                    mail_digest.QqImapConfig, 'from_environment',
+                    return_value=SimpleNamespace(username='fake@example.com'),
+                ), mock.patch.object(
+                    mail_digest.WindowsCredentialManagerSecretStore,
+                    'get_secret', return_value='fake-secret',
+                ), mock.patch.object(
+                    mail_digest, '_default_imap_factory', return_value=connection,
+                ):
+                    box = mail_digest.collect_qq_digest()
+                self.assertFalse(box.ok)
+                self.assertEqual(
+                    'REQUEST_FAILED' if failure == 'timeout' else 'IMAP_PROTOCOL_ERROR',
+                    box.status,
+                )
+                for rendered in (
+                    format_digest([box], datetime.now().astimezone()),
+                    format_digest_html([box], datetime.now().astimezone()),
+                ):
+                    self.assertIn('读取失败', rendered)
+                    self.assertNotIn('没有新邮件', rendered)
+                self.assertEqual(('logout',), connection.calls[-1])
+
     def test_every_mail_has_its_own_confirmed_dismiss_button(self) -> None:
         box = MailboxDigest(
             'qq_mail', 'QQ 邮箱', 'QQ', 'READY', '',
